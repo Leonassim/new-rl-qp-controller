@@ -1,5 +1,3 @@
-set(CONTROLLER_NAME NewRLQPController)
-
 # ---- ONNX Runtime (local vendored copy) ----
 set(ONNXRUNTIME_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/onnxruntime)
 set(ONNXRUNTIME_INCLUDE_DIR ${ONNXRUNTIME_ROOT}/include)
@@ -12,44 +10,39 @@ find_library(ONNXRUNTIME_LIB
   REQUIRED
 )
 
-set(SRC
+set(controller_SRC 
   NewRLQPController.cpp
   RLPolicyInterface.cpp
   utils.cpp
 )
 
-set(HDR
+set(controller_HDR 
   NewRLQPController.h
   RLPolicyInterface.h
   utils.h
-  api.h
 )
 
-add_subdirectory(states)
-
-add_library(${CONTROLLER_NAME} SHARED ${SRC} ${HDR})
-
-target_link_libraries(${CONTROLLER_NAME}
+add_library(${PROJECT_NAME} SHARED ${controller_SRC} ${controller_HDR})
+set_target_properties(${PROJECT_NAME} PROPERTIES COMPILE_FLAGS
+                                                 "-DNewRLQPController_EXPORTS")
+target_link_libraries(${PROJECT_NAME} PUBLIC mc_rtc::mc_control_fsm)
+target_link_libraries(${PROJECT_NAME} 
   PUBLIC
-    mc_rtc::mc_control_fsm
     ${ONNXRUNTIME_LIB}
 )
 
-target_include_directories(${CONTROLLER_NAME}
+target_include_directories(${PROJECT_NAME} 
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
     $<BUILD_INTERFACE:${ONNXRUNTIME_INCLUDE_DIR}>
-    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/NewRLQPController>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}>
 )
-
-add_controller(${CONTROLLER_NAME}_controller lib.cpp "")
-target_link_libraries(${CONTROLLER_NAME}_controller PUBLIC ${CONTROLLER_NAME})
 
 install(
-  TARGETS ${CONTROLLER_NAME}
-  DESTINATION ${MC_RTC_LIBDIR}
-  EXPORT ${TARGETS_EXPORT_NAME}
-)
+  TARGETS ${PROJECT_NAME}
+  ARCHIVE DESTINATION "${MC_RTC_LIBDIR}"
+  LIBRARY DESTINATION "${MC_RTC_LIBDIR}"
+  RUNTIME DESTINATION bin)
 
 install(
   DIRECTORY ${ONNXRUNTIME_LIB_DIR}/
@@ -58,7 +51,7 @@ install(
     PATTERN "libonnxruntime*.so*"
 )
 
-install(
-  FILES NewRLQPController.h api.h PolicySimulatorHandling.h utils.h RLPolicyInterface.h
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/NewRLQPController
-)
+add_controller(${PROJECT_NAME}_controller lib.cpp "")
+target_link_libraries(${PROJECT_NAME}_controller PUBLIC ${PROJECT_NAME})
+
+add_subdirectory(states)
