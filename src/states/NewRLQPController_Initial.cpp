@@ -21,7 +21,6 @@ bool NewRLQPController_Initial::run(mc_control::fsm::Controller & ctl_)
 void NewRLQPController_Initial::teardown(mc_control::fsm::Controller & ctl_)
 {
   auto & ctl = static_cast<NewRLQPController &>(ctl_);
-  ctl.utilsClass.teardown_rl_state(ctl);
 }
 
 EXPORT_SINGLE_STATE("NewRLQPController_Initial", NewRLQPController_Initial)

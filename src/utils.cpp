@@ -18,19 +18,6 @@ void utils::start_rl_state(mc_control::fsm::Controller & ctl_, std::string state
     return;
   }
 
-  ctl.gui()->addElement(
-    {"NewRLQPController", state_name},
-    mc_rtc::gui::Label("Policy Loaded", [&ctl]() { 
-      return ctl.rlPolicy->isLoaded() ? "Yes" : "No"; 
-    }),
-    mc_rtc::gui::Label("Observation Size", [&ctl]() { 
-      return std::to_string(ctl.rlPolicy->getObservationSize()); 
-    }),
-    mc_rtc::gui::Label("Action Size", [&ctl]() { 
-      return std::to_string(ctl.rlPolicy->getActionSize()); 
-    })
-  );
-
   ctl.initializeRLObservation();
 
   mc_rtc::log::success("[NewRLQPController::utils] {} state initialization completed", state_name);
@@ -58,11 +45,6 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
   {
     mc_rtc::log::error("[NewRLQPController::utils] Error during RL state run: {}", e.what());
   }
-}
-
-void utils::teardown_rl_state(mc_control::fsm::Controller & ctl_)
-{
-  ctl_.gui()->removeCategory({"NewRLQPController", state_name_});
 }
 
 Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)

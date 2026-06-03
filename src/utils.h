@@ -65,13 +65,6 @@ struct utils
   void run_rl_state(mc_control::fsm::Controller & ctl_);
 
   /**
-   * @brief Called when an RL FSM state ends.
-   *
-   * Removes the policy GUI panel added by start_rl_state().
-    */
-  void teardown_rl_state(mc_control::fsm::Controller & ctl_);
-
-  /**
    * @brief Build and return the full observation vector for the current policy.
    *
    * **Must be adapted by the user** to match the observation space of the

@@ -261,6 +261,15 @@ void NewRLQPController::addGui()
   mc_rtc::gui::Label("Current policy", [this]() -> const std::string & 
     { 
       return policyPaths_[currentPolicyIndex]; 
+    }),
+    mc_rtc::gui::Label("Policy Loaded", [this]() { 
+      return rlPolicy->isLoaded() ? "Yes" : "No"; 
+    }),
+    mc_rtc::gui::Label("Observation Size", [this]() { 
+      return std::to_string(rlPolicy->getObservationSize()); 
+    }),
+    mc_rtc::gui::Label("Action Size", [this]() { 
+      return std::to_string(rlPolicy->getActionSize()); 
     })
   );
 
