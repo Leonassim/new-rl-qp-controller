@@ -7,20 +7,15 @@ NewRLQPController::NewRLQPController(mc_rbdyn::RobotModulePtr rm, double dt, con
 {
   config_ = config;
   currentPolicyIndex = size_t(config_("default_policy_index", 0));
-  
-  //Initialize Constraints
-  selfCollisionConstraint->setCollisionsDampers(solver(), {zeta_selfCollision_, lambda_selfCollision_});
-  solver().removeConstraintSet(dynamicsConstraint);
-  dynamicsConstraint = mc_rtc::unique_ptr<mc_solver::DynamicsConstraint>(
-    new mc_solver::DynamicsConstraint(robots(), 0, {diPercent_, dsPercent_, 0.0, zeta_jointLimit_, lambda_jointLimit_}, velPercent_, true));
-  solver().addConstraintSet(dynamicsConstraint);
 
-  // Remove the default posture task created by the FSM
-  solver().removeTask(getPostureTask(robot().name()));
-  // Initialize Task
-  torqueJointTask = std::make_shared<mc_tasks::TorqueJointTask>(
-      solver(), robot().robotIndex(), 100.0, 1);
-  solver().addTask(torqueJointTask);
+  // Switch from DynamicsConstraint (torque) to KinematicsConstraint (position).
+  // mc_mujoco will track the QP-integrated position targets with its own PD loop.
+  solver().removeConstraintSet(dynamicsConstraint);
+  kinematicsConstraint = mc_rtc::unique_ptr<mc_solver::KinematicsConstraint>(
+    new mc_solver::KinematicsConstraint(robots(), 0, {0.4, 0.01, 0.0, 1.2, 200.0}, 0.9));
+  solver().addConstraintSet(kinematicsConstraint);
+
+  // Keep the default PostureTask — it receives q_rl targets each step.
 
   initializeRobot();
   initializeRLPolicy();
@@ -34,7 +29,7 @@ bool NewRLQPController::run()
 {
   if(printLimits_) computeLimits();
   bool run = mc_control::fsm::Controller::run(
-          mc_solver::FeedbackType::ClosedLoopIntegrateReal);
+          mc_solver::FeedbackType::OpenLoop);
   if(byPassQPControl()) // Run RL without taking the QP into account
   {
     return true;
@@ -50,8 +45,7 @@ void NewRLQPController::reset(const mc_control::ControllerResetData & reset_data
 void NewRLQPController::initializeRobot()
 {
   useQP_ = config_("policies")[currentPolicyIndex]("use_QP", true);
-  mc_rtc::log::info("[NewRLQPController] Using Torque Control mode");
-  datastore().make<std::string>("ControlMode", "Torque");
+  mc_rtc::log::info("[NewRLQPController] Using position control via PostureTask + KinematicsConstraint");
 
   // get the joints order (urdf) depending on the robot used
   robotName_ = robot().name();
@@ -100,8 +94,13 @@ void NewRLQPController::initializeRobot()
 
   kp_ = pdGainsRatio_ * kpBase_;
   kd_ = sqrt(pdGainsRatio_) * kdBase_;
-  torqueJointTask->setStiffness(kp_);
-  torqueJointTask->setDamping(kd_);
+
+  // Set PostureTask stiffness: K = 0.2 / (policyDt * controlDt) — from old RLController formula
+  double policyDt = config_("policies")[currentPolicyIndex]("policy_step_size", 0.005);
+  double K = 0.2 / (policyDt * timeStep);
+  auto pt = getPostureTask(robot().name());
+  pt->stiffness(K);
+  mc_rtc::log::info("[NewRLQPController] PostureTask stiffness: {:.0f}", K);
 }
 
 void NewRLQPController::initializeRLPolicy()
@@ -129,68 +128,38 @@ void NewRLQPController::initializeRLPolicy()
 
 void NewRLQPController::initializeRLObservation()
 {
-  // Observation
-  auto & robot = realRobot(robots()[0].name());
+  auto & rr = realRobot(robots()[0].name());
+  const std::string & baseName = rr.mb().body(0).name();
 
-  // Bellow an example of how to fill the observation vector with the robot state, this should be adapted to the specific policy observation used.
+  // Rotation world → body from floating base pose (updated by Tilt observer)
+  const Eigen::Matrix3d R_w2b = rr.bodyPosW(baseName).rotation();
 
-  // // ---------------- Joint positions and velocities ---------------------------------------
-  // const auto & q_mbc = robot.mbc().q; // MBC order
-  // const auto & q_dot_mbc = robot.mbc().alpha; // MBC order
-  // Eigen::VectorXd q_rlFrameworkOrdered, q_0_rlFrameworkOrdered, q_dot_rlFrameworkOrdered;
+  const Eigen::Vector3d lv = R_w2b * rr.bodyVelW(baseName).linear();
+  const Eigen::Vector3d av = R_w2b * rr.bodyVelW(baseName).angular();
+  const Eigen::Vector3d pg = R_w2b * Eigen::Vector3d(0, 0, -1);
 
-  // if (currentPolicyIndex < 2) // Use all joints as observation
-  // {
-  //   q_rlFrameworkOrdered = Eigen::VectorXd::Zero(nbActuatedJoints);
-  //   q_0_rlFrameworkOrdered = Eigen::VectorXd::Zero(nbActuatedJoints);
-  //   q_dot_rlFrameworkOrdered = Eigen::VectorXd::Zero(nbActuatedJoints);
+  const int actionDim = rlPolicy->getActionSize();
+  Eigen::VectorXd jp = Eigen::VectorXd::Zero(actionDim);
+  Eigen::VectorXd jv = Eigen::VectorXd::Zero(actionDim);
+  for(int j = 0; j < actionDim; ++j)
+  {
+    int mcIdx = rr.jointIndexByName(refJointOrderRLAction[j]);
+    jp(j) = rr.mbc().q[mcIdx][0] - q_zero[actionToDofMap[j]];
+    jv(j) = rr.mbc().alpha[mcIdx][0];
+  }
+  const Eigen::VectorXd ja = Eigen::VectorXd::Zero(actionDim);
 
-  //   for(size_t i = 0; i < jointNames.size(); ++i)
-  //   {
-  //     const auto & joint_name = jointNames[i];
-
-  //     // Fill mc_rtc ordered vectors
-  //     const double q = q_mbc[robot.jointIndexByName(joint_name)][0];
-  //     const double q_dot = q_dot_mbc[robot.jointIndexByName(joint_name)][0];
-
-  //     // RL remapping
-  //     int rl_index = mcRtcToRLFrameworkJointMap[i];
-  //     q_rlFrameworkOrdered(rl_index) = q;
-  //     q_0_rlFrameworkOrdered(rl_index) = q_zero(i);
-  //     q_dot_rlFrameworkOrdered(rl_index) = q_dot;
-  //   }
-  // }
-  // else // Use only the joints that are in the action space as observation 
-  // {
-  //   const int policyObsJointSize = rlPolicy->getActionSize();
-  //   q_rlFrameworkOrdered = Eigen::VectorXd::Zero(policyObsJointSize);
-  //   q_0_rlFrameworkOrdered = Eigen::VectorXd::Zero(policyObsJointSize);
-  //   q_dot_rlFrameworkOrdered = Eigen::VectorXd::Zero(policyObsJointSize);
-  //   int i = 0;
-  //   for (const auto &joint_name : refJointOrderRLAction)
-  //   {
-  //     q_rlFrameworkOrdered[i] = q_mbc[robot.jointIndexByName(joint_name)][0];
-  //     q_dot_rlFrameworkOrdered[i] = q_dot_mbc[robot.jointIndexByName(joint_name)][0];
-  //     q_0_rlFrameworkOrdered[i] = q0_map_.at(joint_name);
-  //     i++;
-  //   } 
-  // }
-
-  // // gravity, fb linear and angular velocity in floating base frame -------------------------------- 
-  // const auto & X_0_body = robot.mbc().bodyPosW[robot.mb().bodyIndexByName("Body")];
-  // const auto & bodyVel = robot.mbc().bodyVelB[robot.mb().bodyIndexByName("Body")];
-  // Eigen::Matrix3d R_world_to_body = X_0_body.rotation();
-  // Eigen::Vector3d gravity_b = R_world_to_body * Eigen::Vector3d(0.0, 0.0, -1.0);
-  // Eigen::Vector3d angVel_b = bodyVel.angular();
-  // Eigen::Vector3d linVel_b = bodyVel.linear();
-
-  // projectedGravity[0] = gravity_b;
-  // angVel[0] = angVel_b;
-  // linVel[0] = linVel_b;
-  // velCmd[0] = currentVelCmd;
-  // jointPos[0] = q_rlFrameworkOrdered - q_0_rlFrameworkOrdered; // Start with current joint positions
-  // jointVel[0] = q_dot_rlFrameworkOrdered;
-  // jointAction[0] = currentAction;
+  for(int i = 0; i < HISTORY_SIZE; ++i)
+  {
+    linVel_[i] = lv;
+    angVel_[i] = av;
+    projGrav_[i] = pg;
+    jointPos_[i] = jp;
+    jointVel_[i] = jv;
+    jointAct_[i] = ja;
+    velCmd_[i] = currentVelCmd_;
+  }
+  histInitialized_ = true;
 }
 
 bool NewRLQPController::byPassQPControl()
@@ -273,19 +242,11 @@ void NewRLQPController::addGui()
     })
   );
 
-  // Add PD gains ratio slider
-  gui()->addElement({"NewRLQPController", "PD Gains"},
-    mc_rtc::gui::NumberSlider(
-      "PD Gains Ratio", [this]() { return pdGainsRatio_; },
-      [this](double v) { 
-        pdGainsRatio_ = v;
-        kp_ = pdGainsRatio_ * kpBase_;
-        kd_ = sqrt(pdGainsRatio_) * kdBase_;
-        torqueJointTask->setStiffness(kp_);
-        torqueJointTask->setDamping(kd_);
-      }, 0.0, 2.0),
-    mc_rtc::gui::Label("Current kp", kp_),
-    mc_rtc::gui::Label("Current kd", kd_)
+  gui()->addElement({"NewRLQPController", "PostureTask"},
+    mc_rtc::gui::Label("Stiffness K", [this]() {
+      auto pt = getPostureTask(robot().name());
+      return pt ? std::to_string(pt->stiffness()) : "N/A";
+    })
   );
 
   gui()->addElement({"ControlMode"}, 
@@ -307,9 +268,16 @@ void NewRLQPController::addGui()
       })
     );
 
-  // Example of changing the velocity command from the GUI, this should be adapted to the specific policy and observation used.
-  // gui()->addElement({"NewRLQPController", "Velocity Command"},
-  //     mc_rtc::gui::ArrayInput("Current Velocity Command", {"vx", "vy", "yaw_rate"}, currentVelCmd));
+  gui()->addElement(
+    {"NewRLQPController", "Velocity Command"},
+    mc_rtc::gui::NumberSlider("vx  (m/s)", [this]() { return currentVelCmd_.x(); },
+      [this](double v) { currentVelCmd_.x() = v; }, -1.0, 1.0),
+    mc_rtc::gui::NumberSlider("vy  (m/s)", [this]() { return currentVelCmd_.y(); },
+      [this](double v) { currentVelCmd_.y() = v; }, -0.5, 0.5),
+    mc_rtc::gui::NumberSlider("yaw (rad/s)", [this]() { return currentVelCmd_.z(); },
+      [this](double v) { currentVelCmd_.z() = v; }, -1.0, 1.0),
+    mc_rtc::gui::Button("Stop", [this]() { currentVelCmd_.setZero(); })
+  );
 }
 
 void NewRLQPController::configRL()

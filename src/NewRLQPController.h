@@ -1,7 +1,7 @@
 #pragma once
 
+#include <array>
 #include <mc_control/fsm/Controller.h>
-#include <mc_tasks/TorqueJointTask.h>
 
 #include "api.h"
 
@@ -96,13 +96,6 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   void initializeRLObservation();
 
   // =========================================================================
-  // QP Task
-  // =========================================================================
-
-  /** @brief Torque-space whole-body task fed into the CBF-QP solver. */
-  std::shared_ptr<mc_tasks::TorqueJointTask> torqueJointTask;
-  
-  // =========================================================================
   // Robot state
   // =========================================================================
 
@@ -169,19 +162,20 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   /** @brief Full observation vector fed to the policy at each inference step. */
   Eigen::VectorXd currentObservation;
 
-  // Observation history buffers (uncomment and adapt to your policy)
-  // History buffers store the last HISTORY_SIZE policy steps of each observation
-  // term. Index 0 = most recent, index HISTORY_SIZE-1 = oldest.
+  // Observation history buffers.
+  // Index 0 = most recent, index HISTORY_SIZE-1 = oldest.
   // Stacked oldest-first into the observation vector to match mjlab ordering.
-  //
-  // static constexpr int HISTORY_SIZE = 5;
-  // std::array<Eigen::Vector3d, HISTORY_SIZE> linVel;         ///< Base linear velocity in body frame
-  // std::array<Eigen::Vector3d, HISTORY_SIZE> angVel;         ///< Base angular velocity in body frame
-  // std::array<Eigen::Vector3d, HISTORY_SIZE> projectedGravity; ///< Gravity unit vector in body frame
-  // std::array<Eigen::VectorXd, HISTORY_SIZE> jointPos;       ///< q - q_zero, size = action dim
-  // std::array<Eigen::VectorXd, HISTORY_SIZE> jointVel;       ///< Joint velocities, size = action dim
-  // std::array<Eigen::VectorXd, HISTORY_SIZE> jointAction;    ///< Raw policy output (currentAction)
-  // std::array<Eigen::Vector3d, HISTORY_SIZE> velCmd;         ///< Velocity command [vx, vy, yaw_rate]
+  static constexpr int HISTORY_SIZE = 5;
+  bool histInitialized_ = false;
+  std::array<Eigen::Vector3d, HISTORY_SIZE> linVel_;
+  std::array<Eigen::Vector3d, HISTORY_SIZE> angVel_;
+  std::array<Eigen::Vector3d, HISTORY_SIZE> projGrav_;
+  std::array<Eigen::VectorXd, HISTORY_SIZE> jointPos_;
+  std::array<Eigen::VectorXd, HISTORY_SIZE> jointVel_;
+  std::array<Eigen::VectorXd, HISTORY_SIZE> jointAct_;
+  std::array<Eigen::Vector3d, HISTORY_SIZE> velCmd_;
+
+  Eigen::Vector3d currentVelCmd_ = Eigen::Vector3d::Zero();
 
   // =========================================================================
   // Policy / timing

@@ -38,7 +38,7 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
           ctl.currentActionScaled(i) = ctl.actionScale(i) * ctl.currentAction(j);
           ctl.q_rl(i) = ctl.currentActionScaled(i) + ctl.q_zero(i);
       }
-      syncTime_ = 0.0;
+      syncTime_ -= ctl.policyStepSize;
     }
   }
   catch(const std::exception & e)
@@ -61,28 +61,56 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
   };
 
   switch (ctl.currentPolicyIndex) {
-    case 0: // PolicyName1.onnx observation example
+    case 0: // RHPS1 velocity policy — V2 format (510 dims)
     {
-      // // shift history: t-2 <- t-1 <- t
-      // for (int i = ctl.HISTORY_SIZE - 1; i > 0; --i) {
-      //     ctl.linVel[i] = ctl.linVel[i - 1];
-      //     ctl.angVel[i] = ctl.angVel[i - 1];
-      //     ctl.projectedGravity[i] = ctl.projectedGravity[i - 1];
-      //     ctl.velCmd[i] = ctl.velCmd[i - 1];
-      //     ctl.jointPos[i] = ctl.jointPos[i - 1];
-      //     ctl.jointVel[i] = ctl.jointVel[i - 1];
-      //     ctl.jointAction[i] = ctl.jointAction[i - 1];
-      // }
+      auto & rr = ctl.realRobot(ctl.robots()[0].name());
+      const std::string & baseName = rr.mb().body(0).name();
 
-      // ctl.initializeRLObservation(); // update t with current observation
+      // Rotation world → body (updated by Tilt observer)
+      const Eigen::Matrix3d R_w2b = rr.bodyPosW(baseName).rotation();
 
-      // for (int i = ctl.HISTORY_SIZE - 1; i >= 0; --i) appendToObs(ctl.linVel[i]);
-      // for (int i = ctl.HISTORY_SIZE - 1; i >= 0; --i) appendToObs(ctl.angVel[i]);
-      // for (int i = ctl.HISTORY_SIZE - 1; i >= 0; --i) appendToObs(ctl.projectedGravity[i]);
-      // for (int i = ctl.HISTORY_SIZE - 1; i >= 0; --i) appendToObs(ctl.jointPos[i]);
-      // for (int i = ctl.HISTORY_SIZE - 1; i >= 0; --i) appendToObs(ctl.jointVel[i]);
-      // for (int i = ctl.HISTORY_SIZE - 1; i >= 0; --i) appendToObs(ctl.jointAction[i]);
-      // for (int i = ctl.HISTORY_SIZE - 1; i >= 0; --i) appendToObs(ctl.velCmd[i]);
+      // Shift history buffers: drop oldest (index HISTORY_SIZE-1), push at index 0
+      for(int i = ctl.HISTORY_SIZE - 1; i > 0; --i)
+      {
+        ctl.linVel_[i]    = ctl.linVel_[i-1];
+        ctl.angVel_[i]    = ctl.angVel_[i-1];
+        ctl.projGrav_[i]  = ctl.projGrav_[i-1];
+        ctl.jointPos_[i]  = ctl.jointPos_[i-1];
+        ctl.jointVel_[i]  = ctl.jointVel_[i-1];
+        ctl.jointAct_[i]  = ctl.jointAct_[i-1];
+        ctl.velCmd_[i]    = ctl.velCmd_[i-1];
+      }
+
+      // Fill index 0 with current state
+      ctl.linVel_[0]   = R_w2b * rr.bodyVelW(baseName).linear();
+      ctl.angVel_[0]   = R_w2b * rr.bodyVelW(baseName).angular();
+      ctl.projGrav_[0] = R_w2b * Eigen::Vector3d(0, 0, -1);
+      ctl.velCmd_[0]   = ctl.currentVelCmd_;
+
+      // jointAct_[0] = raw NN output from previous step (before scaling)
+      ctl.jointAct_[0] = ctl.currentAction;
+
+      const int actionDim = static_cast<int>(ctl.refJointOrderRLAction.size());
+      ctl.jointPos_[0] = Eigen::VectorXd::Zero(actionDim);
+      ctl.jointVel_[0] = Eigen::VectorXd::Zero(actionDim);
+      for(int j = 0; j < actionDim; ++j)
+      {
+        const int mcIdx = rr.jointIndexByName(ctl.refJointOrderRLAction[j]);
+        ctl.jointPos_[0](j) = rr.mbc().q[mcIdx][0] - ctl.q_zero[ctl.actionToDofMap[j]];
+        ctl.jointVel_[0](j) = rr.mbc().alpha[mcIdx][0];
+      }
+
+      // Build observation: oldest first (index HISTORY_SIZE-1 → 0)
+      auto write3 = [&](const Eigen::Vector3d & v)
+      { obs.segment(offset, 3) = v; offset += 3; };
+
+      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.linVel_[i]);
+      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.angVel_[i]);
+      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.projGrav_[i]);
+      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointPos_[i]);
+      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointVel_[i]);
+      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointAct_[i]);
+      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.velCmd_[i]);
       break;
     }
     case 1: // PolicyName2.onnx observation example 

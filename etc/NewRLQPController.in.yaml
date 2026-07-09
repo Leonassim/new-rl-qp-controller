@@ -1,27 +1,19 @@
 ---
-# If true, the FSM transitions are managed by an external tool
 Managed: false
-# If true and the FSM is self-managed, transitions should be triggered
 StepByStep: true
-# Change idle behaviour, if true the state is kept until transition,
-# otherwise the FSM holds the last state until transition
 IdleKeepState: false
-# Where to look for state libraries
 StatesLibraries:
 - "@MC_STATES_DEFAULT_RUNTIME_INSTALL_PREFIX@"
 - "@MC_STATES_RUNTIME_INSTALL_PREFIX@"
-# Where to look for state files
 StatesFiles:
 - "@MC_STATES_DEFAULT_RUNTIME_INSTALL_PREFIX@/data"
 - "@MC_STATES_RUNTIME_INSTALL_PREFIX@/data"
-# If true, state factory will be more verbose
 VerboseStateFactory: false
-# Additional robots to load
+
 robots:
   ground:
     module: env/ground
 
-# Collision constraint
 collisions:
 - type: collision
   useMinimal: true
@@ -29,104 +21,189 @@ collisions:
 ObserverPipelines:
 - name: Pipeline
   observers:
-    # Add an encoder observer to read joint velocities (Required for closed loop control)
     - type: Encoder
       velocity: encoderVelocities
-      
-    # For humanoid robots, add an estimator to compute the floating base state (position, velocity and orientation of the robot in the world)
-    # BodySensor observer can be used in simulation, but on the real-robot, tilt observer must be used instead.
-    # - type: BodySensor
-    #   update: true
-    #   bodySensor: FloatingBase
+    - type: BodySensor
+      update: true
+      gui: true
+      bodySensor: FloatingBase
 
-    - type: ExternalForcesObserver
-      estimation_method: MomentumObserver   # or ForceSensorBased
-      # MomentumObserver-only keys:
-      residual_gain: 10.0              # observer gain K; higher = faster response, more noise
-      torque_source_type: CommandedTorque  # JointTorqueMeasurement preferred when available
-
-# Implement some additional text states
 states: {}
-# Transitions map
 transitions:
 - [NewRLQPController_Initial, OK, NewRLQPController_Initial, Strict]
-# Initial state
 init: NewRLQPController_Initial
 
-# RL policy configuration parameters
-policy_path: ["policyName1.onnx", "policyName2.onnx"]  # Path to the RL policy file(s) 
-default_policy_index: 0 # Index of the default policy to use
+policy_path: ["/path/to/rhps1_velocity_policy.onnx"]  # Update after installation
+default_policy_index: 0
+
 policies:
-  # index 0 : policyName1
+  # index 0 : RHPS1 velocity policy
   - use_QP: true
-    policy_step_size: 0.01 # Policy step size in seconds
-    physics_step_size: 0.001 # Physics step size in seconds
+    policy_step_size: 0.005   # 200 Hz (5 ms)
+    physics_step_size: 0.004  # mc_mujoco at 250 Hz (4 ms)
     pd_gains_ratio: 1.0
 
     action_scale:
-        joint_name1: gain value e.g 100.0
-        joint_name2: gain value e.g 100.0
-        ...
-        joint_nameN: gain value e.g 100.0
+      CHEST_Y:      0.005
+      CHEST_P:      0.005
+      HEAD_Y:       0.005
+      HEAD_P:       0.005
+      L_SHOULDER_P: 0.005
+      L_SHOULDER_R: 0.005
+      L_SHOULDER_Y: 0.005
+      L_ELBOW_P:    0.005
+      L_ELBOW_Y:    0.005
+      L_WRIST_R:    0.005
+      L_WRIST_Y:    0.005
+      R_SHOULDER_P: 0.005
+      R_SHOULDER_R: 0.005
+      R_SHOULDER_Y: 0.005
+      R_ELBOW_P:    0.005
+      R_ELBOW_Y:    0.005
+      R_WRIST_R:    0.005
+      R_WRIST_Y:    0.005
+      L_CROTCH_Y:   0.002625
+      L_CROTCH_R:   0.0075
+      L_CROTCH_P:   0.0105
+      L_KNEE_P:     0.0075
+      L_ANKLE_R:    0.00675
+      L_ANKLE_P:    0.00975
+      R_CROTCH_Y:   0.002625
+      R_CROTCH_R:   0.0075
+      R_CROTCH_P:   0.0105
+      R_KNEE_P:     0.0075
+      R_ANKLE_R:    0.00675
+      R_ANKLE_P:    0.00975
+
     kp:
-        joint_name1: gain value e.g 100.0
-        joint_name2: gain value e.g 100.0
-        ...
-        joint_nameN: gain value e.g 100.0
+      L_CROTCH_Y:   20000.0
+      L_CROTCH_R:   20000.0
+      L_CROTCH_P:   20000.0
+      L_KNEE_P:     20000.0
+      L_ANKLE_R:    10000.0
+      L_ANKLE_P:    10000.0
+      CHEST_Y:      44000.0
+      CHEST_P:      44000.0
+      R_CROTCH_Y:   20000.0
+      R_CROTCH_R:   20000.0
+      R_CROTCH_P:   20000.0
+      R_KNEE_P:     20000.0
+      R_ANKLE_R:    10000.0
+      R_ANKLE_P:    10000.0
+      HEAD_Y:       2000.0
+      HEAD_P:       2000.0
+      L_SHOULDER_P: 15000.0
+      L_SHOULDER_R: 14000.0
+      L_SHOULDER_Y: 14000.0
+      L_ELBOW_P:    14000.0
+      L_ELBOW_Y:    14000.0
+      L_WRIST_R:    14000.0
+      L_WRIST_Y:    14000.0
+      R_SHOULDER_P: 15000.0
+      R_SHOULDER_R: 14000.0
+      R_SHOULDER_Y: 14000.0
+      R_ELBOW_P:    14000.0
+      R_ELBOW_Y:    14000.0
+      R_WRIST_R:    14000.0
+      R_WRIST_Y:    14000.0
+
     kd:
-        joint_name1: gain value e.g 100.0
-        joint_name2: gain value e.g 100.0
-        ...
-        joint_nameN: gain value e.g 100.0
+      L_CROTCH_Y:   400.0
+      L_CROTCH_R:   400.0
+      L_CROTCH_P:   400.0
+      L_KNEE_P:     400.0
+      L_ANKLE_R:    300.0
+      L_ANKLE_P:    300.0
+      CHEST_Y:      440.0
+      CHEST_P:      440.0
+      R_CROTCH_Y:   400.0
+      R_CROTCH_R:   400.0
+      R_CROTCH_P:   400.0
+      R_KNEE_P:     400.0
+      R_ANKLE_R:    300.0
+      R_ANKLE_P:    300.0
+      HEAD_Y:       50.0
+      HEAD_P:       50.0
+      L_SHOULDER_P: 240.0
+      L_SHOULDER_R: 240.0
+      L_SHOULDER_Y: 240.0
+      L_ELBOW_P:    240.0
+      L_ELBOW_Y:    240.0
+      L_WRIST_R:    240.0
+      L_WRIST_Y:    240.0
+      R_SHOULDER_P: 240.0
+      R_SHOULDER_R: 240.0
+      R_SHOULDER_Y: 240.0
+      R_ELBOW_P:    240.0
+      R_ELBOW_Y:    240.0
+      R_WRIST_R:    240.0
+      R_WRIST_Y:    240.0
 
-    # q0 must respect the joint order used in the RL framework (for action_scale, kp and kd, the joint order does not matter)
     q0:
-      joint_name1: joint pos value in rad e.g 0.0
-      joint_name2: joint pos value in rad e.g 0.0
-      ...
-      joint_nameN: joint pos value in rad e.g 0.0
-    
-    # The order of joints in action vector (policy output)
-    # Some RL policies may not control all the joints of the robot, in that case, only the controlled joints should be listed here.
+      CHEST_Y:      0.0
+      CHEST_P:      0.0
+      HEAD_Y:       0.0
+      HEAD_P:       0.0
+      L_SHOULDER_P: 0.261799
+      L_SHOULDER_R: 0.174533
+      L_SHOULDER_Y: -0.087266
+      L_ELBOW_P:    -0.523599
+      L_ELBOW_Y:    0.0
+      L_WRIST_R:    0.0
+      L_WRIST_Y:    0.0
+      R_SHOULDER_P: 0.261799
+      R_SHOULDER_R: -0.174533
+      R_SHOULDER_Y: 0.087266
+      R_ELBOW_P:    -0.523599
+      R_ELBOW_Y:    0.0
+      R_WRIST_R:    0.0
+      R_WRIST_Y:    0.0
+      L_CROTCH_Y:   -0.010533
+      L_CROTCH_R:   0.028787
+      L_CROTCH_P:   -0.271191
+      L_KNEE_P:     0.622021
+      L_ANKLE_R:    -0.030652
+      L_ANKLE_P:    -0.350679
+      R_CROTCH_Y:   0.010533
+      R_CROTCH_R:   -0.028787
+      R_CROTCH_P:   -0.271191
+      R_KNEE_P:     0.622021
+      R_ANKLE_R:    0.030652
+      R_ANKLE_P:    -0.350679
+
     ref_joint_order:
-      - joint_name1
-      - joint_name2
-      ...
-      - joint_nameN
+      - CHEST_Y
+      - CHEST_P
+      - HEAD_Y
+      - HEAD_P
+      - L_SHOULDER_P
+      - L_SHOULDER_R
+      - L_SHOULDER_Y
+      - L_ELBOW_P
+      - L_ELBOW_Y
+      - L_WRIST_R
+      - L_WRIST_Y
+      - R_SHOULDER_P
+      - R_SHOULDER_R
+      - R_SHOULDER_Y
+      - R_ELBOW_P
+      - R_ELBOW_Y
+      - R_WRIST_R
+      - R_WRIST_Y
+      - L_CROTCH_Y
+      - L_CROTCH_R
+      - L_CROTCH_P
+      - L_KNEE_P
+      - L_ANKLE_R
+      - L_ANKLE_P
+      - R_CROTCH_Y
+      - R_CROTCH_R
+      - R_CROTCH_P
+      - R_KNEE_P
+      - R_ANKLE_R
+      - R_ANKLE_P
 
-  # index 1 : policyName2
-  - use_QP: true
-    policy_step_size: 0.01 # Policy step size in seconds
-    physics_step_size: 0.001 # Physics step size in seconds
-    pd_gains_ratio: 1.0
-
-    action_scale:
-        joint_name1: gain value e.g 100.0
-        joint_name2: gain value e.g 100.0
-        ...
-        joint_nameN: gain value e.g 100.0
-    kp:
-        joint_name1: gain value e.g 100.0
-        joint_name2: gain value e.g 100.0
-        ...
-        joint_nameN: gain value e.g 100.0
-    kd:
-        joint_name1: gain value e.g 100.0
-        joint_name2: gain value e.g 100.0
-        ...
-        joint_nameN: gain value e.g 100.0
-
-    # q0 must respect the joint order used in the RL framework (for action_scale, kp and kd, the joint order does not matter)
-    q0:
-      joint_name1: joint pos value in rad e.g 0.0
-      joint_name2: joint pos value in rad e.g 0.0
-      ...
-      joint_nameN: joint pos value in rad e.g 0.0
-    
-    # The order of joints in action vector (policy output)
-    # Some RL policies may not control all the joints of the robot, in that case, only the controlled joints should be listed here.
-    ref_joint_order:
-      - joint_name1
-      - joint_name2
-      ...
-      - joint_nameN
+use_async_inference: false
+log_timing: true
+timing_log_interval: 100
+log_impact_vel: true
