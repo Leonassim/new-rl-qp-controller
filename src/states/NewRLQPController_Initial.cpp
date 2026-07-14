@@ -16,6 +16,7 @@ bool NewRLQPController_Initial::run(mc_control::fsm::Controller & ctl_)
   ctl.utilsClass.run_rl_state(ctl);
 
   auto pt = ctl.getPostureTask(ctl.robot().name());
+  if(!pt) { return false; }
   auto posture = pt->posture();
   for(int i = 0; i < ctl.nbActuatedJoints; ++i)
   {

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <mc_control/fsm/Controller.h>
+#include <mc_rbdyn/SCHAddon.h>
 
 #include "api.h"
 
@@ -122,6 +123,9 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    */
   Eigen::VectorXd q_rl;
 
+  /** @brief Previous q_rl, used to compute finite-difference velocity in byPassQPControl(). */
+  Eigen::VectorXd q_rl_prev_;
+
    /**
    * @brief Default/reference joint positions loaded from config (q0).
    *
@@ -154,6 +158,16 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    * in a physically meaningful range. Size: nbActuatedJoints.
    */
   Eigen::VectorXd actionScale;
+
+  // =========================================================================
+  // Self-collision distance monitoring
+  // =========================================================================
+
+  /** @brief sch distance pairs mirroring the module minimalSelfCollisions,
+   * evaluated on the realRobot for logging (NewRLQPController_selfcol_dist). */
+  std::vector<std::tuple<std::string, std::string, std::shared_ptr<sch::CD_Pair>>> selfColPairs_;
+  Eigen::VectorXd selfColDists_;
+  void updateSelfCollisionDistances();
 
   // =========================================================================
   // Observation
@@ -239,6 +253,9 @@ private:
   /** @brief Load robot parameters (gains, action scale, q0) from config. */
   void initializeRobot();
 
+  /** @brief Install the constraints needed by the QP backend. */
+  void configureSolverConstraints();
+
   /** @brief Load and validate the ONNX policy, build joint mappings. */
   void configRL();
 
@@ -253,6 +270,17 @@ private:
    */
   bool byPassQPControl();
   bool useQP_ = true; ///< Route torques through CBF-QP (true) or apply directly (false)
+
+  /** @brief Read joystick via datastore and apply velocity ramp to currentVelCmd_. */
+  void updateVelocityCommand();
+
+  // --- Joystick / velocity command ---
+  double maxVelX_          = 0.6;
+  double maxVelY_          = 0.4;
+  double maxYawCmd_        = 0.7;
+  double joystickDeadZone_ = 0.05;
+  double velRampRate_      = 0.5; ///< m/s per second rate limit on velocity command
+  bool   useJoystick_      = true;
 
   /** @brief Log warnings when joint position/velocity/torque limits are exceeded. */
   void computeLimits();

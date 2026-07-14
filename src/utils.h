@@ -92,5 +92,6 @@ struct utils
 
   private:
    std::string state_name_;
-   double syncTime_; ///< Accumulated time since last policy inference (seconds)
+   double syncTime_;    ///< Accumulated time since last policy inference (seconds)
+   int warmupSteps_{0}; ///< Steps remaining before first policy inference
 };

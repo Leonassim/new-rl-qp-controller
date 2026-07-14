@@ -25,7 +25,7 @@ set(controller_HDR
 add_library(${PROJECT_NAME} SHARED ${controller_SRC} ${controller_HDR})
 set_target_properties(${PROJECT_NAME} PROPERTIES COMPILE_FLAGS
                                                  "-DNewRLQPController_EXPORTS")
-target_link_libraries(${PROJECT_NAME} PUBLIC mc_rtc::mc_control_fsm)
+target_link_libraries(${PROJECT_NAME} PUBLIC mc_rtc::mc_control_fsm mc_joystick_plugin::joystick_inputs)
 target_link_libraries(${PROJECT_NAME} 
   PUBLIC
     ${ONNXRUNTIME_LIB}

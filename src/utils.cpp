@@ -10,8 +10,10 @@ void utils::start_rl_state(mc_control::fsm::Controller & ctl_, std::string state
   state_name_ = state_name;
   mc_rtc::log::info("[NewRLQPController::utils] {} state started", state_name);
 
-  syncTime_ = ctl.policyStepSize;
-    
+  // Hold q_zero for 100 ms before first inference so MuJoCo can settle
+  syncTime_ = -0.1;
+  warmupSteps_ = static_cast<int>(0.1 / ctl.timeStep);
+
   if(!ctl.rlPolicy || !ctl.rlPolicy->isLoaded())
   {
     mc_rtc::log::error("[NewRLQPController::utils] RL policy not loaded in {} state", state_name);
@@ -19,6 +21,7 @@ void utils::start_rl_state(mc_control::fsm::Controller & ctl_, std::string state
   }
 
   ctl.initializeRLObservation();
+  ctl.q_rl_prev_ = ctl.q_rl;
 
   mc_rtc::log::success("[NewRLQPController::utils] {} state initialization completed", state_name);
 }
@@ -28,6 +31,11 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
   auto & ctl = static_cast<NewRLQPController&>(ctl_);
   try
   {
+    if(warmupSteps_ > 0)
+    {
+      warmupSteps_--;
+      return; // hold q_rl = q_zero while MuJoCo settles
+    }
     syncTime_ += ctl.timeStep;
     if(syncTime_ >= ctl.policyStepSize)
     {
@@ -61,7 +69,12 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
   };
 
   switch (ctl.currentPolicyIndex) {
-    case 0: // RHPS1 velocity policy — V2 format (510 dims)
+    case 0: // RHPS1 velocity policy — V3 format (126 dims)
+            // mjlab-rhps1 training 2026-07-10_13-52-54: history (length 5,
+            // oldest first) on base_lin_vel and command only, all other terms
+            // current-step: base_lin_vel[15], base_ang_vel[3],
+            // projected_gravity[3], joint_pos[30], joint_vel[30], actions[30],
+            // command[15].
     {
       auto & rr = ctl.realRobot(ctl.robots()[0].name());
       const std::string & baseName = rr.mb().body(0).name();
@@ -100,16 +113,16 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
         ctl.jointVel_[0](j) = rr.mbc().alpha[mcIdx][0];
       }
 
-      // Build observation: oldest first (index HISTORY_SIZE-1 → 0)
+      // Build observation: histories stacked oldest first (index HISTORY_SIZE-1 → 0)
       auto write3 = [&](const Eigen::Vector3d & v)
       { obs.segment(offset, 3) = v; offset += 3; };
 
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.linVel_[i]);
-      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.angVel_[i]);
-      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.projGrav_[i]);
-      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointPos_[i]);
-      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointVel_[i]);
-      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointAct_[i]);
+      write3(ctl.angVel_[0]);
+      write3(ctl.projGrav_[0]);
+      appendToObs(ctl.jointPos_[0]);
+      appendToObs(ctl.jointVel_[0]);
+      appendToObs(ctl.jointAct_[0]);
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.velCmd_[i]);
       break;
     }

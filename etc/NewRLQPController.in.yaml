@@ -14,6 +14,9 @@ robots:
   ground:
     module: env/ground
 
+# Note: mc_rtc always adds the robot module's minimalSelfCollisions in
+# MCController; this section only appends to them. The leg-leg pairs are
+# removed in the controller constructor (they block lateral stepping).
 collisions:
 - type: collision
   useMinimal: true
@@ -23,45 +26,67 @@ ObserverPipelines:
   observers:
     - type: Encoder
       velocity: encoderVelocities
-    - type: BodySensor
+    # WAIKO estimator: IMU + legged odometry (no QP contacts needed).
+    # imuSensor must be the real IMU (Accelerometer, gyro+accelero at the imu
+    # site) -- FloatingBase is the mc_mujoco ground-truth pose sensor.
+    # filterGains/leggedOdometry come from the installed default MCWaiko.yaml.
+    - type: MCWaiko
       update: true
       gui: true
-      bodySensor: FloatingBase
+      imuSensor: Accelerometer
+      contacts:
+        contactsDetection: Surfaces
+        surfacesForContactDetection: [RightFootCenter, LeftFootCenter]
+    # Ground-truth fallback (mc_mujoco perfect pose), for comparison:
+    # - type: BodySensor
+    #   update: true
+    #   gui: true
+    #   bodySensor: FloatingBase
 
 states: {}
 transitions:
 - [NewRLQPController_Initial, OK, NewRLQPController_Initial, Strict]
 init: NewRLQPController_Initial
 
-policy_path: ["/path/to/rhps1_velocity_policy.onnx"]  # Update after installation
+# Bundled policy (installed from policy/ by CMake). For local experiments you
+# can point directly at a training log's ONNX instead, e.g.
+# /home/<user>/mjlab-rhps1/logs/rsl_rl/rhps1_velocity/<run>/<run>.onnx
+policy_path: ["@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx"]
 default_policy_index: 0
 
 policies:
   # index 0 : RHPS1 velocity policy
-  - use_QP: true
+  - use_QP: false
     policy_step_size: 0.005   # 200 Hz (5 ms)
     physics_step_size: 0.004  # mc_mujoco at 250 Hz (4 ms)
     pd_gains_ratio: 1.0
+    # Command ranges of the 2026-07-10_20-59-17 run (completed, final
+    # command_vel curriculum stage).
+    max_vel_x: 0.3
+    max_vel_y: 0.4
+    max_yaw: 0.45
+    joystick_deadzone: 0.05
+    vel_ramp_rate: 0.5
 
     action_scale:
-      CHEST_Y:      0.005
-      CHEST_P:      0.005
-      HEAD_Y:       0.005
-      HEAD_P:       0.005
-      L_SHOULDER_P: 0.005
-      L_SHOULDER_R: 0.005
-      L_SHOULDER_Y: 0.005
-      L_ELBOW_P:    0.005
-      L_ELBOW_Y:    0.005
-      L_WRIST_R:    0.005
-      L_WRIST_Y:    0.005
-      R_SHOULDER_P: 0.005
-      R_SHOULDER_R: 0.005
-      R_SHOULDER_Y: 0.005
-      R_ELBOW_P:    0.005
-      R_ELBOW_Y:    0.005
-      R_WRIST_R:    0.005
-      R_WRIST_Y:    0.005
+      CHEST_Y:      0.002
+      CHEST_P:      0.002
+      HEAD_Y:       0.002
+      HEAD_P:       0.002
+      L_SHOULDER_P: 0.002
+      L_SHOULDER_R: 0.002
+      L_SHOULDER_Y: 0.002
+      L_ELBOW_P:    0.002
+      L_ELBOW_Y:    0.002
+      L_WRIST_R:    0.002
+      L_WRIST_Y:    0.002
+      R_SHOULDER_P: 0.002
+      R_SHOULDER_R: 0.002
+      R_SHOULDER_Y: 0.002
+      R_ELBOW_P:    0.002
+      R_ELBOW_Y:    0.002
+      R_WRIST_R:    0.002
+      R_WRIST_Y:    0.002
       L_CROTCH_Y:   0.002625
       L_CROTCH_R:   0.0075
       L_CROTCH_P:   0.0105
