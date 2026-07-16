@@ -1,5 +1,7 @@
 #include "NewRLQPController.h"
 
+#include <algorithm>
+
 #include <RBDyn/MultiBodyConfig.h>
 #include <mc_joystick_plugin/joystick_inputs.h>
 
