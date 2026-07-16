@@ -93,5 +93,13 @@ struct utils
   private:
    std::string state_name_;
    double syncTime_;    ///< Accumulated time since last policy inference (seconds)
-   int warmupSteps_{0}; ///< Steps remaining before first policy inference
+   int warmupSteps_{0}; ///< Steps holding the measured start posture (sim settling)
+   /// Go-to-init ramp: q_rl is interpolated from the measured posture to
+   /// q_zero before the first inference, so a policy whose default pose
+   /// differs from the robot module's stance does not get a PD target jump
+   /// (observed: knee 0.622 -> 0.40 snap at 20 kN/rad slammed the velocity
+   /// limits before the policy even ran).
+   int rampSteps_{0};          ///< Ramp steps remaining
+   int rampTotalSteps_{0};     ///< Total ramp steps
+   Eigen::VectorXd rampStartQ_; ///< Measured posture at state start (q_rl indexing)
 };

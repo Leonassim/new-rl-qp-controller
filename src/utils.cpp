@@ -10,7 +10,8 @@ void utils::start_rl_state(mc_control::fsm::Controller & ctl_, std::string state
   state_name_ = state_name;
   mc_rtc::log::info("[NewRLQPController::utils] {} state started", state_name);
 
-  // Hold q_zero for 100 ms before first inference so MuJoCo can settle
+  // Hold the measured posture for 100 ms (sim settling), then ramp to q_zero
+  // before the first inference.
   syncTime_ = -0.1;
   warmupSteps_ = static_cast<int>(0.1 / ctl.timeStep);
 
@@ -19,6 +20,32 @@ void utils::start_rl_state(mc_control::fsm::Controller & ctl_, std::string state
     mc_rtc::log::error("[NewRLQPController::utils] RL policy not loaded in {} state", state_name);
     return;
   }
+
+  // Capture the measured posture so the PD target starts where the robot is
+  // (the policy's q_zero may differ from the module stance the robot spawns in).
+  auto & rr = ctl.realRobot(ctl.robots()[0].name());
+  rampStartQ_ = ctl.q_zero;
+  for(size_t i = 0; i < ctl.jointNames.size(); ++i)
+  {
+    const auto & name = ctl.jointNames[i];
+    if(rr.hasJoint(name))
+    {
+      const int mcIdx = static_cast<int>(rr.jointIndexByName(name));
+      if(!rr.mbc().q[mcIdx].empty()) { rampStartQ_(i) = rr.mbc().q[mcIdx][0]; }
+    }
+  }
+  ctl.q_rl = rampStartQ_;
+
+  // Ramp duration scales with the largest joint offset (~0.15 rad/s, capped
+  // at 2 s); if the policy's q_zero matches the spawn posture (old policies)
+  // the ramp is skipped entirely.
+  const double maxOffset = (rampStartQ_ - ctl.q_zero).cwiseAbs().maxCoeff();
+  const double rampDuration = maxOffset < 0.02 ? 0.0 : std::min(2.0, maxOffset / 0.15);
+  rampTotalSteps_ = std::max(1, static_cast<int>(rampDuration / ctl.timeStep));
+  rampSteps_ = rampDuration > 0.0 ? rampTotalSteps_ : 0;
+  mc_rtc::log::info(
+      "[NewRLQPController::utils] go-to-init ramp: max offset {:.3f} rad, duration {:.2f} s",
+      maxOffset, rampDuration);
 
   ctl.initializeRLObservation();
   ctl.q_rl_prev_ = ctl.q_rl;
@@ -34,7 +61,15 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
     if(warmupSteps_ > 0)
     {
       warmupSteps_--;
-      return; // hold q_rl = q_zero while MuJoCo settles
+      return; // hold q_rl = measured start posture while MuJoCo settles
+    }
+    if(rampSteps_ > 0)
+    {
+      rampSteps_--;
+      const double alpha =
+          1.0 - static_cast<double>(rampSteps_) / static_cast<double>(rampTotalSteps_);
+      ctl.q_rl = (1.0 - alpha) * rampStartQ_ + alpha * ctl.q_zero;
+      return; // go-to-init: reach q_zero before the first inference
     }
     syncTime_ += ctl.timeStep;
     if(syncTime_ >= ctl.policyStepSize)
@@ -69,7 +104,8 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
   };
 
   switch (ctl.currentPolicyIndex) {
-    case 0: // RHPS1 velocity policy — V3 format (126 dims)
+    case 0: // RHPS1 velocity policies — V3 format (126 dims)
+    case 1: // (index 1 = live training checkpoint, same V3 observation)
             // mjlab-rhps1 training 2026-07-10_13-52-54: history (length 5,
             // oldest first) on base_lin_vel and command only, all other terms
             // current-step: base_lin_vel[15], base_ang_vel[3],
@@ -124,42 +160,6 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       appendToObs(ctl.jointVel_[0]);
       appendToObs(ctl.jointAct_[0]);
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.velCmd_[i]);
-      break;
-    }
-    case 1: // PolicyName2.onnx observation example 
-    {
-      // // shift history: t-2 <- t-1 <- t
-      // for (int i = ctl.HISTORY_SIZE - 1; i > 0; --i) {
-      //     ctl.linVel[i] = ctl.linVel[i - 1];
-      //     ctl.angVel[i] = ctl.angVel[i - 1];
-      //     ctl.projectedGravity[i] = ctl.projectedGravity[i - 1];
-      //     ctl.velCmd[i] = ctl.velCmd[i - 1];
-      //     ctl.jointPos[i] = ctl.jointPos[i - 1];
-      //     ctl.jointVel[i] = ctl.jointVel[i - 1];
-      //     ctl.jointAction[i] = ctl.jointAction[i - 1];
-      // }
-
-      // ctl.initializeRLObservation(); // update t with current observation
-
-      // // Older observation first (t-2, t-1, t) --> mjlab order
-      // for (int i = ctl.HISTORY_SIZE - 1; i >= 0; --i) appendToObs(ctl.linVel[i]);
-      // for (int i = ctl.HISTORY_SIZE - 1; i >= 0; --i) appendToObs(ctl.angVel[i]);
-      // for (int i = ctl.HISTORY_SIZE - 1; i >= 0; --i) appendToObs(ctl.projectedGravity[i]);
-      // for (int i = ctl.HISTORY_SIZE - 1; i >= 0; --i) appendToObs(ctl.jointPos[i]);
-      // for (int i = ctl.HISTORY_SIZE - 1; i >= 0; --i) appendToObs(ctl.jointVel[i]);
-      // for (int i = ctl.HISTORY_SIZE - 1; i >= 0; --i) appendToObs(ctl.footContactForces[i]);
-      // for (int i = ctl.HISTORY_SIZE - 1; i >= 0; --i) appendToObs(ctl.jointAction[i]);
-      // for (int i = ctl.HISTORY_SIZE - 1; i >= 0; --i) appendToObs(ctl.velCmd[i]);
-
-      // // Newer observation first (t, t-1, t-2)
-      // // for (int i = 0; i < ctl.HISTORY_SIZE; ++i) appendToObs(ctl.linVel[i]);
-      // // for (int i = 0; i < ctl.HISTORY_SIZE; ++i) appendToObs(ctl.angVel[i]);
-      // // for (int i = 0; i < ctl.HISTORY_SIZE; ++i) appendToObs(ctl.projectedGravity[i]);
-      // // for (int i = 0; i < ctl.HISTORY_SIZE; ++i) appendToObs(ctl.jointPos[i]);
-      // // for (int i = 0; i < ctl.HISTORY_SIZE; ++i) appendToObs(ctl.jointVel[i]);
-      // // for (int i = 0; i < ctl.HISTORY_SIZE; ++i) appendToObs(ctl.footContactForces[i]);
-      // // for (int i = 0; i < ctl.HISTORY_SIZE; ++i) appendToObs(ctl.jointAction[i]);
-      // // for (int i = 0; i < ctl.HISTORY_SIZE; ++i) appendToObs(ctl.velCmd[i]);
       break;
     }
     default:

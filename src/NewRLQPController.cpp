@@ -131,6 +131,9 @@ void NewRLQPController::initializeRobot()
   maxYawCmd_        = config_("policies")[currentPolicyIndex]("max_yaw",           0.7);
   joystickDeadZone_ = config_("policies")[currentPolicyIndex]("joystick_deadzone", 0.05);
   velRampRate_      = config_("policies")[currentPolicyIndex]("vel_ramp_rate",     0.5);
+  // Matches the training actuator's velocity_target_limit (rad/s): clamp on
+  // the finite-difference velocity feedforward in byPassQPControl().
+  velTargetLimit_   = config_("policies")[currentPolicyIndex]("vel_target_limit",  8.0);
 
   double policyDt = config_("policies")[currentPolicyIndex]("policy_step_size", 0.005);
   double K = 0.2 / (policyDt * timeStep);
@@ -218,8 +221,16 @@ bool NewRLQPController::byPassQPControl()
   for(int i = 0; i < nbActuatedJoints; ++i)
   {
     const int idx = robot().jointIndexByName(jointNames[i]);
-    robot().mbc().q[idx][0]     = q_rl(i);
-    robot().mbc().alpha[idx][0] = (q_rl(i) - q_rl_prev_(i)) / timeStep;
+    robot().mbc().q[idx][0] = q_rl(i);
+    // Velocity feedforward from finite differences of the position target.
+    // Clamped like the training actuator (FiniteDifferencePdActuator
+    // velocity_target_limit): a policy-step target jump of 0.1 rad otherwise
+    // becomes a 20+ rad/s velocity target and the kd term injects torque
+    // kicks the policy never experienced in training (observed: hip-yaw
+    // blow-up at the first inference of the 2026-07-16 checkpoint).
+    const double alphaRaw = (q_rl(i) - q_rl_prev_(i)) / timeStep;
+    robot().mbc().alpha[idx][0] =
+        std::max(-velTargetLimit_, std::min(velTargetLimit_, alphaRaw));
   }
   q_rl_prev_ = q_rl;
   return true;

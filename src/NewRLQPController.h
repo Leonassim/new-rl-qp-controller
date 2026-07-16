@@ -280,6 +280,7 @@ private:
   double maxYawCmd_        = 0.7;
   double joystickDeadZone_ = 0.05;
   double velRampRate_      = 0.5; ///< m/s per second rate limit on velocity command
+  double velTargetLimit_   = 8.0; ///< rad/s clamp on the finite-difference velocity feedforward (training actuator velocity_target_limit)
   bool   useJoystick_      = true;
 
   /** @brief Log warnings when joint position/velocity/torque limits are exceeded. */
