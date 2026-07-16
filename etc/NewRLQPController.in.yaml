@@ -51,7 +51,12 @@ init: NewRLQPController_Initial
 # Bundled policy (installed from policy/ by CMake). For local experiments you
 # can point directly at a training log's ONNX instead, e.g.
 # /home/<user>/mjlab-rhps1/logs/rsl_rl/rhps1_velocity/<run>/<run>.onnx
-policy_path: ["@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx"]
+policy_path: [
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
+  # Live ONNX of the in-progress gSDE+clamp run (re-exported every 150
+  # iters while training). Machine-local test entry.
+  "/home/lmoussafir/mjlab-rhps1/logs/rsl_rl/rhps1_velocity/2026-07-16_13-09-01/2026-07-16_13-09-01.onnx",
+]
 default_policy_index: 0
 
 policies:
@@ -195,6 +200,180 @@ policies:
       R_KNEE_P:     0.622021
       R_ANKLE_R:    0.030652
       R_ANKLE_P:    -0.350679
+
+    ref_joint_order:
+      - CHEST_Y
+      - CHEST_P
+      - HEAD_Y
+      - HEAD_P
+      - L_SHOULDER_P
+      - L_SHOULDER_R
+      - L_SHOULDER_Y
+      - L_ELBOW_P
+      - L_ELBOW_Y
+      - L_WRIST_R
+      - L_WRIST_Y
+      - R_SHOULDER_P
+      - R_SHOULDER_R
+      - R_SHOULDER_Y
+      - R_ELBOW_P
+      - R_ELBOW_Y
+      - R_WRIST_R
+      - R_WRIST_Y
+      - L_CROTCH_Y
+      - L_CROTCH_R
+      - L_CROTCH_P
+      - L_KNEE_P
+      - L_ANKLE_R
+      - L_ANKLE_P
+      - R_CROTCH_Y
+      - R_CROTCH_R
+      - R_CROTCH_P
+      - R_KNEE_P
+      - R_ANKLE_R
+      - R_ANKLE_P
+
+  # index 1 : live checkpoint of run 2026-07-16_13-09-01 (held noise +
+  # mirror symmetry + reward clamp). Scales/q0 taken from the ONNX
+  # metadata: x4 leg action scales and the straighter-knee keyframe
+  # (KNEE_P 0.40). max_vel matches curriculum stage 2 of that run.
+  - use_QP: false
+    policy_step_size: 0.005
+    physics_step_size: 0.004
+    pd_gains_ratio: 1.0
+    max_vel_x: 0.3
+    max_vel_y: 0.25
+    max_yaw: 0.35
+    joystick_deadzone: 0.05
+    vel_ramp_rate: 0.5
+
+    action_scale:
+      CHEST_Y:      0.002
+      CHEST_P:      0.002
+      HEAD_Y:       0.002
+      HEAD_P:       0.002
+      L_SHOULDER_P: 0.002
+      L_SHOULDER_R: 0.002
+      L_SHOULDER_Y: 0.002
+      L_ELBOW_P:    0.002
+      L_ELBOW_Y:    0.002
+      L_WRIST_R:    0.002
+      L_WRIST_Y:    0.002
+      R_SHOULDER_P: 0.002
+      R_SHOULDER_R: 0.002
+      R_SHOULDER_Y: 0.002
+      R_ELBOW_P:    0.002
+      R_ELBOW_Y:    0.002
+      R_WRIST_R:    0.002
+      R_WRIST_Y:    0.002
+      L_CROTCH_Y:   0.007
+      L_CROTCH_R:   0.02
+      L_CROTCH_P:   0.028
+      L_KNEE_P:     0.02
+      L_ANKLE_R:    0.018
+      L_ANKLE_P:    0.026
+      R_CROTCH_Y:   0.007
+      R_CROTCH_R:   0.02
+      R_CROTCH_P:   0.028
+      R_KNEE_P:     0.02
+      R_ANKLE_R:    0.018
+      R_ANKLE_P:    0.026
+
+    kp:
+      L_CROTCH_Y:   20000.0
+      L_CROTCH_R:   20000.0
+      L_CROTCH_P:   20000.0
+      L_KNEE_P:     20000.0
+      L_ANKLE_R:    10000.0
+      L_ANKLE_P:    10000.0
+      CHEST_Y:      44000.0
+      CHEST_P:      44000.0
+      R_CROTCH_Y:   20000.0
+      R_CROTCH_R:   20000.0
+      R_CROTCH_P:   20000.0
+      R_KNEE_P:     20000.0
+      R_ANKLE_R:    10000.0
+      R_ANKLE_P:    10000.0
+      HEAD_Y:       2000.0
+      HEAD_P:       2000.0
+      L_SHOULDER_P: 15000.0
+      L_SHOULDER_R: 14000.0
+      L_SHOULDER_Y: 14000.0
+      L_ELBOW_P:    14000.0
+      L_ELBOW_Y:    14000.0
+      L_WRIST_R:    14000.0
+      L_WRIST_Y:    14000.0
+      R_SHOULDER_P: 15000.0
+      R_SHOULDER_R: 14000.0
+      R_SHOULDER_Y: 14000.0
+      R_ELBOW_P:    14000.0
+      R_ELBOW_Y:    14000.0
+      R_WRIST_R:    14000.0
+      R_WRIST_Y:    14000.0
+
+    kd:
+      L_CROTCH_Y:   400.0
+      L_CROTCH_R:   400.0
+      L_CROTCH_P:   400.0
+      L_KNEE_P:     400.0
+      L_ANKLE_R:    300.0
+      L_ANKLE_P:    300.0
+      CHEST_Y:      440.0
+      CHEST_P:      440.0
+      R_CROTCH_Y:   400.0
+      R_CROTCH_R:   400.0
+      R_CROTCH_P:   400.0
+      R_KNEE_P:     400.0
+      R_ANKLE_R:    300.0
+      R_ANKLE_P:    300.0
+      HEAD_Y:       50.0
+      HEAD_P:       50.0
+      L_SHOULDER_P: 240.0
+      L_SHOULDER_R: 240.0
+      L_SHOULDER_Y: 240.0
+      L_ELBOW_P:    240.0
+      L_ELBOW_Y:    240.0
+      L_WRIST_R:    240.0
+      L_WRIST_Y:    240.0
+      R_SHOULDER_P: 240.0
+      R_SHOULDER_R: 240.0
+      R_SHOULDER_Y: 240.0
+      R_ELBOW_P:    240.0
+      R_ELBOW_Y:    240.0
+      R_WRIST_R:    240.0
+      R_WRIST_Y:    240.0
+
+    q0:
+      CHEST_Y:      0.0
+      CHEST_P:      0.0
+      HEAD_Y:       0.0
+      HEAD_P:       0.0
+      L_SHOULDER_P: 0.261799
+      L_SHOULDER_R: 0.174533
+      L_SHOULDER_Y: -0.087266
+      L_ELBOW_P:    -0.523599
+      L_ELBOW_Y:    0.0
+      L_WRIST_R:    0.0
+      L_WRIST_Y:    0.0
+      R_SHOULDER_P: 0.261799
+      R_SHOULDER_R: -0.174533
+      R_SHOULDER_Y: 0.087266
+      R_ELBOW_P:    -0.523599
+      R_ELBOW_Y:    0.0
+      R_WRIST_R:    0.0
+      R_WRIST_Y:    0.0
+      L_CROTCH_Y:   -0.010533
+      L_CROTCH_R:   0.028787
+      L_CROTCH_P:   -0.153229
+      L_KNEE_P:     0.40
+      L_ANKLE_R:    -0.030652
+      L_ANKLE_P:    -0.246771
+      R_CROTCH_Y:   0.010533
+      R_CROTCH_R:   -0.028787
+      R_CROTCH_P:   -0.153229
+      R_KNEE_P:     0.40
+      R_ANKLE_R:    0.030652
+      R_ANKLE_P:    -0.246771
 
     ref_joint_order:
       - CHEST_Y
