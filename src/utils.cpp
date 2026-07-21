@@ -106,6 +106,7 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
   switch (ctl.currentPolicyIndex) {
     case 0: // RHPS1 velocity policies — V3 format (126 dims)
     case 1: // (index 1 = live training checkpoint, same V3 observation)
+    case 2: // (index 2 = live training checkpoint, same V3 observation)
             // mjlab-rhps1 training 2026-07-10_13-52-54: history (length 5,
             // oldest first) on base_lin_vel and command only, all other terms
             // current-step: base_lin_vel[15], base_ang_vel[3],
