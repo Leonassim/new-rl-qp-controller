@@ -53,10 +53,10 @@ init: NewRLQPController_Initial
 # /home/<user>/mjlab-rhps1/logs/rsl_rl/rhps1_velocity/<run>/<run>.onnx
 policy_path: [
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
-  # 2026-07-19_13-07-05 (finished, x5 leg scale): fallback config + mirror
-  # loss + straight knees + anti-oscillation curriculum. Machine-local test
-  # entry.
-  "/home/lmoussafir/mjlab-rhps1/logs/rsl_rl/rhps1_velocity/2026-07-19_13-07-05/2026-07-19_13-07-05.onnx",
+  # 2026-07-22_15-35-01, iter ~2900/15000 (in progress, x1.5 leg scale): bent
+  # knee keyframe, tightened ankle pitch pose std, dense air_time. Bundled
+  # (portable) so it can be pulled and tested on another machine.
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_2026-07-22_15-35-01.onnx",
   # 2026-07-20_08-37-35 (finished, x6 leg scale): best run to date -- lowest
   # pd_demand ratio ever (0.31 final) *and* better amplitude than every
   # prior run (foot speed 0.276-0.279 m/s final). Machine-local test entry.
@@ -273,17 +273,20 @@ policies:
       - R_ANKLE_R
       - R_ANKLE_P
 
-  # index 1 : 2026-07-19_13-07-05 (x5 leg scale). Scales/q0 verified against
-  # the ONNX metadata. max_vel matches the run's final command_vel
-  # curriculum stage.
+  # index 1 : 2026-07-22_15-35-01, iter ~2900/15000, in progress (x1.5 leg
+  # scale). Scales/q0 pulled directly from rhps1_constants.py (source of
+  # truth, more precise than the ONNX metadata's 3-decimal rounding).
+  # max_vel matches the run's current command_vel curriculum stage --
+  # re-check against a later checkpoint's ONNX metadata once training
+  # finishes.
   - use_QP: false
     clip_torque: false  # set true (with mc_mujoco --torque-control) to clip like mjlab training
     policy_step_size: 0.005
     physics_step_size: 0.004
     pd_gains_ratio: 1.0
     max_vel_x: 0.3
-    max_vel_y: 0.4
-    max_yaw: 0.45
+    max_vel_y: 0.25
+    max_yaw: 0.35
     joystick_deadzone: 0.05
     vel_ramp_rate: 0.5
 
@@ -306,18 +309,18 @@ policies:
       R_ELBOW_Y:    0.002
       R_WRIST_R:    0.002
       R_WRIST_Y:    0.002
-      L_CROTCH_Y:   0.009
-      L_CROTCH_R:   0.025
-      L_CROTCH_P:   0.035
-      L_KNEE_P:     0.025
-      L_ANKLE_R:    0.023
-      L_ANKLE_P:    0.032
-      R_CROTCH_Y:   0.009
-      R_CROTCH_R:   0.025
-      R_CROTCH_P:   0.035
-      R_KNEE_P:     0.025
-      R_ANKLE_R:    0.023
-      R_ANKLE_P:    0.032
+      L_CROTCH_Y:   0.002625
+      L_CROTCH_R:   0.0075
+      L_CROTCH_P:   0.0105
+      L_KNEE_P:     0.0075
+      L_ANKLE_R:    0.00675
+      L_ANKLE_P:    0.00975
+      R_CROTCH_Y:   0.002625
+      R_CROTCH_R:   0.0075
+      R_CROTCH_P:   0.0105
+      R_KNEE_P:     0.0075
+      R_ANKLE_R:    0.00675
+      R_ANKLE_P:    0.00975
 
     kp:
       L_CROTCH_Y:   20000.0
@@ -438,16 +441,16 @@ policies:
       R_WRIST_Y:    0.0
       L_CROTCH_Y:   -0.010533
       L_CROTCH_R:   0.028787
-      L_CROTCH_P:   -0.153229
-      L_KNEE_P:     0.40
+      L_CROTCH_P:   -0.196399
+      L_KNEE_P:     0.487266
       L_ANKLE_R:    -0.030652
-      L_ANKLE_P:    -0.246771
+      L_ANKLE_P:    -0.290867
       R_CROTCH_Y:   0.010533
       R_CROTCH_R:   -0.028787
-      R_CROTCH_P:   -0.153229
-      R_KNEE_P:     0.40
+      R_CROTCH_P:   -0.196399
+      R_KNEE_P:     0.487266
       R_ANKLE_R:    0.030652
-      R_ANKLE_P:    -0.246771
+      R_ANKLE_P:    -0.290867
 
     ref_joint_order:
       - CHEST_Y
