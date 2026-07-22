@@ -265,11 +265,28 @@ private:
    /**
    * @brief Apply RL torques directly, bypassing the QP (useQP=false mode).
    *
-   * Computes τ = Kp*(q_rl - q) - Kd*q̇ and writes it to robot().mbc().jointTorque.
+   * Writes position/velocity targets to robot().mbc().q/alpha (mc_mujoco's own
+   * PD servo computes the applied torque from these, unclamped). When
+   * clipTorque_ is also true, additionally computes
+   * τ = Kp*(q_rl - q) - Kd*q̇, clips it to ±effortLimit_ (matching the mjlab
+   * training actuator), and writes it to robot().mbc().jointTorque -- mc_mujoco
+   * only honors this when launched with --torque-control, in which case it
+   * uses this torque directly instead of its own internal PD.
    * @return true if bypass was applied, false if QP should run instead.
    */
   bool byPassQPControl();
   bool useQP_ = true; ///< Route torques through CBF-QP (true) or apply directly (false)
+
+  /**
+   * @brief Clip the bypass-mode torque to effortLimit_, like the mjlab
+   * training actuator (FiniteDifferencePdActuator). Only takes effect when
+   * useQP_ is false, and only has an observable effect in mc_mujoco if it was
+   * launched with --torque-control.
+   */
+  bool clipTorque_ = false;
+
+  /** @brief Per-joint torque limit (N.m), matching mjlab's RHPS1_ACTUATOR_* effort_limit. */
+  Eigen::VectorXd effortLimit_;
 
   /** @brief Read joystick via datastore and apply velocity ramp to currentVelCmd_. */
   void updateVelocityCommand();

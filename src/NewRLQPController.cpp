@@ -91,7 +91,8 @@ void NewRLQPController::reset(const mc_control::ControllerResetData & reset_data
 
 void NewRLQPController::initializeRobot()
 {
-  useQP_    = config_("policies")[currentPolicyIndex]("use_QP", true);
+  useQP_      = config_("policies")[currentPolicyIndex]("use_QP", true);
+  clipTorque_ = config_("policies")[currentPolicyIndex]("clip_torque", false);
   robotName_ = robot().name();
   jointNames = robot().refJointOrder();
   nbActuatedJoints = jointNames.size();
@@ -105,12 +106,14 @@ void NewRLQPController::initializeRobot()
   kd_    = Eigen::VectorXd::Zero(nbActuatedJoints);
   kpBase_ = Eigen::VectorXd::Zero(nbActuatedJoints);
   kdBase_ = Eigen::VectorXd::Zero(nbActuatedJoints);
+  effortLimit_ = Eigen::VectorXd::Zero(nbActuatedJoints);
 
   pdGainsRatio_ = config_("policies")[currentPolicyIndex]("pd_gains_ratio", 1.0);
   std::map<std::string, double> actionScale_map = config_("policies")[currentPolicyIndex]("action_scale");
   std::map<std::string, double> kp_map = config_("policies")[currentPolicyIndex]("kp");
   std::map<std::string, double> kd_map = config_("policies")[currentPolicyIndex]("kd");
   q0_map_ = config_("policies")[currentPolicyIndex]("q0");
+  std::map<std::string, double> effortLimit_map = config_("policies")[currentPolicyIndex]("effort_limit", std::map<std::string, double>{});
 
   auto updateIfExists = [&](auto & target, const auto & map, const std::string & joint_name)
   {
@@ -123,6 +126,12 @@ void NewRLQPController::initializeRobot()
     kdBase_[i]  = kd_map.at(jointNames[i]);
     q_zero[i]   = q0_map_.at(jointNames[i]);
     updateIfExists(actionScale[i], actionScale_map, jointNames[i]);
+    updateIfExists(effortLimit_[i], effortLimit_map, jointNames[i]);
+  }
+  if(clipTorque_ && effortLimit_map.empty())
+  {
+    mc_rtc::log::error_and_throw(
+        "[NewRLQPController] clip_torque is true but no 'effort_limit' map was provided in config.");
   }
 
   kp_ = pdGainsRatio_ * kpBase_;
@@ -220,6 +229,7 @@ bool NewRLQPController::byPassQPControl()
 {
   if(useQP_) return false;
 
+  auto & rr = realRobot(robots()[0].name());
   for(int i = 0; i < nbActuatedJoints; ++i)
   {
     const int idx = robot().jointIndexByName(jointNames[i]);
@@ -233,6 +243,23 @@ bool NewRLQPController::byPassQPControl()
     const double alphaRaw = (q_rl(i) - q_rl_prev_(i)) / timeStep;
     robot().mbc().alpha[idx][0] =
         std::max(-velTargetLimit_, std::min(velTargetLimit_, alphaRaw));
+
+    // Torque-clipped mode: only takes effect in mc_mujoco when launched with
+    // --torque-control, which then uses this value directly instead of its
+    // own internal (unclamped) PD from q/alpha. Left at zero otherwise, so
+    // mc_mujoco falls back to its normal unclamped behavior.
+    if(clipTorque_)
+    {
+      const double q_meas  = rr.mbc().q[idx][0];
+      const double qd_meas = rr.mbc().alpha[idx][0];
+      const double tau = kp_(i) * (q_rl(i) - q_meas) - kd_(i) * qd_meas;
+      robot().mbc().jointTorque[idx][0] =
+          std::max(-effortLimit_(i), std::min(effortLimit_(i), tau));
+    }
+    else
+    {
+      robot().mbc().jointTorque[idx][0] = 0.0;
+    }
   }
   q_rl_prev_ = q_rl;
   return true;
@@ -287,6 +314,17 @@ void NewRLQPController::addLog()
   logger().addLogEntry("NewRLQPController_RL_currentAction", [this]() { return currentAction; });
   logger().addLogEntry("NewRLQPController_RL_actionScale",   [this]() { return actionScale; });
   logger().addLogEntry("NewRLQPController_useQP",            [this]() { return useQP_; });
+  logger().addLogEntry("NewRLQPController_clipTorque",       [this]() { return clipTorque_; });
+  logger().addLogEntry("NewRLQPController_effortLimit",      [this]() { return effortLimit_; });
+  logger().addLogEntry("NewRLQPController_RL_jointTorque", [this]() {
+    Eigen::VectorXd tau = Eigen::VectorXd::Zero(nbActuatedJoints);
+    for(int i = 0; i < nbActuatedJoints; ++i)
+    {
+      const int idx = robot().jointIndexByName(jointNames[i]);
+      tau(i) = robot().mbc().jointTorque[idx][0];
+    }
+    return tau;
+  });
   logger().addLogEntry("NewRLQPController_velCmd",           [this]() { return currentVelCmd_; });
   // Per-joint gap between the RL target and the measured position (refJointOrder).
   // With QP on, a joint whose gap grows/saturates is being clamped by a QP
@@ -324,6 +362,9 @@ void NewRLQPController::addGui()
   gui()->addElement({"ControlMode"},
     mc_rtc::gui::Button("Toggle QP Control",       [this]() { useQP_ = !useQP_; }),
     mc_rtc::gui::Label("QP Control",               [this]() { return useQP_ ? "Enforced" : "Bypassed"; }),
+    // Only observable in mc_mujoco when launched with --torque-control.
+    mc_rtc::gui::Button("Toggle Torque Clip",      [this]() { clipTorque_ = !clipTorque_; }),
+    mc_rtc::gui::Label("Torque Clip (bypass mode)", [this]() { return clipTorque_ ? "Enforced" : "Unclamped"; }),
     mc_rtc::gui::Button("Toggle print limits",     [this]() { printLimits_ = !printLimits_; }),
     mc_rtc::gui::Label("Print joint limits",       [this]() { return printLimits_ ? "Enabled" : "Disabled"; })
   );
