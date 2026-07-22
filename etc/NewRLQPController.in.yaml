@@ -62,7 +62,7 @@ policy_path: [
   # prior run (foot speed 0.276-0.279 m/s final). Machine-local test entry.
   "/home/lmoussafir/mjlab-rhps1/logs/rsl_rl/rhps1_velocity/2026-07-20_08-37-35/2026-07-20_08-37-35.onnx",
 ]
-default_policy_index: 1
+default_policy_index: 0
 
 policies:
   # index 0 : RHPS1 velocity policy
