@@ -84,6 +84,7 @@ void NewRLQPController::reset(const mc_control::ControllerResetData & reset_data
   q_rl       = q_zero;
   q_rl_prev_ = q_zero;
   currentVelCmd_.setZero();
+  gaitPhase_ = 0.0;
   histInitialized_ = false;
 
   mc_rtc::log::success("NewRLQPController reset completed");
@@ -145,6 +146,14 @@ void NewRLQPController::initializeRobot()
   // Matches the training actuator's velocity_target_limit (rad/s): clamp on
   // the finite-difference velocity feedforward in byPassQPControl().
   velTargetLimit_   = config_("policies")[currentPolicyIndex]("vel_target_limit",  8.0);
+
+  // Gait phase clock (see NewRLQPController.h). Defaults are inert for
+  // policies that don't use it -- gaitFGait_=0 would freeze the phase
+  // forever, but the observation-size check in getCurrentObservation()
+  // never fills/reads it for those anyway.
+  gaitFGait_             = config_("policies")[currentPolicyIndex]("gait_f_gait", 1.0);
+  gaitSwingRatio_         = config_("policies")[currentPolicyIndex]("gait_swing_ratio", 0.5);
+  gaitCommandThreshold_   = config_("policies")[currentPolicyIndex]("gait_command_threshold", 0.1);
 
   double policyDt = config_("policies")[currentPolicyIndex]("policy_step_size", 0.005);
   double K = 0.2 / (policyDt * timeStep);

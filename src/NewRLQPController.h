@@ -191,6 +191,23 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
 
   Eigen::Vector3d currentVelCmd_ = Eigen::Vector3d::Zero();
 
+  /**
+   * @brief Gait phase clock, mirroring mjlab's mdp.gait_phase_tracking.
+   *
+   * Only meaningful for policies whose observation includes a trailing
+   * gait_phase term (detected at runtime in utils::getCurrentObservation()
+   * by comparing the filled offset against the policy's declared
+   * observation size) -- older checkpoints (V3, no gait clock) simply never
+   * touch these fields. Advances by gaitFGait_ * policyStepSize per
+   * inference step while the commanded speed exceeds
+   * gaitCommandThreshold_, frozen otherwise. Right foot is this phase + 0.5
+   * (see mjlab's gait_phase_tracking/gait_phase_obs docstrings for why).
+   */
+  double gaitPhase_ = 0.0;
+  double gaitFGait_ = 1.0;
+  double gaitSwingRatio_ = 0.5;
+  double gaitCommandThreshold_ = 0.1;
+
   // =========================================================================
   // Policy / timing
   // =========================================================================

@@ -1,4 +1,6 @@
 #include "utils.h"
+#include <algorithm>
+#include <cmath>
 #include <Eigen/src/Core/Matrix.h>
 #include <mc_rtc/logging.h>
 
@@ -104,14 +106,17 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
   };
 
   switch (ctl.currentPolicyIndex) {
-    case 0: // RHPS1 velocity policies — V3 format (126 dims)
-    case 1: // (index 1 = live training checkpoint, same V3 observation)
-    case 2: // (index 2 = live training checkpoint, same V3 observation)
+    case 0: // RHPS1 velocity policies — V3 base format (126 dims)
+    case 1: // (index 1 = live training checkpoint, V3 + trailing gait_phase, 130 dims)
+    case 2: // (index 2 = live training checkpoint, same V3 base observation)
             // mjlab-rhps1 training 2026-07-10_13-52-54: history (length 5,
             // oldest first) on base_lin_vel and command only, all other terms
             // current-step: base_lin_vel[15], base_ang_vel[3],
             // projected_gravity[3], joint_pos[30], joint_vel[30], actions[30],
-            // command[15].
+            // command[15]. Some checkpoints append a further gait_phase[4]
+            // (see the offset < obs.size() block below) -- detected from the
+            // ONNX's declared observation size, not the policy index, so
+            // this one case body serves both variants.
     {
       auto & rr = ctl.realRobot(ctl.robots()[0].name());
       const std::string & baseName = rr.mb().body(0).name();
@@ -161,6 +166,29 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       appendToObs(ctl.jointVel_[0]);
       appendToObs(ctl.jointAct_[0]);
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.velCmd_[i]);
+
+      // gait_phase: trailing term on checkpoints trained with mjlab's
+      // Periodic Reward Composition clock (mdp.gait_phase_tracking /
+      // gait_phase_obs), absent on older V3 checkpoints. Detected here by
+      // the leftover offset rather than a separate switch case, since
+      // everything upstream (history buffers, joint mapping) is identical
+      // -- only this trailing block differs.
+      if(offset < obs.size())
+      {
+        const double linearSpeed = ctl.currentVelCmd_.head<2>().norm();
+        const double angularNorm = std::abs(ctl.currentVelCmd_.z());
+        const double totalCommand = linearSpeed + angularNorm;
+        const double amplitude = std::clamp(totalCommand / ctl.gaitCommandThreshold_, 0.0, 1.0);
+        if(totalCommand > ctl.gaitCommandThreshold_)
+        {
+          ctl.gaitPhase_ = std::fmod(ctl.gaitPhase_ + ctl.gaitFGait_ * ctl.policyStepSize, 1.0);
+        }
+        const double angleLeft  = 2.0 * M_PI * ctl.gaitPhase_;
+        const double angleRight = 2.0 * M_PI * std::fmod(ctl.gaitPhase_ + 0.5, 1.0);
+        Eigen::Vector4d gaitObs;
+        gaitObs << std::sin(angleLeft), std::cos(angleLeft), std::sin(angleRight), std::cos(angleRight);
+        appendToObs(amplitude * gaitObs);
+      }
       break;
     }
     default:
