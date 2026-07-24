@@ -53,10 +53,13 @@ init: NewRLQPController_Initial
 # /home/<user>/mjlab-rhps1/logs/rsl_rl/rhps1_velocity/<run>/<run>.onnx
 policy_path: [
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
-  # 2026-07-22_15-35-01, iter ~2900/15000 (in progress, x1.5 leg scale): bent
-  # knee keyframe, tightened ankle pitch pose std, dense air_time. Bundled
+  # 2026-07-24_19-44-46, iter ~3950/15000 (in progress, x7 leg scale):
+  # Periodic Reward Composition gait clock (gait_phase) with f_gait
+  # curriculum-synced to air_time's swing ceiling, amplitude-faded to flat
+  # at zero command (no residual swing/stance cue while standing),
+  # stride_frequency_target retired (redundant with gait_phase). Bundled
   # (portable) so it can be pulled and tested on another machine.
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_2026-07-22_15-35-01.onnx",
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_2026-07-24_19-44-46.onnx",
   # 2026-07-20_08-37-35 (finished, x6 leg scale): best run to date -- lowest
   # pd_demand ratio ever (0.31 final) *and* better amplitude than every
   # prior run (foot speed 0.276-0.279 m/s final). Machine-local test entry.
@@ -273,20 +276,20 @@ policies:
       - R_ANKLE_R
       - R_ANKLE_P
 
-  # index 1 : 2026-07-22_15-35-01, iter ~2900/15000, in progress (x1.5 leg
-  # scale). Scales/q0 pulled directly from rhps1_constants.py (source of
-  # truth, more precise than the ONNX metadata's 3-decimal rounding).
-  # max_vel matches the run's current command_vel curriculum stage --
-  # re-check against a later checkpoint's ONNX metadata once training
-  # finishes.
+  # index 1 : 2026-07-24_19-44-46, iter ~3950/15000, in progress (x7 leg
+  # scale). Scales pulled directly from rhps1_constants.py (source of
+  # truth, more precise than the ONNX metadata's 3-decimal rounding); q0
+  # unchanged from the previous snapshot (same keyframe). max_vel matches
+  # the run's current command_vel curriculum stage -- re-check against a
+  # later checkpoint's ONNX metadata once training finishes.
   - use_QP: false
     clip_torque: false  # set true (with mc_mujoco --torque-control) to clip like mjlab training
     policy_step_size: 0.005
     physics_step_size: 0.004
     pd_gains_ratio: 1.0
     max_vel_x: 0.3
-    max_vel_y: 0.25
-    max_yaw: 0.35
+    max_vel_y: 0.35
+    max_yaw: 0.4
     joystick_deadzone: 0.05
     vel_ramp_rate: 0.5
 
@@ -309,18 +312,18 @@ policies:
       R_ELBOW_Y:    0.002
       R_WRIST_R:    0.002
       R_WRIST_Y:    0.002
-      L_CROTCH_Y:   0.002625
-      L_CROTCH_R:   0.0075
-      L_CROTCH_P:   0.0105
-      L_KNEE_P:     0.0075
-      L_ANKLE_R:    0.00675
-      L_ANKLE_P:    0.00975
-      R_CROTCH_Y:   0.002625
-      R_CROTCH_R:   0.0075
-      R_CROTCH_P:   0.0105
-      R_KNEE_P:     0.0075
-      R_ANKLE_R:    0.00675
-      R_ANKLE_P:    0.00975
+      L_CROTCH_Y:   0.01225
+      L_CROTCH_R:   0.035
+      L_CROTCH_P:   0.049
+      L_KNEE_P:     0.0245
+      L_ANKLE_R:    0.0315
+      L_ANKLE_P:    0.0455
+      R_CROTCH_Y:   0.01225
+      R_CROTCH_R:   0.035
+      R_CROTCH_P:   0.049
+      R_KNEE_P:     0.0245
+      R_ANKLE_R:    0.0315
+      R_ANKLE_P:    0.0455
 
     kp:
       L_CROTCH_Y:   20000.0
@@ -393,7 +396,7 @@ policies:
       L_CROTCH_Y:   35.0
       L_CROTCH_R:   100.0
       L_CROTCH_P:   140.0
-      L_KNEE_P:     100.0
+      L_KNEE_P:     70.0
       L_ANKLE_R:    45.0
       L_ANKLE_P:    65.0
       CHEST_Y:      120.0
@@ -401,7 +404,7 @@ policies:
       R_CROTCH_Y:   35.0
       R_CROTCH_R:   100.0
       R_CROTCH_P:   140.0
-      R_KNEE_P:     100.0
+      R_KNEE_P:     70.0
       R_ANKLE_R:    45.0
       R_ANKLE_P:    65.0
       HEAD_Y:       13.0
