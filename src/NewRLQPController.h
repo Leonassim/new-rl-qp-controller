@@ -123,8 +123,30 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    */
   Eigen::VectorXd q_rl;
 
-  /** @brief Previous q_rl, used to compute finite-difference velocity in byPassQPControl(). */
+  /** @brief Previous q_rl. Bookkeeping only -- byPassQPControl()'s velocity
+   * estimate uses lastPositionTarget_/desiredVelocityTarget_ instead (see
+   * below), not this. */
   Eigen::VectorXd q_rl_prev_;
+
+  /**
+   * @brief Velocity-target estimation state for byPassQPControl(), mirroring
+   * mjlab's FiniteDifferencePdActuator exactly (not just a raw finite
+   * difference): a position-target change is detected against
+   * lastPositionTarget_ (threshold targetChangeEpsilon_); when one occurs,
+   * the velocity is re-estimated over the *actual* elapsed time since the
+   * previous change (elapsedSinceTargetUpdate_, not a fixed dt -- q_rl is
+   * only updated once per policy inference, held constant in between),
+   * clamped to velTargetLimit_, then EMA-filtered (velTargetFilterAlpha_)
+   * against the previous estimate. Between changes, the last estimate is
+   * held -- not re-zeroed every controller tick, which a naive per-tick
+   * finite difference would do and mjlab's actuator explicitly avoids
+   * ("qd_des=0 ... can suppress locomotion").
+   */
+  Eigen::VectorXd desiredVelocityTarget_;
+  Eigen::VectorXd lastPositionTarget_;
+  Eigen::VectorXd elapsedSinceTargetUpdate_;
+  double velTargetFilterAlpha_ = 0.8;  ///< EMA coeff on the velocity target (mjlab default)
+  double targetChangeEpsilon_ = 1e-6;  ///< Minimum |delta q_rl| treated as a real target change
 
    /**
    * @brief Default/reference joint positions loaded from config (q0).
@@ -293,10 +315,12 @@ private:
    * Writes position/velocity targets to robot().mbc().q/alpha (mc_mujoco's own
    * PD servo computes the applied torque from these, unclamped). When
    * clipTorque_ is also true, additionally computes
-   * τ = Kp*(q_rl - q) - Kd*q̇, clips it to ±effortLimit_ (matching the mjlab
-   * training actuator), and writes it to robot().mbc().jointTorque -- mc_mujoco
-   * only honors this when launched with --torque-control, in which case it
-   * uses this torque directly instead of its own internal PD.
+   * tau = Kp*(q_rl - q) + Kd*(qd_target - q_dot), clips it to +/-effortLimit_
+   * (matching mjlab's FiniteDifferencePdActuator / pd_torque exactly,
+   * qd_target included -- see desiredVelocityTarget_ doc), and writes it to
+   * robot().mbc().jointTorque -- mc_mujoco only honors this when launched
+   * with --torque-control, in which case it uses this torque directly
+   * instead of its own internal PD.
    * @return true if bypass was applied, false if QP should run instead.
    */
   bool byPassQPControl();
@@ -322,7 +346,11 @@ private:
   double maxYawCmd_        = 0.7;
   double joystickDeadZone_ = 0.05;
   double velRampRate_      = 0.5; ///< m/s per second rate limit on velocity command
-  double velTargetLimit_   = 8.0; ///< rad/s clamp on the finite-difference velocity feedforward (training actuator velocity_target_limit)
+  /** @brief Per-joint rad/s clamp on the velocity target estimate, matching
+   * mjlab's per-actuator-group velocity_target_limit (8/10/6/4 rad/s for
+   * legs/knees-ankles/upper-body/head -- one shared scalar here would be
+   * wrong for most joints). */
+  Eigen::VectorXd velTargetLimit_;
   bool   useJoystick_      = true;
 
   /** @brief Log warnings when joint position/velocity/torque limits are exceeded. */

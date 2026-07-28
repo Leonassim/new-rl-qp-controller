@@ -83,6 +83,9 @@ void NewRLQPController::reset(const mc_control::ControllerResetData & reset_data
 
   q_rl       = q_zero;
   q_rl_prev_ = q_zero;
+  desiredVelocityTarget_.setZero();
+  lastPositionTarget_ = q_zero;
+  elapsedSinceTargetUpdate_.setZero();
   currentVelCmd_.setZero();
   gaitPhase_ = 0.0;
   histInitialized_ = false;
@@ -108,6 +111,10 @@ void NewRLQPController::initializeRobot()
   kpBase_ = Eigen::VectorXd::Zero(nbActuatedJoints);
   kdBase_ = Eigen::VectorXd::Zero(nbActuatedJoints);
   effortLimit_ = Eigen::VectorXd::Zero(nbActuatedJoints);
+  velTargetLimit_            = Eigen::VectorXd::Constant(nbActuatedJoints, 8.0);
+  desiredVelocityTarget_     = Eigen::VectorXd::Zero(nbActuatedJoints);
+  lastPositionTarget_        = Eigen::VectorXd::Zero(nbActuatedJoints);
+  elapsedSinceTargetUpdate_  = Eigen::VectorXd::Zero(nbActuatedJoints);
 
   pdGainsRatio_ = config_("policies")[currentPolicyIndex]("pd_gains_ratio", 1.0);
   std::map<std::string, double> actionScale_map = config_("policies")[currentPolicyIndex]("action_scale");
@@ -115,6 +122,10 @@ void NewRLQPController::initializeRobot()
   std::map<std::string, double> kd_map = config_("policies")[currentPolicyIndex]("kd");
   q0_map_ = config_("policies")[currentPolicyIndex]("q0");
   std::map<std::string, double> effortLimit_map = config_("policies")[currentPolicyIndex]("effort_limit", std::map<std::string, double>{});
+  // Per-joint, matching mjlab's per-actuator-group velocity_target_limit
+  // (8/10/6/4 rad/s legs/knees-ankles/upper-body/head). Missing entries keep
+  // the 8.0 default set above.
+  std::map<std::string, double> velTargetLimit_map = config_("policies")[currentPolicyIndex]("vel_target_limit", std::map<std::string, double>{});
 
   auto updateIfExists = [&](auto & target, const auto & map, const std::string & joint_name)
   {
@@ -128,6 +139,7 @@ void NewRLQPController::initializeRobot()
     q_zero[i]   = q0_map_.at(jointNames[i]);
     updateIfExists(actionScale[i], actionScale_map, jointNames[i]);
     updateIfExists(effortLimit_[i], effortLimit_map, jointNames[i]);
+    updateIfExists(velTargetLimit_[i], velTargetLimit_map, jointNames[i]);
   }
   if(clipTorque_ && effortLimit_map.empty())
   {
@@ -143,9 +155,10 @@ void NewRLQPController::initializeRobot()
   maxYawCmd_        = config_("policies")[currentPolicyIndex]("max_yaw",           0.7);
   joystickDeadZone_ = config_("policies")[currentPolicyIndex]("joystick_deadzone", 0.05);
   velRampRate_      = config_("policies")[currentPolicyIndex]("vel_ramp_rate",     0.5);
-  // Matches the training actuator's velocity_target_limit (rad/s): clamp on
-  // the finite-difference velocity feedforward in byPassQPControl().
-  velTargetLimit_   = config_("policies")[currentPolicyIndex]("vel_target_limit",  8.0);
+  // mjlab defaults, matching FiniteDifferencePdActuatorCfg -- not overridden
+  // per-joint for RHPS1, a single scalar each is faithful here.
+  velTargetFilterAlpha_ = config_("policies")[currentPolicyIndex]("vel_target_filter_alpha", 0.8);
+  targetChangeEpsilon_  = config_("policies")[currentPolicyIndex]("target_change_epsilon",   1e-6);
 
   // Gait phase clock (see NewRLQPController.h). Defaults are inert for
   // policies that don't use it -- the observation-size check in
@@ -244,15 +257,33 @@ bool NewRLQPController::byPassQPControl()
   {
     const int idx = robot().jointIndexByName(jointNames[i]);
     robot().mbc().q[idx][0] = q_rl(i);
-    // Velocity feedforward from finite differences of the position target.
-    // Clamped like the training actuator (FiniteDifferencePdActuator
-    // velocity_target_limit): a policy-step target jump of 0.1 rad otherwise
-    // becomes a 20+ rad/s velocity target and the kd term injects torque
-    // kicks the policy never experienced in training (observed: hip-yaw
-    // blow-up at the first inference of the 2026-07-16 checkpoint).
-    const double alphaRaw = (q_rl(i) - q_rl_prev_(i)) / timeStep;
-    robot().mbc().alpha[idx][0] =
-        std::max(-velTargetLimit_, std::min(velTargetLimit_, alphaRaw));
+
+    // Velocity target, replicating mjlab's FiniteDifferencePdActuator
+    // exactly (see desiredVelocityTarget_ doc in the header): re-estimate
+    // only when q_rl actually changed since the last inference step (over
+    // the real elapsed time since that change, not a fixed dt -- q_rl is
+    // held constant between policy steps), clamp, then EMA-filter against
+    // the previous estimate. Hold the previous estimate otherwise -- a
+    // naive per-tick finite difference re-zeros every tick q_rl doesn't
+    // change, which mjlab's actuator explicitly avoids ("qd_des=0 ... can
+    // suppress locomotion") and which also fed a target of exactly zero
+    // into the clip_torque branch below on every such tick.
+    if(std::abs(q_rl(i) - lastPositionTarget_(i)) > targetChangeEpsilon_)
+    {
+      const double safeDt = std::max(elapsedSinceTargetUpdate_(i), 1e-6);
+      double estimatedVelocity = (q_rl(i) - lastPositionTarget_(i)) / safeDt;
+      estimatedVelocity =
+          std::max(-velTargetLimit_(i), std::min(velTargetLimit_(i), estimatedVelocity));
+      desiredVelocityTarget_(i) =
+          velTargetFilterAlpha_ * desiredVelocityTarget_(i) + (1.0 - velTargetFilterAlpha_) * estimatedVelocity;
+      lastPositionTarget_(i) = q_rl(i);
+      elapsedSinceTargetUpdate_(i) = 0.0;
+    }
+    else
+    {
+      elapsedSinceTargetUpdate_(i) += timeStep;
+    }
+    robot().mbc().alpha[idx][0] = desiredVelocityTarget_(i);
 
     // Torque-clipped mode: only takes effect in mc_mujoco when launched with
     // --torque-control, which then uses this value directly instead of its
@@ -262,7 +293,7 @@ bool NewRLQPController::byPassQPControl()
     {
       const double q_meas  = rr.mbc().q[idx][0];
       const double qd_meas = rr.mbc().alpha[idx][0];
-      const double tau = kp_(i) * (q_rl(i) - q_meas) - kd_(i) * qd_meas;
+      const double tau = kp_(i) * (q_rl(i) - q_meas) + kd_(i) * (desiredVelocityTarget_(i) - qd_meas);
       robot().mbc().jointTorque[idx][0] =
           std::max(-effortLimit_(i), std::min(effortLimit_(i), tau));
     }

@@ -308,6 +308,43 @@ policies:
     gait_command_ref: 0.7
     gait_command_threshold: 0.1
 
+    # Per-actuator-group velocity_target_limit from rhps1_constants.py
+    # (RHPS1_ACTUATOR_*). A single scalar default (8.0) is wrong for
+    # knees/ankles (10.0) and everything above the hip (6.0, head 4.0) --
+    # only matters for clip_torque's tau = Kp*(...) + Kd*(qd_target-qd), but
+    # keep it correct everywhere since byPassQPControl() always computes it.
+    vel_target_limit:
+      L_CROTCH_Y:   8.0
+      L_CROTCH_R:   8.0
+      L_CROTCH_P:   8.0
+      L_KNEE_P:     10.0
+      L_ANKLE_R:    10.0
+      L_ANKLE_P:    10.0
+      R_CROTCH_Y:   8.0
+      R_CROTCH_R:   8.0
+      R_CROTCH_P:   8.0
+      R_KNEE_P:     10.0
+      R_ANKLE_R:    10.0
+      R_ANKLE_P:    10.0
+      CHEST_Y:      6.0
+      CHEST_P:      6.0
+      HEAD_Y:       4.0
+      HEAD_P:       4.0
+      L_SHOULDER_P: 6.0
+      L_SHOULDER_R: 6.0
+      L_SHOULDER_Y: 6.0
+      L_ELBOW_P:    6.0
+      L_ELBOW_Y:    6.0
+      L_WRIST_R:    6.0
+      L_WRIST_Y:    6.0
+      R_SHOULDER_P: 6.0
+      R_SHOULDER_R: 6.0
+      R_SHOULDER_Y: 6.0
+      R_ELBOW_P:    6.0
+      R_ELBOW_Y:    6.0
+      R_WRIST_R:    6.0
+      R_WRIST_Y:    6.0
+
     action_scale:
       CHEST_Y:      0.002
       CHEST_P:      0.002
