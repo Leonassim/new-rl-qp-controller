@@ -147,6 +147,11 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   Eigen::VectorXd elapsedSinceTargetUpdate_;
   double velTargetFilterAlpha_ = 0.8;  ///< EMA coeff on the velocity target (mjlab default)
   double targetChangeEpsilon_ = 1e-6;  ///< Minimum |delta q_rl| treated as a real target change
+  /** @brief False for exactly the first byPassQPControl() tick after reset()
+   * -- skips velocity estimation that tick (elapsedSinceTargetUpdate_ is
+   * still 0, so "changed" would divide by the safeDt floor instead of a
+   * real elapsed time). */
+  bool velocityEstimatorInitialized_ = false;
 
    /**
    * @brief Default/reference joint positions loaded from config (q0).

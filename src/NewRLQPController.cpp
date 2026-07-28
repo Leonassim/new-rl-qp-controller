@@ -86,6 +86,7 @@ void NewRLQPController::reset(const mc_control::ControllerResetData & reset_data
   desiredVelocityTarget_.setZero();
   lastPositionTarget_ = q_zero;
   elapsedSinceTargetUpdate_.setZero();
+  velocityEstimatorInitialized_ = false;
   currentVelCmd_.setZero();
   gaitPhase_ = 0.0;
   histInitialized_ = false;
@@ -268,7 +269,20 @@ bool NewRLQPController::byPassQPControl()
     // change, which mjlab's actuator explicitly avoids ("qd_des=0 ... can
     // suppress locomotion") and which also fed a target of exactly zero
     // into the clip_torque branch below on every such tick.
-    if(std::abs(q_rl(i) - lastPositionTarget_(i)) > targetChangeEpsilon_)
+    if(!velocityEstimatorInitialized_)
+    {
+      // First tick after reset: elapsedSinceTargetUpdate_ is still exactly
+      // 0 here, so a "changed" detection right now would divide by the
+      // safeDt floor (1e-6) instead of a real elapsed time -- an
+      // astronomical velocity estimate that the clamp saves from being
+      // literally infinite but still dumps ~velTargetLimit_ into the EMA
+      // filter on step one. Mirrors mjlab's own "uninitialized" branch:
+      // velocity target starts at zero, tracking starts fresh from here.
+      lastPositionTarget_(i) = q_rl(i);
+      desiredVelocityTarget_(i) = 0.0;
+      elapsedSinceTargetUpdate_(i) = 0.0;
+    }
+    else if(std::abs(q_rl(i) - lastPositionTarget_(i)) > targetChangeEpsilon_)
     {
       const double safeDt = std::max(elapsedSinceTargetUpdate_(i), 1e-6);
       double estimatedVelocity = (q_rl(i) - lastPositionTarget_(i)) / safeDt;
@@ -302,6 +316,7 @@ bool NewRLQPController::byPassQPControl()
       robot().mbc().jointTorque[idx][0] = 0.0;
     }
   }
+  velocityEstimatorInitialized_ = true;
   q_rl_prev_ = q_rl;
   return true;
 }
