@@ -53,19 +53,19 @@ init: NewRLQPController_Initial
 # /home/<user>/mjlab-rhps1/logs/rsl_rl/rhps1_velocity/<run>/<run>.onnx
 policy_path: [
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
-  # 2026-07-24_19-44-46, iter ~3950/15000 (in progress, x7 leg scale):
-  # Periodic Reward Composition gait clock (gait_phase) with f_gait
-  # curriculum-synced to air_time's swing ceiling, amplitude-faded to flat
-  # at zero command (no residual swing/stance cue while standing),
-  # stride_frequency_target retired (redundant with gait_phase). Bundled
-  # (portable) so it can be pulled and tested on another machine.
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_2026-07-24_19-44-46.onnx",
+  # 2026-07-27_21-07-56, iter 10050/15000 (in progress, x7 leg scale):
+  # speed-dependent gait clock (period 2.0s->1.1s interpolated by commanded
+  # speed, replacing the old fixed-frequency f_gait), std_range cap fixed
+  # (0.27 -> 1.3, the previous cap sat below init_std and froze exploration
+  # noise from iteration 0), entropy_coef 0.01 -> 0.005. Bundled (portable)
+  # so it can be pulled and tested on another machine.
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_2026-07-27_21-07-56.onnx",
   # 2026-07-20_08-37-35 (finished, x6 leg scale): best run to date -- lowest
   # pd_demand ratio ever (0.31 final) *and* better amplitude than every
   # prior run (foot speed 0.276-0.279 m/s final). Machine-local test entry.
   "/home/lmoussafir/mjlab-rhps1/logs/rsl_rl/rhps1_velocity/2026-07-20_08-37-35/2026-07-20_08-37-35.onnx",
 ]
-default_policy_index: 0
+default_policy_index: 1  # today's checkpoint, torque-mode test
 
 policies:
   # index 0 : RHPS1 velocity policy
@@ -276,31 +276,36 @@ policies:
       - R_ANKLE_R
       - R_ANKLE_P
 
-  # index 1 : 2026-07-24_19-44-46, iter ~3950/15000, in progress (x7 leg
-  # scale). Scales pulled directly from rhps1_constants.py (source of
-  # truth, more precise than the ONNX metadata's 3-decimal rounding); q0
-  # unchanged from the previous snapshot (same keyframe). max_vel matches
-  # the run's current command_vel curriculum stage -- re-check against a
-  # later checkpoint's ONNX metadata once training finishes.
+  # index 1 : 2026-07-27_21-07-56, iter 10050/15000, in progress (x7 leg
+  # scale). Scales/kp/kd/effort_limit/q0 unchanged from the previous
+  # snapshot (same actuator config and keyframe all session) -- verified
+  # against this checkpoint's own ONNX metadata (action_scale, joint_names,
+  # default_joint_pos all match exactly). max_vel matches the run's current
+  # (final) command_vel curriculum stage, read live off this run's training
+  # log Curriculum/command_vel/* tags.
   #
-  # First checkpoint bundled with the gait_phase clock observation (see
-  # utils.cpp's offset < obs.size() block, 130 dims not 126). gait_f_gait
-  # mirrors mjlab's air_time_target_curriculum-derived value at this
-  # checkpoint's step (threshold_max=0.7, swing_ratio=0.5 ->
-  # f_gait=0.5/0.7); re-derive the same way (swing_ratio /
-  # air_time.threshold_max) for any later checkpoint pulled from this run.
+  # Speed-dependent gait clock (2026-07-28): mjlab's gait_phase_tracking
+  # switched from a single fixed frequency to interpolating the period
+  # between gait_period_slow (near gait_command_threshold) and
+  # gait_period_fast (at gait_command_ref) -- replaces the old gait_f_gait
+  # single-frequency field, see NewRLQPController.h/utils.cpp. Values here
+  # are copied directly from mjlab's gait_phase reward params, not derived.
+  #
+  # clip_torque: true for this bundling specifically -- torque-mode test
+  # (mc_mujoco --torque-control), matches mjlab's actuator clipping.
   - use_QP: false
-    clip_torque: false  # set true (with mc_mujoco --torque-control) to clip like mjlab training
+    clip_torque: true  # requires launching mc_mujoco with --torque-control
     policy_step_size: 0.005
     physics_step_size: 0.004
     pd_gains_ratio: 1.0
     max_vel_x: 0.3
-    max_vel_y: 0.35
-    max_yaw: 0.4
+    max_vel_y: 0.4
+    max_yaw: 0.45
     joystick_deadzone: 0.05
     vel_ramp_rate: 0.5
-    gait_f_gait: 0.714286
-    gait_swing_ratio: 0.5
+    gait_period_slow: 2.0
+    gait_period_fast: 1.1
+    gait_command_ref: 0.7
     gait_command_threshold: 0.1
 
     action_scale:

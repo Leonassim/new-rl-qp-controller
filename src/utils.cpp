@@ -181,7 +181,15 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
         const double amplitude = std::clamp(totalCommand / ctl.gaitCommandThreshold_, 0.0, 1.0);
         if(totalCommand > ctl.gaitCommandThreshold_)
         {
-          ctl.gaitPhase_ = std::fmod(ctl.gaitPhase_ + ctl.gaitFGait_ * ctl.policyStepSize, 1.0);
+          // mjlab's gait_phase_tracking: period interpolates linearly between
+          // gaitPeriodSlow_ (at gaitCommandThreshold_) and gaitPeriodFast_
+          // (at gaitCommandRef_), not a single fixed frequency.
+          const double speedFrac = std::clamp(
+              (totalCommand - ctl.gaitCommandThreshold_)
+                  / std::max(ctl.gaitCommandRef_ - ctl.gaitCommandThreshold_, 1e-6),
+              0.0, 1.0);
+          const double period = ctl.gaitPeriodSlow_ + (ctl.gaitPeriodFast_ - ctl.gaitPeriodSlow_) * speedFrac;
+          ctl.gaitPhase_ = std::fmod(ctl.gaitPhase_ + ctl.policyStepSize / period, 1.0);
         }
         const double angleLeft  = 2.0 * M_PI * ctl.gaitPhase_;
         const double angleRight = 2.0 * M_PI * std::fmod(ctl.gaitPhase_ + 0.5, 1.0);

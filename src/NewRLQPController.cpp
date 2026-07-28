@@ -148,10 +148,11 @@ void NewRLQPController::initializeRobot()
   velTargetLimit_   = config_("policies")[currentPolicyIndex]("vel_target_limit",  8.0);
 
   // Gait phase clock (see NewRLQPController.h). Defaults are inert for
-  // policies that don't use it -- gaitFGait_=0 would freeze the phase
-  // forever, but the observation-size check in getCurrentObservation()
-  // never fills/reads it for those anyway.
-  gaitFGait_             = config_("policies")[currentPolicyIndex]("gait_f_gait", 1.0);
+  // policies that don't use it -- the observation-size check in
+  // getCurrentObservation() never fills/reads these for those anyway.
+  gaitPeriodSlow_         = config_("policies")[currentPolicyIndex]("gait_period_slow", 1.0);
+  gaitPeriodFast_         = config_("policies")[currentPolicyIndex]("gait_period_fast", 1.0);
+  gaitCommandRef_         = config_("policies")[currentPolicyIndex]("gait_command_ref", 0.5);
   gaitSwingRatio_         = config_("policies")[currentPolicyIndex]("gait_swing_ratio", 0.5);
   gaitCommandThreshold_   = config_("policies")[currentPolicyIndex]("gait_command_threshold", 0.1);
 

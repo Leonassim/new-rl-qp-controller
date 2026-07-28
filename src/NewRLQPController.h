@@ -198,13 +198,21 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    * gait_phase term (detected at runtime in utils::getCurrentObservation()
    * by comparing the filled offset against the policy's declared
    * observation size) -- older checkpoints (V3, no gait clock) simply never
-   * touch these fields. Advances by gaitFGait_ * policyStepSize per
-   * inference step while the commanded speed exceeds
-   * gaitCommandThreshold_, frozen otherwise. Right foot is this phase + 0.5
-   * (see mjlab's gait_phase_tracking/gait_phase_obs docstrings for why).
+   * touch these fields.
+   *
+   * Speed-dependent period (2026-07-28, replacing the earlier fixed
+   * gaitFGait_): mjlab's gait_phase_tracking interpolates the swing/stance
+   * period between gaitPeriodSlow_ (near gaitCommandThreshold_) and
+   * gaitPeriodFast_ (at gaitCommandRef_), not a single constant frequency.
+   * Advances by policyStepSize / period per inference step while the
+   * commanded speed exceeds gaitCommandThreshold_, frozen otherwise. Right
+   * foot is this phase + 0.5 (see mjlab's gait_phase_tracking/gait_phase_obs
+   * docstrings for why).
    */
   double gaitPhase_ = 0.0;
-  double gaitFGait_ = 1.0;
+  double gaitPeriodSlow_ = 1.0;
+  double gaitPeriodFast_ = 1.0;
+  double gaitCommandRef_ = 0.5;
   double gaitSwingRatio_ = 0.5;
   double gaitCommandThreshold_ = 0.1;
 
