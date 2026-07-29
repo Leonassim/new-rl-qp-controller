@@ -53,19 +53,27 @@ init: NewRLQPController_Initial
 # /home/<user>/mjlab-rhps1/logs/rsl_rl/rhps1_velocity/<run>/<run>.onnx
 policy_path: [
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
-  # 2026-07-27_21-07-56, iter 10050/15000 (in progress, x7 leg scale):
-  # speed-dependent gait clock (period 2.0s->1.1s interpolated by commanded
-  # speed, replacing the old fixed-frequency f_gait), std_range cap fixed
-  # (0.27 -> 1.3, the previous cap sat below init_std and froze exploration
-  # noise from iteration 0), entropy_coef 0.01 -> 0.005. Bundled (portable)
-  # so it can be pulled and tested on another machine.
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_2026-07-27_21-07-56.onnx",
+  # 2026-07-29_01-13-36, iter 5550/15000 (in progress, x7 leg scale).
+  # Follow-up to the 2026-07-27 checkpoint's gait-clock/std fixes, targeting
+  # the residual issues seen when testing that one: action_jerk -45 -> -90
+  # (visible vibration), new standing_base_motion term (L1, whole-body sway
+  # at standstill -- track_linear_velocity's wide kernel and
+  # standing_joint_vel's squared norm both went soft in exactly this slow-
+  # drift regime, nothing penalized base translation at all before), and
+  # joint_torques_l2's ANKLE_R coefficient 4.0 -> 1.5 (was taxing the same
+  # ankle-roll torque that buys flat foot contact, flat_support had been
+  # stuck at ~2.67/4 contacts for thousands of iterations as a result -- now
+  # climbing past the session's previous best). torque_guidance_coef tried
+  # at 0.3 in the same batch and reverted to 0.0 (5th reproduction of a
+  # known collapse mode, see rl_cfg.py). Bundled (portable) so it can be
+  # pulled and tested on another machine.
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_2026-07-29_01-13-36.onnx",
   # 2026-07-20_08-37-35 (finished, x6 leg scale): best run to date -- lowest
   # pd_demand ratio ever (0.31 final) *and* better amplitude than every
   # prior run (foot speed 0.276-0.279 m/s final). Machine-local test entry.
   "/home/lmoussafir/mjlab-rhps1/logs/rsl_rl/rhps1_velocity/2026-07-20_08-37-35/2026-07-20_08-37-35.onnx",
 ]
-default_policy_index: 1  # today's checkpoint, torque-mode test
+default_policy_index: 1  # today's checkpoint, gait-quality test (normal PD, not torque mode)
 
 policies:
   # index 0 : RHPS1 velocity policy
@@ -291,16 +299,21 @@ policies:
   # single-frequency field, see NewRLQPController.h/utils.cpp. Values here
   # are copied directly from mjlab's gait_phase reward params, not derived.
   #
-  # clip_torque: true for this bundling specifically -- torque-mode test
-  # (mc_mujoco --torque-control), matches mjlab's actuator clipping.
+  # clip_torque: false for this bundling -- this test is about gait quality
+  # (vibration/sway/foot-flatness) from the 2026-07-29 reward changes, not
+  # torque-mode fidelity, so use mc_mujoco's own internal PD (its own
+  # velocity target, no dependency on the byPassQPControl() estimator).
   - use_QP: false
-    clip_torque: true  # requires launching mc_mujoco with --torque-control
+    clip_torque: false  # set true (with mc_mujoco --torque-control) to clip like mjlab training
     policy_step_size: 0.005
     physics_step_size: 0.004
     pd_gains_ratio: 1.0
+    # Matches this checkpoint's current (iter ~5550) command_vel curriculum
+    # stage, read live off Curriculum/command_vel/* -- not yet the final
+    # stage (that's 0.3/0.4/0.45, reached at iter 7000).
     max_vel_x: 0.3
-    max_vel_y: 0.4
-    max_yaw: 0.45
+    max_vel_y: 0.35
+    max_yaw: 0.4
     joystick_deadzone: 0.05
     vel_ramp_rate: 0.5
     gait_period_slow: 2.0
