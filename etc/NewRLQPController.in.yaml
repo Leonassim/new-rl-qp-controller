@@ -73,7 +73,7 @@ policy_path: [
   # prior run (foot speed 0.276-0.279 m/s final). Machine-local test entry.
   "/home/lmoussafir/mjlab-rhps1/logs/rsl_rl/rhps1_velocity/2026-07-20_08-37-35/2026-07-20_08-37-35.onnx",
 ]
-default_policy_index: 1  # today's checkpoint, gait-quality test (normal PD, not torque mode)
+default_policy_index: 1  # today's checkpoint, torque-clamp mode (mc_mujoco --torque-control)
 
 policies:
   # index 0 : RHPS1 velocity policy
@@ -299,14 +299,21 @@ policies:
   # single-frequency field, see NewRLQPController.h/utils.cpp. Values here
   # are copied directly from mjlab's gait_phase reward params, not derived.
   #
-  # clip_torque: false for this bundling -- this test is about gait quality
-  # (vibration/sway/foot-flatness) from the 2026-07-29 reward changes, not
-  # torque-mode fidelity, so use mc_mujoco's own internal PD (its own
-  # velocity target, no dependency on the byPassQPControl() estimator).
+  # Torque-clamp mode: use_QP false + clip_torque true, launched with
+  # mc_mujoco --torque-control. No PostureTask, no QP -- byPassQPControl()
+  # writes q/alpha and the clamped torque directly, replicating mjlab's
+  # FiniteDifferencePdActuator (tau = kp*(q*-q) + kd*(qd*-qd), clamped at
+  # effort_limit, with the same velocity-target estimator: re-estimate on
+  # target change over real elapsed time, clamp per-joint, EMA alpha 0.8).
+  # effort_limit/kp/kd/action_scale/q0 all verified identical to
+  # rhps1_constants.py (knees 70 N.m included).
   - use_QP: false
-    clip_torque: false  # set true (with mc_mujoco --torque-control) to clip like mjlab training
-    policy_step_size: 0.005
-    physics_step_size: 0.004
+    clip_torque: true  # requires launching mc_mujoco with --torque-control
+    policy_step_size: 0.005   # = mjlab step_dt (decimation 2 x sim timestep 0.0025)
+    # mc_mujoco's MuJoCo timestep (it reports "MJ timestep: 0.001"). Only
+    # used for a sanity warning against the mc_rtc timestep; it does not
+    # drive control. Was 0.004, which matched nothing.
+    physics_step_size: 0.001
     pd_gains_ratio: 1.0
     # Matches this checkpoint's current (iter ~5550) command_vel curriculum
     # stage, read live off Curriculum/command_vel/* -- not yet the final
