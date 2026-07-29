@@ -293,10 +293,16 @@ bool NewRLQPController::byPassQPControl()
       lastPositionTarget_(i) = q_rl(i);
       elapsedSinceTargetUpdate_(i) = 0.0;
     }
-    else
-    {
-      elapsedSinceTargetUpdate_(i) += timeStep;
-    }
+    // Unconditional, mirroring mjlab's separate update(dt) hook -- NOT an
+    // else-branch. Getting this wrong is what made torque mode explode:
+    // policy_step_size == the controller timeStep here, so q_rl changes on
+    // *every* call and an else-branch increment never runs. elapsed then
+    // sits at 0 forever, safeDt falls back to its 1e-6 floor, and the
+    // velocity estimate saturates at velTargetLimit_ every single step --
+    // kd * 10 rad/s = 4000 N.m demanded, clamped to the effort limit, sign
+    // flipping with the target delta. Bang-bang torque, which is exactly
+    // the "very stiff, huge knee/ankle torques, falls immediately" symptom.
+    elapsedSinceTargetUpdate_(i) += timeStep;
     robot().mbc().alpha[idx][0] = desiredVelocityTarget_(i);
 
     // Torque-clipped mode: only takes effect in mc_mujoco when launched with

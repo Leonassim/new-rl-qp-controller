@@ -26,22 +26,32 @@ ObserverPipelines:
   observers:
     - type: Encoder
       velocity: encoderVelocities
-    # WAIKO estimator: IMU + legged odometry (no QP contacts needed).
-    # imuSensor must be the real IMU (Accelerometer, gyro+accelero at the imu
-    # site) -- FloatingBase is the mc_mujoco ground-truth pose sensor.
-    # filterGains/leggedOdometry come from the installed default MCWaiko.yaml.
-    - type: MCWaiko
+    # Ground-truth floating base from mc_mujoco (2026-07-29). This matches
+    # mjlab, where base_lin_vel / base_ang_vel / projected_gravity are the
+    # simulator's exact values -- so it is the right baseline for judging a
+    # policy in simulation, and the only way to compare like-for-like.
+    - type: BodySensor
       update: true
       gui: true
-      imuSensor: Accelerometer
-      contacts:
-        contactsDetection: Surfaces
-        surfacesForContactDetection: [RightFootCenter, LeftFootCenter]
-    # Ground-truth fallback (mc_mujoco perfect pose), for comparison:
-    # - type: BodySensor
+      bodySensor: FloatingBase
+    # MCWaiko (IMU + legged odometry) disabled 2026-07-29: it was declared
+    # here but never actually entered the pipeline -- mc_rtc printed
+    # "Pipeline: Encoder (...) ->" with nothing after it, and loaded
+    # MCWaiko.yaml without any error message. With no floating-base observer
+    # at all, realRobot's base pose/velocity were never updated, so
+    # projected_gravity was a constant (the policy believed itself perfectly
+    # upright at all times) and base_lin_vel/base_ang_vel were dead. The
+    # policy had no balance feedback whatsoever and fell immediately, in
+    # both use_QP modes -- which is exactly the symptom that looked like a
+    # torque-mode bug. Re-enable only once the silent drop is understood;
+    # the registered observer name is correct ("MCWaiko" is in MCWaiko.so).
+    # - type: MCWaiko
     #   update: true
     #   gui: true
-    #   bodySensor: FloatingBase
+    #   imuSensor: Accelerometer
+    #   contacts:
+    #     contactsDetection: Surfaces
+    #     surfacesForContactDetection: [RightFootCenter, LeftFootCenter]
 
 states: {}
 transitions:
