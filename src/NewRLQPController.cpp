@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include <mc_rtc/io_utils.h>
+
 #include <RBDyn/MultiBodyConfig.h>
 #include <mc_joystick_plugin/joystick_inputs.h>
 
@@ -57,7 +59,10 @@ bool NewRLQPController::run()
   updateVelocityCommand();
   if(printLimits_) computeLimits();
 
-  if(useQP_)
+  // Disarmed: never write the posture target. The PostureTask then keeps the
+  // posture mc_rtc captured at reset, so the robot holds its stance under the
+  // QP until the operator arms the policy from the GUI.
+  if(useQP_ && policyArmed_)
   {
     auto pt = getPostureTask(robot().name());
     std::map<std::string, std::vector<double>> q_target;
@@ -67,7 +72,9 @@ bool NewRLQPController::run()
   }
 
   bool ret = mc_control::fsm::Controller::run(mc_solver::FeedbackType::OpenLoop);
-  if(!useQP_) byPassQPControl();
+  // Same gate on the bypass path: disarmed means no policy output reaches the
+  // robot, whichever mode is configured.
+  if(!useQP_ && policyArmed_) byPassQPControl();
 
   return ret;
 }
@@ -85,8 +92,43 @@ void NewRLQPController::reset(const mc_control::ControllerResetData & reset_data
   q_rl_prev_ = q_zero;
   currentVelCmd_.setZero();
   histInitialized_ = false;
+  // Never resume armed across a reset: a controller switch or a re-reset must
+  // put the robot back in the held state and require a deliberate re-arm.
+  policyArmed_ = false;
+
+  checkFloatingBaseObserver();
 
   mc_rtc::log::success("NewRLQPController reset completed");
+}
+
+void NewRLQPController::checkFloatingBaseObserver()
+{
+  // Why this exists: on 2026-07-29 MCWaiko was declared in ObserverPipelines,
+  // mc_rtc loaded MCWaiko.yaml without complaint, and the observer still never
+  // entered the pipeline -- the log read "Pipeline: Encoder (...) ->" with
+  // nothing after it. With no floating-base observer at all, realRobot's base
+  // pose and velocity are never updated: projected_gravity becomes a constant
+  // (the policy believes itself perfectly upright forever) and base_lin_vel /
+  // base_ang_vel are dead. The policy has no balance feedback whatsoever and
+  // falls immediately. In simulation that cost a day chasing a phantom
+  // torque-mode bug; on hardware it is a fall with nothing to catch it.
+  //
+  // The failure is silent by construction, so the only defence is to assert
+  // the observer is present and to print the full pipeline either way.
+  std::vector<std::string> found;
+  for(const auto & pipeline : observerPipelines())
+    for(const auto & obs : pipeline.observers()) found.push_back(obs.observer().name());
+
+  mc_rtc::log::info("[NewRLQPController] observer pipeline: [{}]", mc_rtc::io::to_string(found));
+
+  const bool hasFloatingBase =
+      std::any_of(found.begin(), found.end(),
+                  [](const std::string & n) { return n == "MCWaiko" || n == "BodySensor" || n == "KinematicInertial"; });
+  if(!hasFloatingBase)
+    mc_rtc::log::error_and_throw(
+        "[NewRLQPController] no floating-base observer in the pipeline (found: [{}]). The policy would run on a "
+        "constant projected_gravity and zero base velocity, and fall. Check ObserverPipelines in the controller yaml.",
+        mc_rtc::io::to_string(found));
 }
 
 void NewRLQPController::initializeRobot()
@@ -94,7 +136,23 @@ void NewRLQPController::initializeRobot()
   useQP_    = config_("policies")[currentPolicyIndex]("use_QP", true);
   robotName_ = robot().name();
   jointNames = robot().refJointOrder();
+  // refJointOrder may name joints this robot does not actually carry, and
+  // multi-DoF ones we cannot drive with a scalar PD. The RHPS1 module is the
+  // case in point: its non-mujoco branch lists L_HAND/R_HAND (plus 16 finger
+  // joints per hand for the leap end effector), so MainRobot: RHPS1 threw
+  // std::out_of_range on kp_map.at(jointNames[i]) below, while MainRobot:
+  // RHPS1_MuJoCo, whose branch lists 30, was fine. Filtering here also fixes
+  // the q0-size check in configRL(): nbActuatedJoints becomes 30, matching
+  // the 30-key q0 already in the yaml.
+  jointNames.erase(std::remove_if(jointNames.begin(), jointNames.end(),
+                                  [this](const std::string & j) {
+                                    return !robot().hasJoint(j)
+                                           || robot().mb().joint(robot().jointIndexByName(j)).dof() != 1;
+                                  }),
+                   jointNames.end());
   nbActuatedJoints = jointNames.size();
+  mc_rtc::log::info("[NewRLQPController] {} actuated joints retained out of {} in refJointOrder",
+                    nbActuatedJoints, robot().refJointOrder().size());
 
   q_rl              = Eigen::VectorXd::Zero(nbActuatedJoints);
   q_rl_prev_        = Eigen::VectorXd::Zero(nbActuatedJoints);
@@ -309,6 +367,24 @@ void NewRLQPController::addGui()
     mc_rtc::gui::Label("Action Size",      [this]() { return std::to_string(rlPolicy->getActionSize()); })
   );
 
+  // Arming lives at the top level, not under a sub-category, so it is the
+  // first thing an operator sees. "Hold" freezes the posture target at the
+  // policy's last output rather than snapping anywhere, so disarming mid-
+  // motion is a stop, not a jump.
+  gui()->addElement({"NewRLQPController"},
+    mc_rtc::gui::Label("Policy state", [this]() { return policyArmed_ ? "ARMED" : "held (disarmed)"; }),
+    mc_rtc::gui::Button("ARM policy", [this]() {
+      if(policyArmed_) return;
+      policyArmed_ = true;
+      mc_rtc::log::warning("[NewRLQPController] policy ARMED from the GUI");
+    }),
+    mc_rtc::gui::Button("HOLD (disarm)", [this]() {
+      if(!policyArmed_) return;
+      policyArmed_ = false;
+      mc_rtc::log::warning("[NewRLQPController] policy DISARMED -- holding last posture");
+    })
+  );
+
   gui()->addElement({"NewRLQPController", "PostureTask"},
     mc_rtc::gui::NumberInput("Stiffness K",
       [this]() {
@@ -395,6 +471,14 @@ void NewRLQPController::computeLimits()
   for(const auto & joint : robot().refJointOrder())
   {
     int i = robot().jointIndexByName(joint);
+    // Some DOFs (e.g. connector joints whose child link is in the robot
+    // module's filtered_links) keep a real index in the model but carry no
+    // parsed position/velocity/torque bounds -- skip rather than dereference
+    // an empty bound vector. This loop walks refJointOrder() directly, not the
+    // jointNames filtered in initializeRobot(), so it needs its own guard.
+    if(rr.ql()[i].empty() || rr.qu()[i].empty() || rr.vl()[i].empty() || rr.vu()[i].empty()
+       || rr.tl()[i].empty() || rr.tu()[i].empty())
+      continue;
     const double ds = dsPercent_ * (rr.qu()[i][0] - rr.ql()[i][0]);
 
     if(rr.q()[i][0]  > rr.qu()[i][0] - ds + eps)

@@ -14,4 +14,6 @@ struct NewRLQPController_Initial : mc_control::fsm::State
   void teardown(mc_control::fsm::Controller & ctl) override;
 
 private:
+  /** @brief Has start_rl_state run since the last arming edge? */
+  bool rlStarted_ = false;
 };

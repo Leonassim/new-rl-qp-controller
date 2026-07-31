@@ -242,6 +242,19 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   /** @brief Utility helpers for FSM state lifecycle and observation building. */
   utils utilsClass;
 
+  /** @brief Policy engaged? False until the operator arms it from the GUI.
+   *
+   * Loading the controller and running the policy are deliberately separate on
+   * real hardware. While disarmed nothing calls the policy and nothing writes
+   * the posture target, so the PostureTask keeps holding the posture mc_rtc
+   * captured at reset -- the robot stands where the operator left it, under QP,
+   * for as long as they want. Arming is what runs start_rl_state (measured-
+   * posture hold, then ramp to q_zero) and starts inference.
+   *
+   * Public because the Initial state reads and sets it.
+   */
+  bool policyArmed_ = false;
+
 private:
   mc_rtc::Configuration config_;
 
@@ -249,6 +262,9 @@ private:
   void addLog();
   /** @brief Register GUI elements visible in RViz and mc_mujoco. */
   void addGui();
+
+  /** @brief Abort if no floating-base observer made it into the pipeline. */
+  void checkFloatingBaseObserver();
 
   /** @brief Load robot parameters (gains, action scale, q0) from config. */
   void initializeRobot();

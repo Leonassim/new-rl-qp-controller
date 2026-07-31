@@ -61,7 +61,14 @@ default_policy_index: 0
 
 policies:
   # index 0 : RHPS1 velocity policy
-  - use_QP: false
+  #
+  # use_QP true (was false, 2026-07-31): this index is the real-robot entry.
+  # The bypass path writes torques straight to the robot with nothing between
+  # the policy and the hardware -- acceptable in mc_mujoco, not on a machine
+  # that can break. With the QP the policy's output becomes a PostureTask
+  # target and the self-collision and joint-limit constraint sets stay in the
+  # loop as a safety net.
+  - use_QP: true
     policy_step_size: 0.005   # 200 Hz (5 ms)
     physics_step_size: 0.004  # mc_mujoco at 250 Hz (4 ms)
     pd_gains_ratio: 1.0
