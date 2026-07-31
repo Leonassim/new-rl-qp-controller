@@ -103,18 +103,19 @@ void NewRLQPController::reset(const mc_control::ControllerResetData & reset_data
 
 void NewRLQPController::checkFloatingBaseObserver()
 {
-  // Why this exists: on 2026-07-29 MCWaiko was declared in ObserverPipelines,
-  // mc_rtc loaded MCWaiko.yaml without complaint, and the observer still never
-  // entered the pipeline -- the log read "Pipeline: Encoder (...) ->" with
-  // nothing after it. With no floating-base observer at all, realRobot's base
-  // pose and velocity are never updated: projected_gravity becomes a constant
-  // (the policy believes itself perfectly upright forever) and base_lin_vel /
-  // base_ang_vel are dead. The policy has no balance feedback whatsoever and
-  // falls immediately. In simulation that cost a day chasing a phantom
-  // torque-mode bug; on hardware it is a fall with nothing to catch it.
+  // Why this exists: running without a floating-base observer is silent and
+  // fatal. realRobot's base pose and velocity are then never updated, so
+  // projected_gravity is a constant (the policy believes itself perfectly
+  // upright forever) and base_lin_vel / base_ang_vel are dead -- no balance
+  // feedback at all. In simulation that is a fall; on hardware it is a fall
+  // with nothing to catch it. Nothing in mc_rtc warns about it.
   //
-  // The failure is silent by construction, so the only defence is to assert
-  // the observer is present and to print the full pipeline either way.
+  // Read pipelineObservers_, not mc_rtc's printed pipeline description. That
+  // description is what produced the 2026-07-29 "MCWaiko silently dropped"
+  // diagnosis, and it was wrong: ObserverPipeline::reset() never removes an
+  // observer, it only concatenates observer.desc(), and MCWaiko never assigns
+  // desc_ -- so a present, updating MCWaiko renders as "Encoder (...) -> "
+  // with nothing after the arrow. The observer was there the whole time.
   std::vector<std::string> found;
   for(const auto & pipeline : observerPipelines())
     for(const auto & obs : pipeline.observers()) found.push_back(obs.observer().name());
@@ -468,16 +469,20 @@ void NewRLQPController::computeLimits()
   constexpr double eps = 1e-5;
   auto & rr = realRobot(robots()[0].name());
 
-  for(const auto & joint : robot().refJointOrder())
+  // jointNames, not refJointOrder(): the latter names joints the robot does
+  // not carry at all (L_HAND on MainRobot: RHPS1), and jointIndexByName throws
+  // std::out_of_range on those before any bounds check can run. These are also
+  // the only joints this controller drives, so they are the only ones whose
+  // limits are worth reporting.
+  for(const auto & joint : jointNames)
   {
     int i = robot().jointIndexByName(joint);
     // Some DOFs (e.g. connector joints whose child link is in the robot
     // module's filtered_links) keep a real index in the model but carry no
     // parsed position/velocity/torque bounds -- skip rather than dereference
-    // an empty bound vector. This loop walks refJointOrder() directly, not the
-    // jointNames filtered in initializeRobot(), so it needs its own guard.
-    if(rr.ql()[i].empty() || rr.qu()[i].empty() || rr.vl()[i].empty() || rr.vu()[i].empty()
-       || rr.tl()[i].empty() || rr.tu()[i].empty())
+    // an empty bound vector.
+    if(!rr.hasJoint(joint) || rr.ql()[i].empty() || rr.qu()[i].empty() || rr.vl()[i].empty()
+       || rr.vu()[i].empty() || rr.tl()[i].empty() || rr.tu()[i].empty())
       continue;
     const double ds = dsPercent_ * (rr.qu()[i][0] - rr.ql()[i][0]);
 
