@@ -25,7 +25,11 @@ ObserverPipelines:
 - name: Pipeline
   observers:
     - type: Encoder
-      velocity: encoderVelocities
+      # The real robot publishes no encoder velocities, only positions, and
+      # EncoderObserver::run error_and_throw's on the empty vector, which
+      # deactivates MCControl mid-run. mc_mujoco does publish them, so this
+      # only ever showed up on hardware. Finite differences work on both.
+      velocity: encoderFiniteDifferences
     # WAIKO estimator: IMU + legged odometry (no QP contacts needed).
     # imuSensor must be the real IMU (Accelerometer, gyro+accelero at the imu
     # site) -- FloatingBase is the mc_mujoco ground-truth pose sensor.
