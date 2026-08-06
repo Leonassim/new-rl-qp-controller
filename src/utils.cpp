@@ -81,6 +81,28 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
           ctl.currentActionScaled(i) = ctl.actionScale(i) * ctl.currentAction(j);
           ctl.q_rl(i) = ctl.currentActionScaled(i) + ctl.q_zero(i);
       }
+      // Order matters: the raw-torque channel is measured on the target BEFORE
+      // the projection (measuring it after makes every joint report exactly the
+      // ratio the projection enforces -- the projection measuring itself), and it
+      // must run in both QP and bypass because the V5 network reads it either way.
+      ctl.updateRawTorqueRatio(ctl.q_rl);
+      // Project onto the torque-feasible set, exactly as the training actuator
+      // does. No-op unless the policy block sets torque_feasibility_ratio.
+      ctl.q_rl = ctl.projectTorqueFeasible(ctl.q_rl);
+      // Feed back the action as EXECUTED, not as requested: the V4 observation's
+      // actions block is executed_action. Beyond the feasible window many raw
+      // actions map to one execution, and a policy that only ever sees what it
+      // asked for cannot tell them apart -- which is the whole reason the
+      // training observation switched away from last_action.
+      for (int j = 0; j < ctl.currentAction.size(); ++j) {
+          int i = ctl.actionToDofMap[j];
+          const double scale = ctl.actionScale(i);
+          if(std::abs(scale) > 1e-12)
+          {
+            ctl.currentActionScaled(i) = ctl.q_rl(i) - ctl.q_zero(i);
+            ctl.currentAction(j) = ctl.currentActionScaled(i) / scale;
+          }
+      }
       syncTime_ -= ctl.policyStepSize;
     }
   }
@@ -105,8 +127,6 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
 
   switch (ctl.currentPolicyIndex) {
     case 0: // RHPS1 velocity policies — V3 format (126 dims)
-    case 1: // (index 1 = live training checkpoint, same V3 observation)
-    case 2: // (index 2 = live training checkpoint, same V3 observation)
             // mjlab-rhps1 training 2026-07-10_13-52-54: history (length 5,
             // oldest first) on base_lin_vel and command only, all other terms
             // current-step: base_lin_vel[15], base_ang_vel[3],
@@ -163,6 +183,95 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.velCmd_[i]);
       break;
     }
+    case 1: // RHPS1 velocity policies — V5 format (566 dims)
+            // mjlab-rhps1 run 2026-08-05_11-17-44 ("abl15"). V5 is V4 with one
+            // block appended and nothing else moved:
+            //   raw_torque[300] = 10x30  (NEW)
+            // 266 + 300 = 566. The block is |tau_raw| / effort_limit per joint,
+            // measured on the target BEFORE the feasibility projection --
+            // see NewRLQPController::updateRawTorqueRatio(). Its history is 10
+            // deep, not 5 like every other block, which is why it has its own
+            // buffer instead of sharing HISTORY_SIZE.
+            //
+            // Falls through the V4 body below: everything up to gait_phase is
+            // byte-for-byte identical, and duplicating 60 lines to append one
+            // block is how the two drift apart.
+    case 2: // RHPS1 velocity policies — V4 format (266 dims)
+            // mjlab-rhps1 run 2026-08-01_14-55-55 ("abl7"). Two blocks grew and
+            // one is new relative to V3:
+            //   base_lin_vel[15]  = 5x3   (unchanged)
+            //   base_ang_vel[3], projected_gravity[3], joint_pos[30],
+            //   joint_vel[30]                        (unchanged)
+            //   actions[150]      = 5x30  (was 30)
+            //   command[15]       = 5x3   (unchanged)
+            //   gait_phase[20]    = 5x4   (NEW -- absent from V3 entirely)
+            // 15+3+3+30+30+150+15+20 = 266.
+            //
+            // The actions block is executed_action in training, i.e. the target
+            // AFTER the actuator's feasibility projection, not the raw network
+            // output. Without that projection here the two coincide, so this is
+            // faithful only for a controller that does not project. See the note
+            // on the projection in NewRLQPController.h.
+    {
+      auto & rr = ctl.realRobot(ctl.robots()[0].name());
+      const std::string & baseName = rr.mb().body(0).name();
+      const Eigen::Matrix3d R_w2b = rr.bodyPosW(baseName).rotation();
+
+      for(int i = ctl.HISTORY_SIZE - 1; i > 0; --i)
+      {
+        ctl.linVel_[i]    = ctl.linVel_[i-1];
+        ctl.angVel_[i]    = ctl.angVel_[i-1];
+        ctl.projGrav_[i]  = ctl.projGrav_[i-1];
+        ctl.jointPos_[i]  = ctl.jointPos_[i-1];
+        ctl.jointVel_[i]  = ctl.jointVel_[i-1];
+        ctl.jointAct_[i]  = ctl.jointAct_[i-1];
+        ctl.velCmd_[i]    = ctl.velCmd_[i-1];
+        ctl.gaitPhase_[i] = ctl.gaitPhase_[i-1];
+      }
+
+      ctl.linVel_[0]   = R_w2b * rr.bodyVelW(baseName).linear();
+      ctl.angVel_[0]   = R_w2b * rr.bodyVelW(baseName).angular();
+      ctl.projGrav_[0] = R_w2b * Eigen::Vector3d(0, 0, -1);
+      ctl.velCmd_[0]   = ctl.currentVelCmd_;
+      ctl.jointAct_[0] = ctl.currentAction;
+      // Advance the clock exactly once per inference, after velCmd_[0] is set
+      // (the cadence depends on it) and before the block is written out.
+      ctl.gaitPhaseStep();
+
+      const int actionDim = static_cast<int>(ctl.refJointOrderRLAction.size());
+      ctl.jointPos_[0] = Eigen::VectorXd::Zero(actionDim);
+      ctl.jointVel_[0] = Eigen::VectorXd::Zero(actionDim);
+      for(int j = 0; j < actionDim; ++j)
+      {
+        const int mcIdx = rr.jointIndexByName(ctl.refJointOrderRLAction[j]);
+        ctl.jointPos_[0](j) = rr.mbc().q[mcIdx][0] - ctl.q_zero[ctl.actionToDofMap[j]];
+        ctl.jointVel_[0](j) = rr.mbc().alpha[mcIdx][0];
+      }
+
+      auto write3 = [&](const Eigen::Vector3d & v)
+      { obs.segment(offset, 3) = v; offset += 3; };
+      auto write4 = [&](const Eigen::Vector4d & v)
+      { obs.segment(offset, 4) = v; offset += 4; };
+
+      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.linVel_[i]);
+      write3(ctl.angVel_[0]);
+      write3(ctl.projGrav_[0]);
+      appendToObs(ctl.jointPos_[0]);
+      appendToObs(ctl.jointVel_[0]);
+      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointAct_[i]);
+      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.velCmd_[i]);
+      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write4(ctl.gaitPhase_[i]);
+
+      // V5 tail. rawTorque_ is pushed by updateRawTorqueRatio() at the END of the
+      // previous policy step, so index 0 holds the demand of the action that has
+      // just been executed -- the same alignment mjlab has, where the observation
+      // reads a peak accumulated over the previous step's substeps.
+      if(ctl.currentPolicyIndex == 1)
+      {
+        for(int i = ctl.RAW_TORQUE_HISTORY-1; i >= 0; --i) appendToObs(ctl.rawTorque_[i]);
+      }
+      break;
+    }
     default:
     {
       mc_rtc::log::error("[NewRLQPController::utils] Unknown policy index: {}", ctl.currentPolicyIndex);
@@ -170,6 +279,18 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
     }
   }
 
-  assert(offset == obs.size() && "[NewRLQPController::utils] Observation size mismatch: written bytes != allocated size");
+  // Hard error, not assert: the superbuild builds RelWithDebInfo, which defines
+  // NDEBUG and compiles asserts out entirely. A short write would then leave the
+  // tail of the vector at zero and the policy would run on a silently truncated
+  // observation -- exactly the failure this check exists to catch, and the one
+  // that is hardest to diagnose from behaviour alone.
+  if(offset != obs.size())
+  {
+    mc_rtc::log::error_and_throw<std::runtime_error>(
+        "[NewRLQPController::utils] Observation size mismatch for policy index {}: wrote {} "
+        "values, the network expects {}. The observation layout in this switch does not match "
+        "the loaded ONNX.",
+        ctl.currentPolicyIndex, offset, obs.size());
+  }
   return obs;
 }

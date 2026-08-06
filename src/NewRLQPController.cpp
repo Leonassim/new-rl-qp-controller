@@ -90,6 +90,13 @@ void NewRLQPController::reset(const mc_control::ControllerResetData & reset_data
 
   q_rl       = q_zero;
   q_rl_prev_ = q_zero;
+  // Drop the projection's history rather than guessing it: the next call seeds
+  // qTargetPrev_ with the first real target, so the first finite difference is
+  // zero. Seeding with q_zero here would be a guess, and a wrong one whenever
+  // the go-to-init ramp has not finished.
+  projInitialized_ = false;
+  qTargetPrev_ = q_zero;
+  qdTarget_.setZero();
   currentVelCmd_.setZero();
   histInitialized_ = false;
   // Never resume armed across a reset: a controller switch or a re-reset must
@@ -187,6 +194,54 @@ void NewRLQPController::initializeRobot()
   kp_ = pdGainsRatio_ * kpBase_;
   kd_ = sqrt(pdGainsRatio_) * kdBase_;
 
+  // Torque-feasibility projection. Off unless the policy block asks for it, so
+  // indices that trained without it are untouched.
+  torqueFeasibilityRatio_ = config_("policies")[currentPolicyIndex]("torque_feasibility_ratio", -1.0);
+  velTargetFilterAlpha_   = config_("policies")[currentPolicyIndex]("vel_target_filter_alpha", 0.0);
+  effortLimit_    = Eigen::VectorXd::Zero(nbActuatedJoints);
+  velTargetLimitPerJoint_ = Eigen::VectorXd::Constant(nbActuatedJoints, 1e9);
+  qdTarget_       = Eigen::VectorXd::Zero(nbActuatedJoints);
+  qTargetPrev_    = Eigen::VectorXd::Zero(nbActuatedJoints);
+  // The projection is only meaningful when the plant downstream really is the PD
+  // it was derived from. Its correctness proof in training is an identity:
+  // tau(q*) = kp*(q* - q) + kd*(qd* - qdot) is affine and increasing in q*, so
+  // clamping tau to +/-e and projecting q* onto tau's preimage of [-e, e] are the
+  // same operation -- same torque, same dynamics, no new constraint.
+  //
+  // Under use_QP that PD does not exist. q_rl becomes a PostureTask target and the
+  // QP integrates it in OpenLoop, so nothing anywhere applies kp = 20000. The
+  // projection then stops being an identity and becomes a hard constraint pinning
+  // the target within budget/kp of the *measured* position -- 0.0018 rad on
+  // CROTCH_Y, 0.007 rad on CROTCH_P. The QP's tracking error is an order of
+  // magnitude larger than that, so essentially every command collapses onto the
+  // measurement, the posture task sees no error, and the robot goes limp.
+  //
+  // Nothing is lost by skipping it here: the deterministic rollout of this
+  // checkpoint left only 3.0% of joint-steps outside the window (mean demand
+  // 0.269), i.e. the projection had already done its work at training time by
+  // shaping what the policy learned to emit. The QP enforces its own torque and
+  // velocity limits for its own plant.
+  //
+  // The QP check is made per call in projectTorqueFeasible, NOT here. Zeroing the
+  // ratio at init looked equivalent and is not: "Toggle QP Control" flips useQP_
+  // at runtime, so a config loaded with use_QP true would reach the bypass path
+  // with the projection permanently destroyed -- i.e. exactly the raw, unclamped
+  // behaviour this exists to prevent, on the one path where it is valid.
+  if(torqueFeasibilityRatio_ > 0.0)
+  {
+    std::map<std::string, double> eff_map = config_("policies")[currentPolicyIndex]("effort_limit");
+    std::map<std::string, double> vtl_map = config_("policies")[currentPolicyIndex]("vel_target_limit_per_joint");
+    for(int i = 0; i < nbActuatedJoints; ++i)
+    {
+      effortLimit_[i] = eff_map.at(jointNames[i]);
+      updateIfExists(velTargetLimitPerJoint_[i], vtl_map, jointNames[i]);
+    }
+    mc_rtc::log::info("[NewRLQPController] Torque-feasibility projection ARMED (ratio {}, "
+                      "vel_target_filter_alpha {}) -- applied only while QP control is "
+                      "bypassed; currently useQP={}",
+                      torqueFeasibilityRatio_, velTargetFilterAlpha_, useQP_);
+  }
+
   maxVelX_          = config_("policies")[currentPolicyIndex]("max_vel_x",         0.6);
   maxVelY_          = config_("policies")[currentPolicyIndex]("max_vel_y",         0.4);
   maxYawCmd_        = config_("policies")[currentPolicyIndex]("max_yaw",           0.7);
@@ -245,8 +300,156 @@ void NewRLQPController::initializeRLObservation()
     jointVel_[i] = jv;
     jointAct_[i] = ja;
     velCmd_[i]   = currentVelCmd_;
+    gaitPhase_[i].setZero();
   }
+  gaitPhase_value_ = 0.0;
+
+  // Zero, not the current demand: at init the target is the measured posture, so
+  // the true ratio is ~0 anyway, and mjlab's buffer starts zeroed as well.
+  for(int i = 0; i < RAW_TORQUE_HISTORY; ++i)
+  {
+    rawTorque_[i] = Eigen::VectorXd::Zero(actionDim);
+  }
+  rawTorqueRatio_ = Eigen::VectorXd::Zero(nbActuatedJoints);
+
   histInitialized_ = true;
+}
+
+void NewRLQPController::updateRawTorqueRatio(const Eigen::VectorXd & qTarget)
+{
+  auto & rr = realRobot(robots()[0].name());
+
+  // First call: seed the history with this very target so the finite difference
+  // is exactly zero, as the actuator's `uninitialized` branch does. Seeding with
+  // q_zero instead injects a spurious first-step velocity of (qTarget - q_zero)/dt.
+  if(!projInitialized_)
+  {
+    qTargetPrev_ = qTarget;
+    qdTarget_.setZero();
+    projInitialized_ = true;
+  }
+
+  for(int i = 0; i < nbActuatedJoints; ++i)
+  {
+    // qd*: EMA-filtered finite difference of the *target*, not of the measured
+    // position. Order matters -- estimate, clamp, then filter, as the actuator does.
+    double raw = (qTarget(i) - qTargetPrev_(i)) / policyStepSize;
+    raw = std::clamp(raw, -velTargetLimitPerJoint_(i), velTargetLimitPerJoint_(i));
+    qdTarget_(i) = velTargetFilterAlpha_ > 0.0
+                       ? velTargetFilterAlpha_ * qdTarget_(i) + (1.0 - velTargetFilterAlpha_) * raw
+                       : raw;
+
+    const int mcIdx = rr.jointIndexByName(jointNames[i]);
+    const double q = rr.mbc().q[mcIdx][0];
+    const double qdot = rr.mbc().alpha[mcIdx][0];
+
+    // kpBase_/kdBase_, not kp_/kd_: this channel has to reproduce what the
+    // training actuator measured, and those gains are fixed in mjlab. kp_ carries
+    // the runtime pd_gains_ratio, so using it would feed the network a rescaled
+    // version of a quantity it learned at ratio 1.
+    const double tau = kpBase_(i) * (qTarget(i) - q) + kdBase_(i) * (qdTarget_(i) - qdot);
+    // effortLimit_ is only filled when the policy block declares one. Guard on it
+    // rather than clamping the divisor: a policy with no effort_limit would
+    // otherwise get tau/1e-6, i.e. ~1e9, silently poured into a channel that
+    // happens to be unread today and would be read the moment someone adds a V5
+    // sibling. Zero says "not measured" instead of lying with a huge number.
+    rawTorqueRatio_(i) = effortLimit_(i) > 0.0 ? std::abs(tau) / effortLimit_(i) : 0.0;
+  }
+
+  // The finite difference is taken between two *raw* targets, never against the
+  // projected one. FiniteDifferencePdActuator stores `_last_position_target`
+  // before `_apply_torque_feasibility` runs, so qd* measures how fast the policy
+  // is moving its command, not how far the projection had to pull it back.
+  //
+  // Storing the projected target here is a runaway, and it is what blew the robot
+  // up: the projected target sits within budget/kp of the measurement (7e-3 rad on
+  // CROTCH_P), so the next raw target is a whole action away from it, the
+  // difference saturates the per-joint clamp, and v_term = kd*(qd* - qdot) reaches
+  // 400*8 = 3200 Nm. Divided by kp that shoves the window ~0.16 rad clear of q --
+  // more than 20 window widths -- so the projection commands a large step in the
+  // direction of its own saturated velocity estimate, every tick, and diverges.
+  qTargetPrev_ = qTarget;
+
+  // Shift the ratio history (index 0 = most recent) and publish the new value,
+  // reordered into the policy's joint order. rawTorqueRatio_ is indexed by
+  // jointNames (mc_rtc order); the network expects ref_joint_order, and the two
+  // are not the same list -- actionToDofMap[j] = i is the bridge, as it is for
+  // jointPos_/jointVel_.
+  for(int i = RAW_TORQUE_HISTORY - 1; i > 0; --i) { rawTorque_[i] = rawTorque_[i - 1]; }
+  const int actionDim = static_cast<int>(refJointOrderRLAction.size());
+  rawTorque_[0] = Eigen::VectorXd::Zero(actionDim);
+  for(int j = 0; j < actionDim; ++j) { rawTorque_[0](j) = rawTorqueRatio_(actionToDofMap[j]); }
+}
+
+Eigen::VectorXd NewRLQPController::projectTorqueFeasible(const Eigen::VectorXd & qTarget)
+{
+  if(torqueFeasibilityRatio_ <= 0.0) { return qTarget; }
+
+  // Under the QP, q_rl is a PostureTask target integrated in OpenLoop and nothing
+  // applies kp = 20000, so the projection stops being the identity it is proved to
+  // be and becomes a hard constraint pinning the target within budget/kp of the
+  // measurement -- 0.0018 rad on CROTCH_Y. On the bypass path q_rl goes straight
+  // to mc_mujoco's servo, whose gains ARE these kp/kd (verified against
+  // share/mc_mujoco/RHPS1/pdgains/RHPS1main/PDgains_sim.dat: 20000/400 legs,
+  // 10000/300 ankles, 44000/440 chest), so there the window is correctly sized.
+  //
+  // No seed to drop on the way out any more: updateRawTorqueRatio() runs every
+  // policy step in both modes, so qTargetPrev_ and qd* are never stale when
+  // bypass is re-entered. That staleness is what blew the robot up on 2026-08-02.
+  if(useQP_) { return qTarget; }
+
+  auto & rr = realRobot(robots()[0].name());
+  Eigen::VectorXd out = qTarget;
+
+  for(int i = 0; i < nbActuatedJoints; ++i)
+  {
+    // qd* was computed on the raw target by updateRawTorqueRatio() this step.
+    const int mcIdx = rr.jointIndexByName(jointNames[i]);
+    const double q = rr.mbc().q[mcIdx][0];
+    const double qdot = rr.mbc().alpha[mcIdx][0];
+
+    const double budget = torqueFeasibilityRatio_ * effortLimit_(i);
+    const double vTerm = kd_(i) * (qdTarget_(i) - qdot);
+    const double kp = std::max(kp_(i), 1e-6);
+    const double lo = q + (-budget - vTerm) / kp;
+    const double hi = q + (budget - vTerm) / kp;
+    out(i) = std::clamp(qTarget(i), lo, hi);
+  }
+
+  // qTargetPrev_ is NOT written here: updateRawTorqueRatio() owns it and has
+  // already stored the raw target. Storing `out` instead would be the runaway
+  // documented there.
+  return out;
+}
+
+void NewRLQPController::gaitPhaseStep()
+{
+  // Commanded planar speed drives both the cadence and the amplitude. Yaw is
+  // deliberately excluded: mjlab's clock keys off the linear command only.
+  const double speed = currentVelCmd_.head<2>().norm();
+
+  // Amplitude ramps 0 -> 1 over [0, threshold]; the clock itself only advances
+  // above the threshold. Below it the phase is held, but the amplitude scaling
+  // takes the whole block to zero, so a held phase is never visible.
+  const double amplitude = std::clamp(speed / gaitCommandThreshold_, 0.0, 1.0);
+
+  if(speed >= gaitCommandThreshold_)
+  {
+    // Period interpolates linearly between the slow point (at the threshold)
+    // and the fast point (at the reference speed), clamped outside that span.
+    const double t = std::clamp(
+        (speed - gaitCommandThreshold_) / std::max(gaitCommandRef_ - gaitCommandThreshold_, 1e-9),
+        0.0, 1.0);
+    const double period = gaitPeriodSlow_ + t * (gaitPeriodFast_ - gaitPeriodSlow_);
+    gaitPhase_value_ += policyStepSize / std::max(period, 1e-6);
+    gaitPhase_value_ -= std::floor(gaitPhase_value_); // wrap into [0, 1)
+  }
+
+  const double phiL = 2.0 * M_PI * gaitPhase_value_;
+  // Right foot is the left shifted by half a period; sin/cos are pi-antiperiodic,
+  // so the right block is exactly the negation of the left.
+  gaitPhase_[0] << amplitude * std::sin(phiL), amplitude * std::cos(phiL),
+      -amplitude * std::sin(phiL), -amplitude * std::cos(phiL);
 }
 
 void NewRLQPController::updateVelocityCommand()
@@ -347,6 +550,15 @@ void NewRLQPController::addLog()
   logger().addLogEntry("NewRLQPController_RL_actionScale",   [this]() { return actionScale; });
   logger().addLogEntry("NewRLQPController_useQP",            [this]() { return useQP_; });
   logger().addLogEntry("NewRLQPController_velCmd",           [this]() { return currentVelCmd_; });
+  // The whole point of the raw-torque campaign: what the policy would demand of
+  // each joint if nothing clipped it, in units of effort_limit. 1.0 = at the
+  // training limit. Reading the max here is the deployment-side counterpart of
+  // Metrics/raw_torque_peak_max, and the knee is the one to watch -- its
+  // effort_limit is 70 N.m against a real continuous rating of 21.4.
+  logger().addLogEntry("NewRLQPController_rawTorqueRatio",   [this]() { return rawTorqueRatio_; });
+  logger().addLogEntry("NewRLQPController_rawTorqueRatioMax", [this]() {
+    return rawTorqueRatio_.size() ? rawTorqueRatio_.maxCoeff() : 0.0;
+  });
   // Per-joint gap between the RL target and the measured position (refJointOrder).
   // With QP on, a joint whose gap grows/saturates is being clamped by a QP
   // constraint (joint-limit/velocity damper or collision damper).

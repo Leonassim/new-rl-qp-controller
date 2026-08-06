@@ -188,8 +188,107 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   std::array<Eigen::VectorXd, HISTORY_SIZE> jointVel_;
   std::array<Eigen::VectorXd, HISTORY_SIZE> jointAct_;
   std::array<Eigen::Vector3d, HISTORY_SIZE> velCmd_;
+  // V4 only: [sin(2pi*phi_L), cos(2pi*phi_L), sin(2pi*phi_R), cos(2pi*phi_R)]
+  // scaled by the clock amplitude. See gaitPhaseStep().
+  std::array<Eigen::Vector4d, HISTORY_SIZE> gaitPhase_;
+
+  // V5 only: |tau_raw| / effort_limit per joint, history 10 (deeper than the
+  // other blocks, which is why it does not share HISTORY_SIZE). See
+  // updateRawTorqueRatio().
+  static constexpr int RAW_TORQUE_HISTORY = 10;
+  std::array<Eigen::VectorXd, RAW_TORQUE_HISTORY> rawTorque_;
 
   Eigen::Vector3d currentVelCmd_ = Eigen::Vector3d::Zero();
+
+  // =========================================================================
+  // Gait phase clock (V4 observation only)
+  // =========================================================================
+  //
+  // mjlab drives the gait with an open-loop clock and feeds its phase to the
+  // policy, so this has to reproduce that clock exactly or the network sees a
+  // channel it never trained against. Mirrors mdp.rewards.gait_phase_tracking:
+  // phase advances by dt/period each policy step and wraps into [0, 1); the
+  // right foot is the left shifted by 0.5; the clock FREEZES while the
+  // commanded speed is below gaitCommandThreshold_; the period interpolates
+  // linearly from gaitPeriodSlow_ at that threshold to gaitPeriodFast_ at
+  // gaitCommandRef_; and the block is scaled by an amplitude ramping 0 -> 1
+  // over [0, gaitCommandThreshold_], so it goes flat at zero command instead of
+  // freezing on whatever encoding the clock happened to stop on. A frozen but
+  // nonzero encoding is indistinguishable from an active gait to the network.
+  double gaitPhase_value_ = 0.0;
+  double gaitPeriodSlow_ = 2.0;
+  double gaitPeriodFast_ = 1.1;
+  double gaitCommandThreshold_ = 0.1;
+  double gaitCommandRef_ = 0.7;
+
+  /** @brief Advance the gait clock one policy step and refresh gaitPhase_[0]. */
+  void gaitPhaseStep();
+
+  // =========================================================================
+  // Torque-feasibility projection (mirrors mjlab FiniteDifferencePdActuator)
+  // =========================================================================
+  //
+  // Clamps the position target so the PD it feeds can never demand more than
+  // ratio * effort_limit:
+  //
+  //   v_term = kd * (qd* - qdot)
+  //   q* in [ q + (-budget - v_term)/kp , q + (budget - v_term)/kp ]
+  //
+  // The interval always has width 2*budget/kp > 0; the velocity term shifts it
+  // rather than shrinking it, and when the velocity error alone would blow the
+  // budget the whole interval sits on one side of q -- the projection then
+  // commands the joint *back*, which is what the effort clamp was doing
+  // implicitly anyway.
+  //
+  // Why it belongs here and not only in training: the policy learned on a plant
+  // that projects. Without it the controller is a different plant, and the gap
+  // shows up in transients, where demand peaks (a deterministic rollout of the
+  // abl7 checkpoint read a max ratio of 234 against a steady-state mean of 0.27).
+  //
+  // qd* is NOT the measured velocity: it is the EMA-filtered finite difference
+  // of the position target, exactly as the actuator computes it --
+  //   raw   = clamp((q*_k - q*_{k-1}) / dt, +/- vel_target_limit)
+  //   qd*_k = alpha * qd*_{k-1} + (1 - alpha) * raw
+  // With alpha = 0.8 this carries state, which is why the policy is also given
+  // an action history: nothing else in the observation reveals it.
+  double torqueFeasibilityRatio_ = -1.0; ///< <= 0 disables the projection.
+  double velTargetFilterAlpha_ = 0.0;
+  Eigen::VectorXd effortLimit_;
+  Eigen::VectorXd velTargetLimitPerJoint_; ///< Per-joint clamp used by the projection only (the scalar velTargetLimit_ below is the older feedforward clamp, kept separate on purpose).
+  Eigen::VectorXd qdTarget_;    ///< Filtered velocity target (qd*).
+  Eigen::VectorXd qTargetPrev_; ///< Previous *raw* position target, for the finite difference.
+  bool projInitialized_ = false; ///< False until the first target seeds qTargetPrev_.
+  Eigen::VectorXd rawTorqueRatio_; ///< |tau_raw| / effort_limit, current step.
+
+  /**
+   * @brief Advance qd*, compute the raw-torque ratio and push it into rawTorque_.
+   *
+   * Must run once per inference, on the RAW target, BEFORE projectTorqueFeasible
+   * and regardless of use_QP -- the V5 network was trained with this channel and
+   * will read garbage without it. Splitting it out of the projection is also what
+   * keeps qTargetPrev_ fresh across a QP interlude: the projection used to be the
+   * only writer, so it had to drop its seed on the way out.
+   *
+   * The ratio is the pre-clamp demand of the training PD:
+   *   ratio_i = |kp_i (q*_i - q_i) + kd_i (qd*_i - qdot_i)| / effort_limit_i
+   * evaluated on the raw target, which is what mjlab's actuator peak-holds over
+   * the substeps between two policy steps.
+   *
+   * KNOWN APPROXIMATION: abl15 trained with decimation 2 (sim 0.0025 s, policy
+   * 0.005 s), so its channel is the max over TWO substeps; this is a single
+   * evaluation at the policy boundary. A max over two samples is >= either one,
+   * so the controller feeds a slightly LOW ratio -- conservative in the sense
+   * that it never invents demand, but it is not bit-exact. On the real robot
+   * mc_rtc's dt equals the policy step, so there is no second sample to take.
+   */
+  void updateRawTorqueRatio(const Eigen::VectorXd & qTarget);
+
+  /**
+   * @brief Project @p qTarget onto the torque-feasible interval.
+   * @return the projected target; unchanged when the projection is disabled.
+   * @pre updateRawTorqueRatio() ran this step: qd* is read, not recomputed.
+   */
+  Eigen::VectorXd projectTorqueFeasible(const Eigen::VectorXd & qTarget);
 
   // =========================================================================
   // Policy / timing
