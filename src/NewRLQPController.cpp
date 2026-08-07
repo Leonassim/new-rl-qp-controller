@@ -576,11 +576,9 @@ void NewRLQPController::addLog()
   // RobotHardware est un courant, gearRatio et torqueConst valant 1 dans le
   // VRML. Journalise tel quel, sans conversion, pour pouvoir le comparer
   // directement aux limites CL/PL des drives.
-  // mc_rtc publie cette mesure sous le nom "tauIn" (MCController.cpp:545), ce
-  // qui est faux ici : c'est un courant. On retire l'entree trompeuse et on
-  // republie exactement la meme donnee sous un nom qui porte son unite.
-  logger().removeLogEntry("tauIn");
-
+  // tauIn de mc_rtc est laisse en place (donnee brute, indexee sur le
+  // refJointOrder complet). Les entrees ci-dessous la doublent avec un nom
+  // explicite et une unite, une par joint pour etre lisibles dans mc_log_ui.
   logger().addLogEntry("NewRLQPController_joint_current_A", [this]() -> const Eigen::VectorXd &
   {
     const auto & cur = robot().jointTorques();
@@ -606,6 +604,29 @@ void NewRLQPController::addLog()
     }
     return jointTorqueNm_;
   });
+
+  // Une entree par joint, nommee, pour pouvoir la retrouver dans mc_log_ui
+  // sans compter les indices. current_* existe pour les 30 joints ; torque_*
+  // seulement pour ceux dont on connait N*Kt, sinon la courbe serait un zero
+  // trompeur.
+  for(int i = 0; i < nbActuatedJoints; ++i)
+  {
+    logger().addLogEntry("current_" + jointNames[i], [this, i]() -> double
+    {
+      const auto & cur = robot().jointTorques();
+      const int k = refIdx_[i];
+      return (k >= 0 && k < static_cast<int>(cur.size())) ? cur[k] : 0.0;
+    });
+    if(jointTorqueScale_(i) != 0.0)
+    {
+      logger().addLogEntry("torque_" + jointNames[i], [this, i]() -> double
+      {
+        const auto & cur = robot().jointTorques();
+        const int k = refIdx_[i];
+        return (k >= 0 && k < static_cast<int>(cur.size())) ? cur[k] * jointTorqueScale_(i) : 0.0;
+      });
+    }
+  }
   // The whole point of the raw-torque campaign: what the policy would demand of
   // each joint if nothing clipped it, in units of effort_limit. 1.0 = at the
   // training limit. Reading the max here is the deployment-side counterpart of
