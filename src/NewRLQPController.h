@@ -177,6 +177,14 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    *  Zero sur les joints sans facteur connu. Size: nbActuatedJoints. */
   Eigen::VectorXd jointTorqueNm_;
 
+  /** @brief Pour chaque joint pilote, son indice dans le refJointOrder COMPLET.
+   *
+   * robot().jointTorques() est indexe sur le refJointOrder complet, mains
+   * comprises, alors que jointNames est filtre (30 joints). Sans cette
+   * table, tout ce qui suit L_HAND est decale d'un cran et le bras droit
+   * lit les valeurs du joint voisin. */
+  std::vector<int> refIdx_;
+
   /** @brief Courants mesures en amperes, tels que publies par le robot.
    *  Tampon distinct de jointTorqueNm_ : les deux entrees de log sont
    *  evaluees dans le meme cycle. Size: nbActuatedJoints. */

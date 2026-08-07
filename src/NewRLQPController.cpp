@@ -192,6 +192,17 @@ void NewRLQPController::initializeRobot()
   jointTorqueNm_    = Eigen::VectorXd::Zero(nbActuatedJoints);
   jointCurrentA_    = Eigen::VectorXd::Zero(nbActuatedJoints);
 
+  // Correspondance indice filtre -> indice dans le refJointOrder complet.
+  {
+    const auto & rjo = robot().refJointOrder();
+    refIdx_.assign(nbActuatedJoints, -1);
+    for(int i = 0; i < nbActuatedJoints; ++i)
+    {
+      auto it = std::find(rjo.begin(), rjo.end(), jointNames[i]);
+      if(it != rjo.end()) refIdx_[i] = static_cast<int>(std::distance(rjo.begin(), it));
+    }
+  }
+
   for(int i = 0; i < nbActuatedJoints; ++i)
   {
     kpBase_[i]  = kp_map.at(jointNames[i]);
@@ -574,7 +585,10 @@ void NewRLQPController::addLog()
   {
     const auto & cur = robot().jointTorques();
     for(int i = 0; i < nbActuatedJoints; ++i)
-      jointCurrentA_(i) = (i < static_cast<int>(cur.size())) ? cur[i] : 0.0;
+    {
+      const int k = refIdx_[i];
+      jointCurrentA_(i) = (k >= 0 && k < static_cast<int>(cur.size())) ? cur[k] : 0.0;
+    }
     return jointCurrentA_;
   });
 
@@ -585,8 +599,11 @@ void NewRLQPController::addLog()
   {
     const auto & cur = robot().jointTorques();
     for(int i = 0; i < nbActuatedJoints; ++i)
+    {
+      const int k = refIdx_[i];
       jointTorqueNm_(i) =
-          (i < static_cast<int>(cur.size())) ? cur[i] * jointTorqueScale_(i) : 0.0;
+          (k >= 0 && k < static_cast<int>(cur.size())) ? cur[k] * jointTorqueScale_(i) : 0.0;
+    }
     return jointTorqueNm_;
   });
   // The whole point of the raw-torque campaign: what the policy would demand of
