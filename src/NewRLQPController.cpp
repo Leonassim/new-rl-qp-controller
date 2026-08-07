@@ -565,7 +565,12 @@ void NewRLQPController::addLog()
   // RobotHardware est un courant, gearRatio et torqueConst valant 1 dans le
   // VRML. Journalise tel quel, sans conversion, pour pouvoir le comparer
   // directement aux limites CL/PL des drives.
-  logger().addLogEntry("NewRLQPController_joint_current", [this]() -> const Eigen::VectorXd &
+  // mc_rtc publie cette mesure sous le nom "tauIn" (MCController.cpp:545), ce
+  // qui est faux ici : c'est un courant. On retire l'entree trompeuse et on
+  // republie exactement la meme donnee sous un nom qui porte son unite.
+  logger().removeLogEntry("tauIn");
+
+  logger().addLogEntry("NewRLQPController_joint_current_A", [this]() -> const Eigen::VectorXd &
   {
     const auto & cur = robot().jointTorques();
     for(int i = 0; i < nbActuatedJoints; ++i)
@@ -576,7 +581,7 @@ void NewRLQPController::addLog()
   // Le meme signal converti en N.m, la ou on sait le faire : tau = I * N * Kt.
   // Reste a 0 sur les joints absents de joint_torque_scale (paires
   // differentielles, articulations a verins).
-  logger().addLogEntry("NewRLQPController_joint_torque", [this]() -> const Eigen::VectorXd &
+  logger().addLogEntry("NewRLQPController_joint_torque_Nm", [this]() -> const Eigen::VectorXd &
   {
     const auto & cur = robot().jointTorques();
     for(int i = 0; i < nbActuatedJoints; ++i)
