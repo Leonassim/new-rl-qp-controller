@@ -71,6 +71,31 @@ policy_path: [
 ]
 default_policy_index: 0
 
+# N*Kt par joint, pour convertir en N.m ce que le robot mesure.
+#
+# Ce que RobotHardware publie sur `tau` n'est PAS un couple sur RHPS1 : le VRML
+# donne gearRatio = 1 et torqueConst = 1 sur les 62 joints, donc la valeur vaut
+# ratedCurrent * 0x6077/1000, soit un COURANT en amperes. Le controleur
+# journalise les deux : NewRLQPController_joint_current (A, brut) et
+# NewRLQPController_joint_torque (N.m, = courant * la valeur ci-dessous).
+#
+# Source : scripts/ppc/joint_torque_limits_rotate.csv, lignes type=solo,
+# remappees le 2026-08-03 apres correction du bug d'association Drive<->joint.
+#
+# Volontairement limite aux six joints a moteur unique. Les paires
+# differentielles (epaule R/Y, coude P/Y, poignet P/Y, chest, head) ont un N
+# mais aucun Kt par articulation, et les articulations a verins (crotch P/R,
+# ankle P/R) ont un bras de levier variable qui demande CylinderToAngle. Les
+# joints absents d'ici restent a 0 dans le log plutot que d'etre convertis
+# avec un facteur invente.
+joint_torque_scale:
+  L_CROTCH_Y:    9.259   # 159.0907 * 0.0582
+  R_CROTCH_Y:    9.259   # 159.0907 * 0.0582
+  L_KNEE_P:     21.210   # 210.0    * 0.101
+  R_KNEE_P:     21.210   # 210.0    * 0.101
+  L_SHOULDER_P:  9.400   # 200.0    * 0.047
+  R_SHOULDER_P:  9.400   # 200.0    * 0.047
+
 policies:
   # index 0 : RHPS1 velocity policy
   #

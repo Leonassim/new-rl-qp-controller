@@ -159,6 +159,29 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    */
   Eigen::VectorXd actionScale;
 
+  /** @brief N*Kt par joint, pour convertir en couple ce que le robot mesure.
+   *
+   * Sur RHPS1, ce que RobotHardware publie sur `tau` (et que setJointTorques
+   * range dans robot().jointTorques()) n'est PAS un couple : le VRML donne
+   * gearRatio = 1 et torqueConst = 1, donc la valeur vaut ratedCurrent *
+   * 0x6077/1000, c'est-a-dire un COURANT en amperes.
+   *
+   * Rempli depuis `joint_torque_scale` du yaml, et laisse a 0 pour les joints
+   * absents de cette table : les paires differentielles n'ont pas de Kt par
+   * articulation, et les articulations a verins ont un bras de levier variable
+   * qui demande CylinderToAngle. Size: nbActuatedJoints.
+   */
+  Eigen::VectorXd jointTorqueScale_;
+
+  /** @brief Couples mesures en N.m, = jointTorques() * jointTorqueScale_.
+   *  Zero sur les joints sans facteur connu. Size: nbActuatedJoints. */
+  Eigen::VectorXd jointTorqueNm_;
+
+  /** @brief Courants mesures en amperes, tels que publies par le robot.
+   *  Tampon distinct de jointTorqueNm_ : les deux entrees de log sont
+   *  evaluees dans le meme cycle. Size: nbActuatedJoints. */
+  Eigen::VectorXd jointCurrentA_;
+
   // =========================================================================
   // Self-collision distance monitoring
   // =========================================================================

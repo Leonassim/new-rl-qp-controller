@@ -183,12 +183,22 @@ void NewRLQPController::initializeRobot()
     if(auto it = map.find(joint_name); it != map.end()) target = it->second;
   };
 
+  // N*Kt par joint. Table optionnelle et volontairement incomplete : seuls les
+  // joints a moteur unique y figurent, les autres restent a 0 et ne sont pas
+  // convertis. Voir joint_torque_scale dans le yaml.
+  std::map<std::string, double> torqueScale_map;
+  if(config_.has("joint_torque_scale")) { torqueScale_map = config_("joint_torque_scale"); }
+  jointTorqueScale_ = Eigen::VectorXd::Zero(nbActuatedJoints);
+  jointTorqueNm_    = Eigen::VectorXd::Zero(nbActuatedJoints);
+  jointCurrentA_    = Eigen::VectorXd::Zero(nbActuatedJoints);
+
   for(int i = 0; i < nbActuatedJoints; ++i)
   {
     kpBase_[i]  = kp_map.at(jointNames[i]);
     kdBase_[i]  = kd_map.at(jointNames[i]);
     q_zero[i]   = q0_map_.at(jointNames[i]);
     updateIfExists(actionScale[i], actionScale_map, jointNames[i]);
+    updateIfExists(jointTorqueScale_[i], torqueScale_map, jointNames[i]);
   }
 
   kp_ = pdGainsRatio_ * kpBase_;
@@ -550,6 +560,30 @@ void NewRLQPController::addLog()
   logger().addLogEntry("NewRLQPController_RL_actionScale",   [this]() { return actionScale; });
   logger().addLogEntry("NewRLQPController_useQP",            [this]() { return useQP_; });
   logger().addLogEntry("NewRLQPController_velCmd",           [this]() { return currentVelCmd_; });
+
+  // Ce que les drives mesurent, en amperes : sur RHPS1 le "tau" de
+  // RobotHardware est un courant, gearRatio et torqueConst valant 1 dans le
+  // VRML. Journalise tel quel, sans conversion, pour pouvoir le comparer
+  // directement aux limites CL/PL des drives.
+  logger().addLogEntry("NewRLQPController_joint_current", [this]() -> const Eigen::VectorXd &
+  {
+    const auto & cur = robot().jointTorques();
+    for(int i = 0; i < nbActuatedJoints; ++i)
+      jointCurrentA_(i) = (i < static_cast<int>(cur.size())) ? cur[i] : 0.0;
+    return jointCurrentA_;
+  });
+
+  // Le meme signal converti en N.m, la ou on sait le faire : tau = I * N * Kt.
+  // Reste a 0 sur les joints absents de joint_torque_scale (paires
+  // differentielles, articulations a verins).
+  logger().addLogEntry("NewRLQPController_joint_torque", [this]() -> const Eigen::VectorXd &
+  {
+    const auto & cur = robot().jointTorques();
+    for(int i = 0; i < nbActuatedJoints; ++i)
+      jointTorqueNm_(i) =
+          (i < static_cast<int>(cur.size())) ? cur[i] * jointTorqueScale_(i) : 0.0;
+    return jointTorqueNm_;
+  });
   // The whole point of the raw-torque campaign: what the policy would demand of
   // each joint if nothing clipped it, in units of effort_limit. 1.0 = at the
   // training limit. Reading the max here is the deployment-side counterpart of
