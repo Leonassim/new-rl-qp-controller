@@ -79,14 +79,27 @@ bool NewRLQPController::run()
   return ret;
 }
 
+double NewRLQPController::postureStiffness() const
+{
+  // posture_stiffness is read from the GLOBAL configuration, not from this
+  // controller's yaml: load_config() uses the global one as the base and lets
+  // the controller yaml override it, so leaving the key out of
+  // NewRLQPController.yaml is what allows mc_rtc_superbuild.yaml (real robot)
+  // and mc_rtc_superbuild_mujoco.yaml (simulation) to carry different values.
+  //
+  // Without it, the fallback is the historical 0.2/(policyDt*timeStep). That
+  // formula scales with the control rate, so it yields 8000 on the robot at
+  // 200 Hz and 40000 in mc_mujoco at 1 kHz -- two very different plants.
+  const double policyDt = config_("policies")[currentPolicyIndex]("policy_step_size", 0.005);
+  return config_("posture_stiffness", 0.2 / (policyDt * timeStep));
+}
+
 void NewRLQPController::reset(const mc_control::ControllerResetData & reset_data)
 {
   mc_control::fsm::Controller::reset(reset_data);
 
-  double policyDt = config_("policies")[currentPolicyIndex]("policy_step_size", 0.005);
-  double K = 0.2 / (policyDt * timeStep);
   auto pt = getPostureTask(robot().name());
-  if(pt) pt->stiffness(K);
+  if(pt) pt->stiffness(postureStiffness());
 
   q_rl       = q_zero;
   q_rl_prev_ = q_zero;
@@ -272,8 +285,7 @@ void NewRLQPController::initializeRobot()
   // the finite-difference velocity feedforward in byPassQPControl().
   velTargetLimit_   = config_("policies")[currentPolicyIndex]("vel_target_limit",  8.0);
 
-  double policyDt = config_("policies")[currentPolicyIndex]("policy_step_size", 0.005);
-  double K = 0.2 / (policyDt * timeStep);
+  const double K = postureStiffness();
   auto pt = getPostureTask(robot().name());
   pt->stiffness(K);
   mc_rtc::log::info("[NewRLQPController] useQP={} PostureTask stiffness={:.0f}", useQP_, K);

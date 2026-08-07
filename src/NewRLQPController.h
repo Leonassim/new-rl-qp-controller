@@ -96,6 +96,10 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    */
   void initializeRLObservation();
 
+  /** @brief PostureTask stiffness: `posture_stiffness` from the global
+   *  configuration, else the historical 0.2/(policyDt*timeStep). */
+  double postureStiffness() const;
+
   // =========================================================================
   // Robot state
   // =========================================================================
