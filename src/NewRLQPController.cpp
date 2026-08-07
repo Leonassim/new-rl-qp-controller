@@ -639,11 +639,26 @@ void NewRLQPController::addLog()
   // Per-joint gap between the RL target and the measured position (refJointOrder).
   // With QP on, a joint whose gap grows/saturates is being clamped by a QP
   // constraint (joint-limit/velocity damper or collision damper).
+  //
+  // refIdx_, pas i : encoderValues() est indexe sur le refJointOrder COMPLET,
+  // ou le module RHPS1 insere L_HAND et l-one-finger entre le poignet gauche et
+  // l'epaule droite (rhps1.cpp, construction de _ref_joint_order). jointNames
+  // les a filtres, donc a partir de l'index 23 tout le bras droit se comparait
+  // au voisin -- meme decalage que celui corrige sur les courants en f82bfba.
+  //
+  // Ce n'etait pas visible en simulation : RHPS1_MuJoCo ne liste que les 30
+  // joints pilotes, les deux ordres coincident et l'erreur est nulle. Sur le
+  // robot le run du 2026-08-06 rapportait R_ELBOW_P a -37.29 deg bloque a son
+  // maximum 100 % du temps, ce qui a ete lu comme une anomalie du bras droit.
   logger().addLogEntry("NewRLQPController_RL_q_tracking_error", [this]() {
     const auto & enc = robot().encoderValues();
     Eigen::VectorXd err = q_rl;
-    for(int i = 0; i < nbActuatedJoints && i < static_cast<int>(enc.size()); ++i)
-      err(i) -= enc[i];
+    for(int i = 0; i < nbActuatedJoints; ++i)
+    {
+      const int k = i < static_cast<int>(refIdx_.size()) ? refIdx_[i] : -1;
+      if(k >= 0 && k < static_cast<int>(enc.size())) { err(i) -= enc[k]; }
+      else { err(i) = 0.0; }
+    }
     return err;
   });
 }
