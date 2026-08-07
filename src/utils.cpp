@@ -112,6 +112,16 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
   }
 }
 
+bool utils::isV5(int policyIndex)
+{
+  // Kept next to the switch it serves: the V5 cases fall through the V4 body and
+  // append one extra block, so "which indices are V5" has to be stated once and
+  // read twice. Extending V5 to a new index means adding a case label AND this
+  // number; missing either one throws on the observation size, which is the
+  // point of that check.
+  return policyIndex == 1 || policyIndex == 3;
+}
+
 Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
 {
   auto & ctl = static_cast<NewRLQPController&>(ctl_);
@@ -184,6 +194,7 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       break;
     }
     case 1: // RHPS1 velocity policies — V5 format (566 dims)
+    case 3: // (index 3 = same run's final checkpoint, same V5 observation)
             // mjlab-rhps1 run 2026-08-05_11-17-44 ("abl15"). V5 is V4 with one
             // block appended and nothing else moved:
             //   raw_torque[300] = 10x30  (NEW)
@@ -266,7 +277,7 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       // previous policy step, so index 0 holds the demand of the action that has
       // just been executed -- the same alignment mjlab has, where the observation
       // reads a peak accumulated over the previous step's substeps.
-      if(ctl.currentPolicyIndex == 1)
+      if(utils::isV5(ctl.currentPolicyIndex))
       {
         for(int i = ctl.RAW_TORQUE_HISTORY-1; i >= 0; --i) appendToObs(ctl.rawTorque_[i]);
       }

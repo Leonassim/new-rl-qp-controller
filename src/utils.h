@@ -90,6 +90,16 @@ struct utils
    */
   Eigen::VectorXd getCurrentObservation(mc_control::fsm::Controller & ctl_);
 
+  /**
+   * @brief Does this policy index use the V5 observation (566 dims) ?
+   *
+   * V5 is V4 plus a raw_torque[300] tail. The two share the same switch body, so
+   * the list of V5 indices is stated once in utils.cpp and read where the tail is
+   * appended. Static: it answers a question about the configuration, not about
+   * any particular utils instance.
+   */
+  static bool isV5(int policyIndex);
+
   private:
    std::string state_name_;
    double syncTime_;    ///< Accumulated time since last policy inference (seconds)

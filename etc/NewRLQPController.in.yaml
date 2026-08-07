@@ -52,23 +52,36 @@ transitions:
 - [NewRLQPController_Initial, OK, NewRLQPController_Initial, Strict]
 init: NewRLQPController_Initial
 
-# Bundled policy (installed from policy/ by CMake). For local experiments you
-# can point directly at a training log's ONNX instead, e.g.
-# /home/<user>/mjlab-rhps1/logs/rsl_rl/rhps1_velocity/<run>/<run>.onnx
+# Every policy is BUNDLED: the files live in policy/ and CMake installs the whole
+# directory to @RL_POLICY_INSTALL_PREFIX@. No absolute path to anyone's home, so
+# a clone + build on the robot PC has the policies without needing mjlab-rhps1
+# checked out anywhere. Adding one is: drop the .onnx in policy/, add a line here
+# and a matching policies[] block.
+#
+# For a local experiment you can still point an entry at a training log's ONNX,
+# e.g. /home/<user>/mjlab-rhps1/logs/rsl_rl/rhps1_velocity/<run>/<run>.onnx --
+# but do not commit that, it breaks every other machine.
+#
+# ONLY INDEX 0 HAS EVER RUN ON HARDWARE (2026-08-06). Indices 1, 2 and 3 are
+# simulation-validated at best; 1 and 3 use an observation channel whose C++
+# implementation has never been exercised on the robot. Arm from the GUI, keep a
+# hand on the stop.
 policy_path: [
+  # index 0: V3 (126 dims), the conservative policy that walked on the robot.
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
-  # index 1: abl15, the raw-torque campaign. V5 observation (566 dims) -- see
-  # the policies[1] block below and utils.cpp case 1.
-  #
-  # model_10050, NOT the run's final checkpoint: <run>.onnx is only ever the
-  # export of the last save, so this one was re-exported on purpose with
-  # mjlab-rhps1 scripts/tools/export_onnx.py. Iterations 10000 -> 15000 bought 2.6% of
-  # peak torque for three times the falls.
-  "/home/lmoussafir/mjlab-rhps1/logs/rsl_rl/rhps1_velocity/2026-08-05_11-17-44/model_10050.onnx",
-  # index 2: abl7, the union of every validated deviation. V4 observation
-  # (266 dims) -- see the policies[2] block below and utils.cpp case 2.
-  "/home/lmoussafir/mjlab-rhps1/logs/rsl_rl/rhps1_velocity/2026-08-01_14-55-55/2026-08-01_14-55-55.onnx",
+  # index 1: abl15 at iteration 10050 -- the raw-torque campaign's best trade.
+  # V5 observation (566 dims), see policies[1] and utils.cpp case 1. NOT the run's
+  # final checkpoint: iterations 10000 -> 15000 bought 2.6% of peak torque for
+  # three times the falls, so this one was re-exported on purpose with
+  # mjlab-rhps1 scripts/tools/export_onnx.py.
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v5_abl15_it10050.onnx",
+  # index 2: abl7, the union of every validated deviation. V4 (266 dims).
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v4_abl7_2026-08-01.onnx",
+  # index 3: abl15 at its final iteration 14999, same V5 format as index 1.
+  # Kept for comparison -- lower peak torque, three times the falls.
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v5_abl15_it14999.onnx",
 ]
+# Stays 0: the real-robot entry is the only one with hardware time behind it.
 default_policy_index: 0
 
 # N*Kt par joint, pour convertir en N.m ce que le robot mesure.
@@ -811,6 +824,258 @@ policies:
       - R_ANKLE_R
       - R_ANKLE_P
 
+
+  # index 3 : abl15 au checkpoint final (14999). Format V5 identique a l'index 1,
+  # meme configuration en tout point -- seul le fichier ONNX change.
+  #
+  # Garde pour comparaison directe depuis la GUI. Sur la fin de l'entrainement,
+  # de l'iteration 10000 a 15000 : raw_torque_peak_mean 1.046 -> 1.019 (-2.6 %),
+  # over_limit_fraction 0.389 -> 0.377, mais fell_down 0.049 -> 0.143. Moins de
+  # couple demande, trois fois plus de chutes. L'index 1 est le meilleur compromis
+  # sur le papier ; celui-ci existe pour verifier ce jugement sur le vrai robot.
+  - use_QP: true
+    policy_step_size: 0.005   # 200 Hz (5 ms)
+    physics_step_size: 0.004  # mc_mujoco at 250 Hz (4 ms)
+    pd_gains_ratio: 1.0
+    # Memes plages que l'index 1 : meme run, meme etage final de curriculum.
+    max_vel_x: 0.3
+    max_vel_y: 0.4
+    max_yaw: 0.45
+    joystick_deadzone: 0.05
+    vel_ramp_rate: 0.5
+
+    # Torque-feasibility projection (mirrors mjlab's FiniteDifferencePdActuator).
+    # Active only when torque_feasibility_ratio is set. This policy trained WITH
+    # it, so without it here the plant differs from the one it learned on --
+    # visibly so in transients. This run measured raw_torque_peak_mean 1.019 and
+    # over_limit_fraction 0.377 at the end of training, under exploration noise;
+    # the deterministic figure is not measured yet.
+    torque_feasibility_ratio: 1.0
+    vel_target_filter_alpha: 0.8
+
+    effort_limit:
+      CHEST_Y:        120
+      CHEST_P:        120
+      HEAD_Y:         13
+      HEAD_P:         13
+      L_SHOULDER_P:   50
+      L_SHOULDER_R:   50
+      L_SHOULDER_Y:   50
+      L_ELBOW_P:      40
+      L_ELBOW_Y:      40
+      L_WRIST_R:      30
+      L_WRIST_Y:      30
+      R_SHOULDER_P:   50
+      R_SHOULDER_R:   50
+      R_SHOULDER_Y:   50
+      R_ELBOW_P:      40
+      R_ELBOW_Y:      40
+      R_WRIST_R:      30
+      R_WRIST_Y:      30
+      L_CROTCH_Y:     35
+      L_CROTCH_R:     100
+      L_CROTCH_P:     140
+      L_KNEE_P:       70
+      L_ANKLE_R:      45
+      L_ANKLE_P:      65
+      R_CROTCH_Y:     35
+      R_CROTCH_R:     100
+      R_CROTCH_P:     140
+      R_KNEE_P:       70
+      R_ANKLE_R:      45
+      R_ANKLE_P:      65
+
+    vel_target_limit_per_joint:
+      CHEST_Y:        6
+      CHEST_P:        6
+      HEAD_Y:         4
+      HEAD_P:         4
+      L_SHOULDER_P:   6
+      L_SHOULDER_R:   6
+      L_SHOULDER_Y:   6
+      L_ELBOW_P:      6
+      L_ELBOW_Y:      6
+      L_WRIST_R:      6
+      L_WRIST_Y:      6
+      R_SHOULDER_P:   6
+      R_SHOULDER_R:   6
+      R_SHOULDER_Y:   6
+      R_ELBOW_P:      6
+      R_ELBOW_Y:      6
+      R_WRIST_R:      6
+      R_WRIST_Y:      6
+      L_CROTCH_Y:     8
+      L_CROTCH_R:     8
+      L_CROTCH_P:     8
+      L_KNEE_P:       10
+      L_ANKLE_R:      10
+      L_ANKLE_P:      10
+      R_CROTCH_Y:     8
+      R_CROTCH_R:     8
+      R_CROTCH_P:     8
+      R_KNEE_P:       10
+      R_ANKLE_R:      10
+      R_ANKLE_P:      10
+
+    action_scale:
+      CHEST_Y:      0.002
+      CHEST_P:      0.002
+      HEAD_Y:       0.002
+      HEAD_P:       0.002
+      L_SHOULDER_P: 0.002
+      L_SHOULDER_R: 0.002
+      L_SHOULDER_Y: 0.002
+      L_ELBOW_P:    0.002
+      L_ELBOW_Y:    0.002
+      L_WRIST_R:    0.002
+      L_WRIST_Y:    0.002
+      R_SHOULDER_P: 0.002
+      R_SHOULDER_R: 0.002
+      R_SHOULDER_Y: 0.002
+      R_ELBOW_P:    0.002
+      R_ELBOW_Y:    0.002
+      R_WRIST_R:    0.002
+      R_WRIST_Y:    0.002
+      L_CROTCH_Y:   0.01225
+      L_CROTCH_R:   0.035
+      L_CROTCH_P:   0.049
+      L_KNEE_P:     0.0245
+      L_ANKLE_R:    0.0315
+      L_ANKLE_P:    0.0455
+      R_CROTCH_Y:   0.01225
+      R_CROTCH_R:   0.035
+      R_CROTCH_P:   0.049
+      R_KNEE_P:     0.0245
+      R_ANKLE_R:    0.0315
+      R_ANKLE_P:    0.0455
+
+    kp:
+      L_CROTCH_Y:   20000.0
+      L_CROTCH_R:   20000.0
+      L_CROTCH_P:   20000.0
+      L_KNEE_P:     20000.0
+      L_ANKLE_R:    10000.0
+      L_ANKLE_P:    10000.0
+      CHEST_Y:      44000.0
+      CHEST_P:      44000.0
+      R_CROTCH_Y:   20000.0
+      R_CROTCH_R:   20000.0
+      R_CROTCH_P:   20000.0
+      R_KNEE_P:     20000.0
+      R_ANKLE_R:    10000.0
+      R_ANKLE_P:    10000.0
+      HEAD_Y:       2000.0
+      HEAD_P:       2000.0
+      L_SHOULDER_P: 15000.0
+      L_SHOULDER_R: 14000.0
+      L_SHOULDER_Y: 14000.0
+      L_ELBOW_P:    14000.0
+      L_ELBOW_Y:    14000.0
+      L_WRIST_R:    14000.0
+      L_WRIST_Y:    14000.0
+      R_SHOULDER_P: 15000.0
+      R_SHOULDER_R: 14000.0
+      R_SHOULDER_Y: 14000.0
+      R_ELBOW_P:    14000.0
+      R_ELBOW_Y:    14000.0
+      R_WRIST_R:    14000.0
+      R_WRIST_Y:    14000.0
+
+    kd:
+      L_CROTCH_Y:   400.0
+      L_CROTCH_R:   400.0
+      L_CROTCH_P:   400.0
+      L_KNEE_P:     400.0
+      L_ANKLE_R:    300.0
+      L_ANKLE_P:    300.0
+      CHEST_Y:      440.0
+      CHEST_P:      440.0
+      R_CROTCH_Y:   400.0
+      R_CROTCH_R:   400.0
+      R_CROTCH_P:   400.0
+      R_KNEE_P:     400.0
+      R_ANKLE_R:    300.0
+      R_ANKLE_P:    300.0
+      HEAD_Y:       50.0
+      HEAD_P:       50.0
+      L_SHOULDER_P: 240.0
+      L_SHOULDER_R: 240.0
+      L_SHOULDER_Y: 240.0
+      L_ELBOW_P:    240.0
+      L_ELBOW_Y:    240.0
+      L_WRIST_R:    240.0
+      L_WRIST_Y:    240.0
+      R_SHOULDER_P: 240.0
+      R_SHOULDER_R: 240.0
+      R_SHOULDER_Y: 240.0
+      R_ELBOW_P:    240.0
+      R_ELBOW_Y:    240.0
+      R_WRIST_R:    240.0
+      R_WRIST_Y:    240.0
+
+    q0:
+      CHEST_Y:      0.0
+      CHEST_P:      0.0
+      HEAD_Y:       0.0
+      HEAD_P:       0.0
+      L_SHOULDER_P: 0.261799
+      L_SHOULDER_R: 0.174533
+      L_SHOULDER_Y: -0.087266
+      L_ELBOW_P:    -0.523599
+      L_ELBOW_Y:    0.0
+      L_WRIST_R:    0.0
+      L_WRIST_Y:    0.0
+      R_SHOULDER_P: 0.261799
+      R_SHOULDER_R: -0.174533
+      R_SHOULDER_Y: 0.087266
+      R_ELBOW_P:    -0.523599
+      R_ELBOW_Y:    0.0
+      R_WRIST_R:    0.0
+      R_WRIST_Y:    0.0
+      L_CROTCH_Y:   -0.010533
+      L_CROTCH_R:   0.028787
+      L_CROTCH_P:   -0.196399
+      L_KNEE_P:     0.487266
+      L_ANKLE_R:    -0.030652
+      L_ANKLE_P:    -0.290867
+      R_CROTCH_Y:   0.010533
+      R_CROTCH_R:   -0.028787
+      R_CROTCH_P:   -0.196399
+      R_KNEE_P:     0.487266
+      R_ANKLE_R:    0.030652
+      R_ANKLE_P:    -0.290867
+
+    ref_joint_order:
+      - CHEST_Y
+      - CHEST_P
+      - HEAD_Y
+      - HEAD_P
+      - L_SHOULDER_P
+      - L_SHOULDER_R
+      - L_SHOULDER_Y
+      - L_ELBOW_P
+      - L_ELBOW_Y
+      - L_WRIST_R
+      - L_WRIST_Y
+      - R_SHOULDER_P
+      - R_SHOULDER_R
+      - R_SHOULDER_Y
+      - R_ELBOW_P
+      - R_ELBOW_Y
+      - R_WRIST_R
+      - R_WRIST_Y
+      - L_CROTCH_Y
+      - L_CROTCH_R
+      - L_CROTCH_P
+      - L_KNEE_P
+      - L_ANKLE_R
+      - L_ANKLE_P
+      - R_CROTCH_Y
+      - R_CROTCH_R
+      - R_CROTCH_P
+      - R_KNEE_P
+      - R_ANKLE_R
+      - R_ANKLE_P
 
 use_async_inference: false
 log_timing: true
