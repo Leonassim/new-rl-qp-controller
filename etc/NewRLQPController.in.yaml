@@ -69,12 +69,14 @@ init: NewRLQPController_Initial
 policy_path: [
   # index 0: V3 (126 dims), the conservative policy that walked on the robot.
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
-  # index 1: abl15 at iteration 10050 -- the raw-torque campaign's best trade.
-  # V5 observation (566 dims), see policies[1] and utils.cpp case 1. NOT the run's
-  # final checkpoint: iterations 10000 -> 15000 bought 2.6% of peak torque for
-  # three times the falls, so this one was re-exported on purpose with
-  # mjlab-rhps1 scripts/tools/export_onnx.py.
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v5_abl15_it10050.onnx",
+  # index 1: run 2026-08-07_15-40-43, checkpoint 7050 -- le retour a la base
+  # policy 0. Observation 246 dims (utils.cpp case 1), ni gait_phase ni
+  # raw_torque. Checkpoint 7050 et non le dernier : le curriculum de commande
+  # atteint son dernier etage vers l'iteration 7000, et au-dela les chutes
+  # montent de 0.096 a 0.293 pour un suivi inchange (0.434 -> 0.410).
+  #
+  # L'ONNX d'abl15 it10050 reste dans policy/ si on veut le remettre.
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v6_policy0base_it7050.onnx",
   # index 2: abl7, the union of every validated deviation. V4 (266 dims).
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v4_abl7_2026-08-01.onnx",
   # index 3: abl15 at its final iteration 14999, same V5 format as index 1.
@@ -290,35 +292,34 @@ policies:
       - R_ANKLE_R
       - R_ANKLE_P
 
-  # index 1 : run 2026-08-05_11-17-44 ("abl15") -- the raw-torque campaign.
-  # First policy trained with the pre-clamp PD demand both as an observation
-  # channel and as the penalised quantity (log1p(max(0, ratio - 1)), curriculum
-  # -0.05 -> -1.50). Everything else is abl7's configuration, unchanged.
+  # index 1 : run 2026-08-07_15-40-43, checkpoint 7050.
   #
-  # THIS INDEX USES THE V5 OBSERVATION (566 dims). utils.cpp case 1 builds it by
-  # falling through the V4 body and appending one block:
-  #   raw_torque[300] = 10x30, |tau_raw| / effort_limit per joint, history 10.
-  # 266 + 300 = 566. Index 2 stays on V4 (266) and index 0 on V3 (126).
+  # Retour a la configuration de la policy 0 -- la seule qui ait marche sur le
+  # robot -- augmentee de trois choses seulement : les armatures reelles du
+  # document de calibration, joint_vel par difference finie des positions, et un
+  # historique 5 sur les actions.
   #
-  # The channel is measured on the target BEFORE the projection. Measuring it
-  # after makes every joint report exactly torque_feasibility_ratio -- the
-  # projection measuring itself, which is what the training bug did until an
-  # assertion caught it at 1.0000 on 100% of joints.
+  # OBSERVATION 246 DIMS, batie par utils.cpp case 1 : le corps commun sans
+  # gait_phase ni raw_torque. 15+3+3+30+30+150+15 = 246.
   #
-  # action_scale, q0, kp, kd, effort_limit and vel_target_limit_per_joint are
-  # identical to index 2: verified against the run's own params/env.yaml and the
-  # ONNX metadata, not copied on faith. Gait clock identical too (period 2.0/1.1,
-  # threshold 0.1, ref 0.7). max_vel is the run's final curriculum stage
-  # (step 336000: x 0.3, y 0.4, yaw 0.45).
+  # Deux valeurs seulement different de l'index 2, et ce sont celles qui font le
+  # retour a la base :
+  #   action_scale des jambes = 1.5 * effort_limit/stiffness, contre 7x pour
+  #     abl7/abl15. Le genou tombe a 0.00525 : il etait a 0.0075 du temps de la
+  #     policy 0, dont l'effort_limit valait 100, abaisse depuis a 70.
+  #   q0 = keyframe de la policy 0 (genou 0.622), pas celui a genou droit du
+  #     2026-07-15.
   #
-  # use_QP true: the deployed checkpoint is model_10050, not the final one -- the
-  # torque gains flatten after iteration 10000 while fell_down goes 0.049 -> 0.143.
+  # RESERVE IMPORTANTE : ce run porte le piege de hauteur de pied.
+  # peak_height_mean est reste bloque a 0.0005 m -- un demi-millimetre -- pendant
+  # les 9800 iterations, et fell_down monte a 0.29 sur la fin. C'est une demarche
+  # trainante, pas une marche. Le correctif tourne dans un autre run.
   - use_QP: true
     policy_step_size: 0.005   # 200 Hz (5 ms)
     physics_step_size: 0.004  # mc_mujoco at 250 Hz (4 ms)
     pd_gains_ratio: 1.0
-    # Command ranges of the 2026-08-05_11-17-44 run, final command_vel
-    # curriculum stage (step 336000).
+    # Command ranges of the 2026-07-10_20-59-17 run (completed, final
+    # command_vel curriculum stage).
     max_vel_x: 0.3
     max_vel_y: 0.4
     max_yaw: 0.45
@@ -328,9 +329,9 @@ policies:
     # Torque-feasibility projection (mirrors mjlab's FiniteDifferencePdActuator).
     # Active only when torque_feasibility_ratio is set. This policy trained WITH
     # it, so without it here the plant differs from the one it learned on --
-    # visibly so in transients. This run measured raw_torque_peak_mean 1.019 and
-    # over_limit_fraction 0.377 at the end of training, under exploration noise;
-    # the deterministic figure is not measured yet.
+    # visibly so in transients, where the un-projected demand peaks (the
+    # deterministic rollout of this checkpoint measured a pd_demand_ratio max of
+    # 234 against a steady-state mean of 0.27).
     torque_feasibility_ratio: 1.0
     vel_target_filter_alpha: 0.8
 
@@ -417,18 +418,18 @@ policies:
       R_ELBOW_Y:    0.002
       R_WRIST_R:    0.002
       R_WRIST_Y:    0.002
-      L_CROTCH_Y:   0.01225
-      L_CROTCH_R:   0.035
-      L_CROTCH_P:   0.049
-      L_KNEE_P:     0.0245
-      L_ANKLE_R:    0.0315
-      L_ANKLE_P:    0.0455
-      R_CROTCH_Y:   0.01225
-      R_CROTCH_R:   0.035
-      R_CROTCH_P:   0.049
-      R_KNEE_P:     0.0245
-      R_ANKLE_R:    0.0315
-      R_ANKLE_P:    0.0455
+      L_CROTCH_Y:   0.002625
+      L_CROTCH_R:   0.0075
+      L_CROTCH_P:   0.0105
+      L_KNEE_P:     0.00525
+      L_ANKLE_R:    0.00675
+      L_ANKLE_P:    0.00975
+      R_CROTCH_Y:   0.002625
+      R_CROTCH_R:   0.0075
+      R_CROTCH_P:   0.0105
+      R_KNEE_P:     0.00525
+      R_ANKLE_R:    0.00675
+      R_ANKLE_P:    0.00975
 
     kp:
       L_CROTCH_Y:   20000.0
@@ -515,16 +516,16 @@ policies:
       R_WRIST_Y:    0.0
       L_CROTCH_Y:   -0.010533
       L_CROTCH_R:   0.028787
-      L_CROTCH_P:   -0.196399
-      L_KNEE_P:     0.487266
+      L_CROTCH_P:   -0.271191
+      L_KNEE_P:     0.622021
       L_ANKLE_R:    -0.030652
-      L_ANKLE_P:    -0.290867
+      L_ANKLE_P:    -0.350679
       R_CROTCH_Y:   0.010533
       R_CROTCH_R:   -0.028787
-      R_CROTCH_P:   -0.196399
-      R_KNEE_P:     0.487266
+      R_CROTCH_P:   -0.271191
+      R_KNEE_P:     0.622021
       R_ANKLE_R:    0.030652
-      R_ANKLE_P:    -0.290867
+      R_ANKLE_P:    -0.350679
 
     ref_joint_order:
       - CHEST_Y
@@ -557,7 +558,6 @@ policies:
       - R_KNEE_P
       - R_ANKLE_R
       - R_ANKLE_P
-
 
 
   # index 2 : run 2026-08-01_14-55-55 ("abl7") -- the union of every validated

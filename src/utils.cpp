@@ -112,14 +112,24 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
   }
 }
 
+// Les trois formats recents partagent un meme corps et ne different que par
+// leurs blocs de queue, chacun optionnel :
+//
+//   246  corps seul                      index 1
+//   266  corps + gait_phase[20]          index 2   (V4)
+//   566  corps + gait_phase + raw[300]   index 3   (V5)
+//
+// Enonce ici une fois, lu la ou les blocs sont ecrits. Ajouter un index a l'un
+// de ces formats demande une etiquette de case ET une entree ici ; en oublier
+// une leve sur la taille d'observation, ce qui est le role de ce controle.
+bool utils::hasGaitPhase(int policyIndex)
+{
+  return policyIndex == 2 || policyIndex == 3;
+}
+
 bool utils::isV5(int policyIndex)
 {
-  // Kept next to the switch it serves: the V5 cases fall through the V4 body and
-  // append one extra block, so "which indices are V5" has to be stated once and
-  // read twice. Extending V5 to a new index means adding a case label AND this
-  // number; missing either one throws on the observation size, which is the
-  // point of that check.
-  return policyIndex == 1 || policyIndex == 3;
+  return policyIndex == 3;
 }
 
 Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
@@ -193,8 +203,18 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.velCmd_[i]);
       break;
     }
-    case 1: // RHPS1 velocity policies — V5 format (566 dims)
-    case 3: // (index 3 = same run's final checkpoint, same V5 observation)
+    case 1: // RHPS1 velocity policies — 246 dims
+            // mjlab-rhps1 run 2026-08-07_15-40-43, checkpoint 7050 : le retour
+            // a la base policy 0 (echelle x1.5, keyframe genou 0.622) avec les
+            // armatures reelles et joint_vel par difference finie. C'est le
+            // corps commun tout court : ni gait_phase, ni raw_torque.
+            // 15+3+3+30+30+150+15 = 246.
+            //
+            // joint_vel ne demande rien de special ici : l'entrainement derive
+            // desormais les positions, et sur le robot l'EncoderObserver fait
+            // exactement pareil (mc_rtc ne recoit aucune vitesse articulaire).
+            // Les deux cotes coincident sans code supplementaire.
+    case 3: // RHPS1 velocity policies — V5 format (566 dims)
             // mjlab-rhps1 run 2026-08-05_11-17-44 ("abl15"). V5 is V4 with one
             // block appended and nothing else moved:
             //   raw_torque[300] = 10x30  (NEW)
@@ -247,7 +267,7 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       ctl.jointAct_[0] = ctl.currentAction;
       // Advance the clock exactly once per inference, after velCmd_[0] is set
       // (the cadence depends on it) and before the block is written out.
-      ctl.gaitPhaseStep();
+      if(utils::hasGaitPhase(ctl.currentPolicyIndex)) { ctl.gaitPhaseStep(); }
 
       const int actionDim = static_cast<int>(ctl.refJointOrderRLAction.size());
       ctl.jointPos_[0] = Eigen::VectorXd::Zero(actionDim);
@@ -271,7 +291,10 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       appendToObs(ctl.jointVel_[0]);
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointAct_[i]);
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.velCmd_[i]);
-      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write4(ctl.gaitPhase_[i]);
+      if(utils::hasGaitPhase(ctl.currentPolicyIndex))
+      {
+        for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write4(ctl.gaitPhase_[i]);
+      }
 
       // V5 tail. rawTorque_ is pushed by updateRawTorqueRatio() at the END of the
       // previous policy step, so index 0 holds the demand of the action that has
