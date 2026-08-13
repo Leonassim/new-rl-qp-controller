@@ -96,8 +96,13 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    */
   void initializeRLObservation();
 
-  /** @brief PostureTask stiffness: `posture_stiffness` from the global
-   *  configuration, else the historical 0.2/(policyDt*timeStep). */
+  /** @brief PostureTask stiffness: `posture_stiffness` from the current
+   *  policy's entry if it declares one, else from the global configuration,
+   *  else the historical 0.2/(policyDt*timeStep).
+   *
+   *  A policy trained against a modelled PostureTask filter must run under the
+   *  same stiffness: the lag it learned is 1/sqrt(K) and does not depend on the
+   *  control rate -- see the note in the implementation. */
   double postureStiffness() const;
 
   // =========================================================================

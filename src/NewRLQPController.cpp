@@ -90,7 +90,30 @@ double NewRLQPController::postureStiffness() const
   // Without it, the fallback is the historical 0.2/(policyDt*timeStep). That
   // formula scales with the control rate, so it yields 8000 on the robot at
   // 200 Hz and 40000 in mc_mujoco at 1 kHz -- two very different plants.
-  const double policyDt = config_("policies")[currentPolicyIndex]("policy_step_size", 0.005);
+  const auto & pol = config_("policies")[currentPolicyIndex];
+  const double policyDt = pol("policy_step_size", 0.005);
+
+  // Per-policy override, checked first (2026-08-13). Training now reproduces
+  // this very filter (FiniteDifferencePdActuator's posture_task_stiffness), so
+  // the stiffness stopped being a property of the environment and became a
+  // property of the policy: it is part of the plant the network learned on, and
+  // running it under a different one is a sim-to-real gap we put there
+  // ourselves.
+  //
+  // Why this matters concretely, and why the older reasoning was incomplete:
+  // 1600 at 200 Hz and 40000 at 1 kHz were called "the same setting" because
+  // both give sqrt(K)*dt = 0.20. That equality is about NUMERICAL STABILITY
+  // MARGIN, not about the physical response. The lag is 1/sqrt(K), independent
+  // of dt: 25 ms at K=1600, 5 ms at K=40000. Five times apart. A policy trained
+  // against a 25 ms lag must see 25 ms in mc_mujoco too, so it needs K=1600
+  // there -- which is perfectly stable at 1 kHz (sqrt(K)*dt = 0.04).
+  //
+  // The global value stays the fallback so the older indices, trained with no
+  // filter at all, keep whatever their environment yaml says.
+  if(pol.has("posture_stiffness"))
+  {
+    return pol("posture_stiffness");
+  }
   return config_("posture_stiffness", 0.2 / (policyDt * timeStep));
 }
 
