@@ -112,16 +112,22 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
   }
 }
 
-// Les trois formats recents partagent un meme corps et ne different que par
-// leurs blocs de queue, chacun optionnel :
+// Les formats recents partagent un meme corps et ne different que par leurs
+// blocs de queue, chacun optionnel :
 //
-//   246  corps seul                      index 1
+//   246  corps seul                      index 1, 4
 //   266  corps + gait_phase[20]          index 2   (V4)
 //   566  corps + gait_phase + raw[300]   index 3   (V5)
 //
 // Enonce ici une fois, lu la ou les blocs sont ecrits. Ajouter un index a l'un
 // de ces formats demande une etiquette de case ET une entree ici ; en oublier
 // une leve sur la taille d'observation, ce qui est le role de ce controle.
+//
+// L'index 4 (run 2026-08-12_20-36-28, filtre de PostureTask modelise) a ete
+// ajoute au yaml le 2026-08-13 SANS toucher a ce switch -- l'erreur exacte que
+// ce commentaire previent depuis le debut. Résultat mesure le 2026-08-14 :
+// aucune case ne correspond, l'observation reste a zero, "Wrote 0 expects
+// 246". Case 4 ajoutee juste en dessous pour corriger.
 bool utils::hasGaitPhase(int policyIndex)
 {
   return policyIndex == 2 || policyIndex == 3;
@@ -214,6 +220,16 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
             // desormais les positions, et sur le robot l'EncoderObserver fait
             // exactement pareil (mc_rtc ne recoit aucune vitesse articulaire).
             // Les deux cotes coincident sans code supplementaire.
+    case 4: // RHPS1 velocity policies — 246 dims, meme format que l'index 1
+            // mjlab-rhps1 run 2026-08-12_20-36-28 : premiere policy entrainee
+            // avec le filtre de PostureTask modelise (posture_stiffness=1600
+            // par policy, voir NewRLQPController::postureStiffness()). Le
+            // corps d'observation lui-meme n'a pas change par rapport a
+            // l'index 1 -- le filtre vit dans l'actionneur d'entrainement et
+            // dans la PostureTask du QP ici, pas dans le vecteur d'observation.
+            // hasGaitPhase(4) et isV5(4) valent false par construction (les
+            // deux predicats testent explicitement 2 et 3), donc ce cas tombe
+            // bien sur le corps seul, 246 dims.
     case 3: // RHPS1 velocity policies — V5 format (566 dims)
             // mjlab-rhps1 run 2026-08-05_11-17-44 ("abl15"). V5 is V4 with one
             // block appended and nothing else moved:
