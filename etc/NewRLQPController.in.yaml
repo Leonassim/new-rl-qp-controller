@@ -82,14 +82,29 @@ policy_path: [
   # index 3: abl15 at its final iteration 14999, same V5 format as index 1.
   # Kept for comparison -- lower peak torque, three times the falls.
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v5_abl15_it14999.onnx",
-  # index 4: run 2026-08-12_20-36-28, premiere policy entrainee avec le filtre
-  # de PostureTask modelise. Meme format 246 dims que l'index 1.
+  # index 4: run 2026-08-12_20-36-28, checkpoint final 14999, premiere policy
+  # entrainee avec le filtre de PostureTask modelise. Meme format 246 dims que
+  # l'index 1.
   #
-  # PLACEHOLDER -- CE FICHIER N'EXISTE PAS ENCORE. Le run n'etait pas termine
-  # quand l'entree a ete creee. Exporter le checkpoint retenu sous ce nom, ou
-  # corriger le nom ici. Le chemin doit exister avant de selectionner l'index 4:
-  # policy_path est indexee en parallele de policies, donc une entree manquante
-  # ou fausse fait echouer le chargement.
+  # RESERVE IMPORTANTE, mesuree au terme du run le 2026-08-14 -- pas au niveau
+  # de la policy 0 sur les indicateurs qui comptent pour le materiel :
+  #   impact_vel                -0.474  (repere policy 0 : ~-0.19)
+  #   fell_down                  0.645  (repere policy 0 :  0.000)
+  #   torque_limit_ratio_mean    0.913  (repere policy 0 :  0.39-0.46)
+  #   sole_height_p50            0.9 mm
+  # Le run a meme regresse sur sa fin (fell_down 0.33 a l'iteration 10414,
+  # 0.645 au final) apres un plateau prolonge sur impact_vel -- pas de
+  # convergence franche, contrairement aux runs precedents. Diagnostic tenu :
+  # effort_limit du genou a 70 (etait 100 pour la policy 0) combine a la
+  # randomisation elargie de cette session (poussees, sol, masse variables)
+  # pousse la politique a saturer le couple en quasi-permanence plutot
+  # qu'occasionnellement.
+  #
+  # ESSAI VOULU MALGRE CES CHIFFRES (decision utilisateur, 2026-08-14) : tester
+  # dans mc_mujoco pour voir le comportement reel avant de juger sur les seules
+  # metriques. NE PAS ARMER SUR ROBOT REEL sans repasser par cette session ou
+  # une revue explicite -- les indicateurs ci-dessus n'ont jamais ete valides
+  # sur aucun materiel.
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v7_posturefilter.onnx",
 ]
 # Stays 0: the real-robot entry is the only one with hardware time behind it.
@@ -1086,15 +1101,21 @@ policies:
       - R_ANKLE_R
       - R_ANKLE_P
 
-  # index 4 : run 2026-08-12_20-36-28 -- premiere policy entrainee AVEC le
-  # filtre de PostureTask modelise, et avec la randomisation elargie.
+  # index 4 : run 2026-08-12_20-36-28, checkpoint final 14999 -- premiere
+  # policy entrainee AVEC le filtre de PostureTask modelise, et avec la
+  # randomisation elargie.
   #
-  # A REMPLIR AVANT USAGE : le checkpoint et le chemin ONNX. Le run tournait
-  # encore quand cette entree a ete ecrite (iteration ~7800/15000). Choisir le
-  # checkpoint sur Episode_Reward/impact_vel : le repere est la policy 0 a
-  # -0.19, et ce run etait a -0.515 a mi-parcours. Si la valeur finale reste
-  # loin de -0.19, ne pas deployer : relancer avec un poids ou un curriculum
-  # plus fort sur les impacts.
+  # RUN TERMINE (2026-08-14), METRIQUES FINALES EN DECA DE LA POLICY 0 :
+  #   impact_vel -0.474 (repere -0.19), fell_down 0.645 (repere 0.000),
+  #   torque_limit_ratio_mean 0.913 (repere 0.39-0.46). A regresse sur sa fin
+  #   plutot que de converger. Diagnostic tenu : effort_limit du genou a 70
+  #   (etait 100 pour la policy 0) + randomisation elargie (poussees, sol,
+  #   masse) fait saturer le couple en quasi-permanence.
+  #
+  # ESSAI MC_MUJOCO VOULU MALGRE CES CHIFFRES (decision utilisateur,
+  # 2026-08-14), pour observer le comportement avant de juger sur les seules
+  # metriques. use_QP reste true ci-dessous : c'est la seule protection active
+  # pour cet essai, ne pas le desactiver. NE PAS ARMER SUR ROBOT REEL.
   #
   # OBSERVATION 246 DIMS, identique a l'index 1 : utils.cpp case 1, corps commun
   # sans gait_phase ni raw_torque. 15+3+3+30+30+150+15 = 246. Les echelles
