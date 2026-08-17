@@ -74,19 +74,19 @@ init: NewRLQPController_Initial
 policy_path: [
   # index 0: V3 (126 dims), the conservative policy that walked on the robot.
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
-  # index 1: run 2026-08-17_00-34-31, checkpoint 9750. Back to policy 0's exact
+  # index 1: run 2026-08-17_00-34-31, checkpoint 10350. Back to policy 0's exact
   # randomization (not abl7's widened set), its buggy rewards fixed, and the
-  # PostureTask delay filter added -- posture_stiffness override currently
-  # DISABLED below, see the note on the policies[] block: at 1600 it splayed
-  # the legs and did not walk in mc_mujoco. This is the run that closed the
-  # train/play gap seen all session: confirmed walking in both wandb videos
-  # and `uv run play` on 2026-08-17. Observation 246 dims (utils.cpp case 1),
-  # ni gait_phase ni raw_torque.
+  # PostureTask filter added -- reproduced by posture_filter_stiffness: 1600
+  # below, which is the upstream filter training models, NOT the downstream
+  # mc_rtc posture_stiffness (still on the global default). Walks in both
+  # wandb videos and `uv run play`; in mc_mujoco it is still unstable even
+  # standing, under the QP and on the bypass path alike. Observation 246 dims
+  # (utils.cpp case 1), no gait_phase, no raw_torque.
   #
   # INTERIM CHECKPOINT -- the run was still training when this was exported
-  # (9750/15000). Re-export at completion:
+  # (10350/15000, run still training). Re-export at completion:
   #   uv run python scripts/tools/export_onnx.py 2026-08-17_00-34-31 model_<final>.pt
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v8_policy0fix_it9750.onnx",
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v8_policy0fix_it10350.onnx",
 ]
 # Stays 0: the real-robot entry is the only one with hardware time behind it.
 default_policy_index: 0
@@ -304,7 +304,7 @@ policies:
     q0: *q0
     ref_joint_order: *ref_joint_order
 
-  # index 1 : run 2026-08-17_00-34-31, checkpoint 9750 (interim -- run still
+  # index 1 : run 2026-08-17_00-34-31, checkpoint 10350 (interim -- run still
   # training, see policy_path above).
   #
   # Back to policy 0's exact randomization, its buggy rewards fixed, and the
