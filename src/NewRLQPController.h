@@ -119,6 +119,19 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    *  the observation still reads the projected target, as training does. */
   bool projectionFeedsCommand() const { return !useQP_; }
 
+  /** @brief Load another policy index at runtime, from the GUI.
+   *
+   *  Refuses while ARMED: every per-policy plant parameter changes underneath
+   *  the running loop otherwise. Replays initializeRobot() + initializeRLPolicy(),
+   *  which is what startup does, then clears the projection, posture-filter and
+   *  observation-history state so nothing carries over from the previous policy.
+   *  The commanded posture is preserved across the switch so the PostureTask
+   *  target does not jump, and the operator's QP toggle is preserved too --
+   *  switching a policy is not a reason to silently re-enter the QP.
+   *
+   *  @return false and logs an error if armed or the index is out of range. */
+  bool switchPolicy(size_t index);
+
   // =========================================================================
   // Robot state
   // =========================================================================

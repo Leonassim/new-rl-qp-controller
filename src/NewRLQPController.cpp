@@ -442,6 +442,71 @@ void NewRLQPController::updateRawTorqueRatio(const Eigen::VectorXd & qTarget)
   for(int j = 0; j < actionDim; ++j) { rawTorque_[0](j) = rawTorqueRatio_(actionToDofMap[j]); }
 }
 
+bool NewRLQPController::switchPolicy(size_t index)
+{
+  if(policyArmed_)
+  {
+    mc_rtc::log::error("[NewRLQPController] refusing to switch policy while ARMED -- disarm first");
+    return false;
+  }
+  if(index >= policyPaths_.size())
+  {
+    mc_rtc::log::error("[NewRLQPController] policy index {} out of range (have {})", index,
+                       policyPaths_.size());
+    return false;
+  }
+  if(index == currentPolicyIndex)
+  {
+    mc_rtc::log::info("[NewRLQPController] policy {} already loaded", index);
+    return true;
+  }
+
+  const size_t previous = currentPolicyIndex;
+  // Hold the commanded posture and the operator's QP choice across the reload:
+  // initializeRobot() re-reads use_QP from the policy block, and a switch is not
+  // a reason to put the QP back in the loop behind the operator's back.
+  const Eigen::VectorXd qHold = q_rl;
+  const bool qpChoice = useQP_;
+
+  currentPolicyIndex = index;
+  try
+  {
+    initializeRobot();     // per-policy kp/kd/q0/action_scale/effort_limit/ratio/filter
+    initializeRLPolicy();  // ONNX + mappings + observation buffers
+  }
+  catch(const std::exception & e)
+  {
+    mc_rtc::log::error("[NewRLQPController] policy {} failed to load ({}), reverting to {}", index,
+                       e.what(), previous);
+    currentPolicyIndex = previous;
+    initializeRobot();
+    initializeRLPolicy();
+    useQP_ = qpChoice;
+    q_rl = qHold;
+    return false;
+  }
+
+  useQP_ = qpChoice;
+  // Same clearing as reset(): the projection seeds qTargetPrev_ on its next call,
+  // the posture filter seeds on its next command, and the observation history is
+  // re-seeded by initializeRLObservation() above. Carrying any of it over would
+  // mix two different plants.
+  q_rl = qHold;
+  q_rl_prev_ = qHold;
+  qTargetPrev_ = qHold;
+  qdTarget_.setZero();
+  projInitialized_ = false;
+  postureFilterInit_ = false;
+  histInitialized_ = false;
+
+  auto pt = getPostureTask(robot().name());
+  if(pt) pt->stiffness(postureStiffness());
+
+  mc_rtc::log::success("[NewRLQPController] policy {} -> {} loaded ({}), QP {}, disarmed", previous,
+                       index, policyPaths_[index], useQP_ ? "enforced" : "bypassed");
+  return true;
+}
+
 Eigen::VectorXd NewRLQPController::applyPostureFilter(const Eigen::VectorXd & qCmd)
 {
   if(postureFilterK_ <= 0.0) { return qCmd; }
@@ -742,6 +807,11 @@ void NewRLQPController::addLog()
 void NewRLQPController::addGui()
 {
   gui()->addElement({"NewRLQPController", "Policy"},
+    // Switching is refused while ARMED, so this is safe to leave in the GUI.
+    mc_rtc::gui::IntegerInput("Policy index (disarm to change)",
+                              [this]() { return static_cast<int>(currentPolicyIndex); },
+                              [this](int i) { if(i >= 0) switchPolicy(static_cast<size_t>(i)); }),
+    mc_rtc::gui::Label("Policies available", [this]() { return std::to_string(policyPaths_.size()); }),
     mc_rtc::gui::Label("Current policy",   [this]() -> const std::string & { return policyPaths_[currentPolicyIndex]; }),
     mc_rtc::gui::Label("Policy Loaded",    [this]() { return rlPolicy->isLoaded() ? "Yes" : "No"; }),
     mc_rtc::gui::Label("Observation Size", [this]() { return std::to_string(rlPolicy->getObservationSize()); }),
