@@ -94,18 +94,24 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
       ctl.updateRawTorqueRatio(ctl.q_rl);
       // Project onto the torque-feasible set, exactly as the training actuator
       // does. No-op unless the policy block sets torque_feasibility_ratio.
-      ctl.q_rl = ctl.projectTorqueFeasible(ctl.q_rl);
+      const Eigen::VectorXd qProjected = ctl.projectTorqueFeasible(ctl.q_rl);
+      // The projected target drives the command only on the bypass path, where
+      // the plant really is the PD the projection was derived from. Under the QP
+      // it would hand the PostureTask a torque encoding as if it were a pose --
+      // see NewRLQPController::projectionFeedsCommand().
+      if(ctl.projectionFeedsCommand()) { ctl.q_rl = qProjected; }
       // Feed back the action as EXECUTED, not as requested: the V4 observation's
       // actions block is executed_action. Beyond the feasible window many raw
       // actions map to one execution, and a policy that only ever sees what it
       // asked for cannot tell them apart -- which is the whole reason the
-      // training observation switched away from last_action.
+      // training observation switched away from last_action. Always the projected
+      // target, whatever drives the command: that is the signal training feeds.
       for (int j = 0; j < ctl.currentAction.size(); ++j) {
           int i = ctl.actionToDofMap[j];
           const double scale = ctl.actionScale(i);
           if(std::abs(scale) > 1e-12)
           {
-            ctl.currentActionScaled(i) = ctl.q_rl(i) - ctl.q_zero(i);
+            ctl.currentActionScaled(i) = qProjected(i) - ctl.q_zero(i);
             ctl.currentAction(j) = ctl.currentActionScaled(i) / scale;
           }
       }

@@ -105,6 +105,20 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    *  control rate -- see the note in the implementation. */
   double postureStiffness() const;
 
+  /** @brief Whether the projected target drives the command, or only the
+   *  observation.
+   *
+   *  The projection encodes a torque, not a pose: its correctness is the
+   *  identity "clamping tau and projecting q* onto tau's preimage are the same
+   *  operation", which holds only for the PD it was derived from. Measured in
+   *  mc_mujoco, the projected ankle-roll target sits 26 window widths from the
+   *  measurement (the v_term shift, by design) -- fine for a PD that turns it
+   *  into exactly effort_limit, absurd for a PostureTask at K=40000, which reads
+   *  it as a ~4700 rad/s^2 demand. So under the QP the command keeps the
+   *  filtered physical target and the QP's own torque bounds do the clamping;
+   *  the observation still reads the projected target, as training does. */
+  bool projectionFeedsCommand() const { return !useQP_; }
+
   // =========================================================================
   // Robot state
   // =========================================================================
