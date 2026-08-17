@@ -74,19 +74,22 @@ init: NewRLQPController_Initial
 policy_path: [
   # index 0: V3 (126 dims), the conservative policy that walked on the robot.
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
-  # index 1: run 2026-08-17_00-34-31, checkpoint 10350. Back to policy 0's exact
-  # randomization (not abl7's widened set), its buggy rewards fixed, and the
-  # PostureTask filter added -- reproduced by posture_filter_stiffness: 1600
-  # below, which is the upstream filter training models, NOT the downstream
-  # mc_rtc posture_stiffness (still on the global default). Walks in both
-  # wandb videos and `uv run play`; in mc_mujoco it is still unstable even
-  # standing, under the QP and on the bypass path alike. Observation 246 dims
-  # (utils.cpp case 1), no gait_phase, no raw_torque.
+  # index 1: run 2026-08-17_20-51-06. Policy 0's plant restored -- no PostureTask
+  # filter, no torque projection, knee back to 100 N.m -- with the reward fixes
+  # kept and the wider randomisation added (actuator_gains, link_com,
+  # link_inertia, push_base, sensor_bias, joint dispersion +/-0.05).
+  # Observation 246 dims, utils.cpp case 1, unchanged from the previous run.
   #
-  # INTERIM CHECKPOINT -- the run was still training when this was exported
-  # (10350/15000, run still training). Re-export at completion:
-  #   uv run python scripts/tools/export_onnx.py 2026-08-17_00-34-31 model_<final>.pt
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v8_policy0fix_it10350.onnx",
+  # THE FILE BELOW DOES NOT EXIST YET: the run started 2026-08-17 20:51 and had
+  # ~750 iterations when this was written. Switching to index 1 will fail loudly
+  # until it is exported, which is deliberate -- the previous ONNX
+  # (v8_policy0fix_it10350) needs the projection and the filter that this block
+  # no longer declares, so pointing here at it would silently run a policy in
+  # the wrong plant. Export with:
+  #   uv run python scripts/tools/export_onnx.py 2026-08-17_20-51-06 model_<it>.pt \
+  #     ~/src/rl_controller/policy/rhps1_velocity_v9_nofilter_it<it>.onnx
+  # then set the iteration in the filename below.
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v9_nofilter_it0000.onnx",
 ]
 # Stays 0: the real-robot entry is the only one with hardware time behind it.
 default_policy_index: 0
@@ -337,25 +340,102 @@ policies:
     policy_step_size: *policy_step_size
     physics_step_size: *physics_step_size
     pd_gains_ratio: *pd_gains_ratio
-    # The QP PostureTask that training models, integrated upstream of the
-    # projection (see applyPostureFilter). rhps1_constants.py sets
-    # _POSTURE_TASK_STIFFNESS = 1600 on every actuator, so this is the plant
-    # the policy learned. Not the same key as posture_stiffness, which sets the
-    # mc_rtc PostureTask *downstream* -- that one stays at the global default so
-    # the QP tracks the already-filtered target instead of filtering twice.
-    posture_filter_stiffness: 1600
+    # NO posture_filter_stiffness and NO torque_feasibility_ratio: run
+    # 2026-08-17_20-51-06 has neither (_POSTURE_TASK_STIFFNESS = None,
+    # _TORQUE_FEASIBILITY_RATIO = None), back to policy 0's plant. Declaring
+    # either would put back in deployment exactly the two stages the run drops.
+    # applyPostureFilter() and projectTorqueFeasible() both early-return without
+    # them, so no code needs disabling.
     max_vel_x: *max_vel_x
     max_vel_y: *max_vel_y
     max_yaw: *max_yaw
     joystick_deadzone: *joystick_deadzone
     vel_ramp_rate: *vel_ramp_rate
 
-    # Torque-feasibility projection (mirrors mjlab's FiniteDifferencePdActuator).
-    # This policy trained WITH it, so without it here the plant differs from
-    # the one it learned on -- visibly so in transients, where the
-    # un-projected demand peaks.
-    torque_feasibility_ratio: 1.0
+    # qd* as the training PD receives it: EMA-filtered finite difference of the
+    # target, per-joint clamp. Policy 0's run had these too, so they are not part
+    # of what was removed.
     vel_target_filter_alpha: 0.8
+
+    # Velocity damper, the stage mjlab runs between qd* and the projection. NOT
+    # optional for the observation: _executed_position_target is allocated
+    # unconditionally, so executed_action reads the POST-damper target even with
+    # the projection off. Under the QP mc_rtc's KinematicsConstraint covers the
+    # command, but nothing covered the observation, and the bypass path had no
+    # damper at all.
+    velocity_damper_di: 0.4
+    velocity_damper_ds: 0.01
+    velocity_damper_vel_percent: 0.9
+
+    # mjlab's mj_model.jnt_range, the bounds its damper measures its zone
+    # against. Declared here rather than read from the robot module: the zone is
+    # a fraction of the range, so a different range is a different plant, and a
+    # silent mismatch is exactly what this file exists to prevent.
+    joint_limits:
+      CHEST_Y:        [ -0.52360,   0.52360]
+      CHEST_P:        [ -0.52360,   1.22173]
+      HEAD_Y:         [ -3.14159,   3.14159]
+      HEAD_P:         [ -0.52360,   0.52360]
+      L_SHOULDER_P:   [ -3.14159,   3.14159]
+      L_SHOULDER_R:   [ -0.69813,   1.83260]
+      L_SHOULDER_Y:   [ -3.14159,   3.14159]
+      L_ELBOW_P:      [ -2.35619,   0.00000]
+      L_ELBOW_Y:      [ -3.14159,   3.14159]
+      L_WRIST_R:      [ -0.87267,   1.57080]
+      L_WRIST_Y:      [ -1.57080,   1.57080]
+      R_SHOULDER_P:   [ -3.14159,   3.14159]
+      R_SHOULDER_R:   [ -1.83260,   0.69813]
+      R_SHOULDER_Y:   [ -3.14159,   3.14159]
+      R_ELBOW_P:      [ -2.35619,   0.00000]
+      R_ELBOW_Y:      [ -3.14159,   3.14159]
+      R_WRIST_R:      [ -1.57080,   0.87267]
+      R_WRIST_Y:      [ -1.57080,   1.57080]
+      L_CROTCH_Y:     [ -1.57080,   1.57080]
+      L_CROTCH_R:     [ -0.62832,   0.62832]
+      L_CROTCH_P:     [ -1.91986,   0.61086]
+      L_KNEE_P:       [  0.00000,   2.44346]
+      L_ANKLE_R:      [ -0.52360,   0.52360]
+      L_ANKLE_P:      [ -1.57080,   0.69813]
+      R_CROTCH_Y:     [ -1.57080,   1.57080]
+      R_CROTCH_R:     [ -0.62832,   0.62832]
+      R_CROTCH_P:     [ -1.91986,   0.61086]
+      R_KNEE_P:       [  0.00000,   2.44346]
+      R_ANKLE_R:      [ -0.52360,   0.52360]
+      R_ANKLE_P:      [ -1.57080,   0.69813]
+
+    # velocity_limits: training sets these equal to velocity_target_limit; the
+    # damper clamps qd* at vel_percent * this.
+    velocity_limits:
+      CHEST_Y:        6
+      CHEST_P:        6
+      HEAD_Y:         4
+      HEAD_P:         4
+      L_SHOULDER_P:   6
+      L_SHOULDER_R:   6
+      L_SHOULDER_Y:   6
+      L_ELBOW_P:      6
+      L_ELBOW_Y:      6
+      L_WRIST_R:      6
+      L_WRIST_Y:      6
+      R_SHOULDER_P:   6
+      R_SHOULDER_R:   6
+      R_SHOULDER_Y:   6
+      R_ELBOW_P:      6
+      R_ELBOW_Y:      6
+      R_WRIST_R:      6
+      R_WRIST_Y:      6
+      L_CROTCH_Y:     8
+      L_CROTCH_R:     8
+      L_CROTCH_P:     8
+      L_KNEE_P:       10
+      L_ANKLE_R:      10
+      L_ANKLE_P:      10
+      R_CROTCH_Y:     8
+      R_CROTCH_R:     8
+      R_CROTCH_P:     8
+      R_KNEE_P:       10
+      R_ANKLE_R:      10
+      R_ANKLE_P:      10
 
     effort_limit:
       CHEST_Y:        120
@@ -379,13 +459,13 @@ policies:
       L_CROTCH_Y:     35
       L_CROTCH_R:     100
       L_CROTCH_P:     140
-      L_KNEE_P:       70
+      L_KNEE_P:      100
       L_ANKLE_R:      45
       L_ANKLE_P:      65
       R_CROTCH_Y:     35
       R_CROTCH_R:     100
       R_CROTCH_P:     140
-      R_KNEE_P:       70
+      R_KNEE_P:      100
       R_ANKLE_R:      45
       R_ANKLE_P:      65
 
@@ -443,13 +523,13 @@ policies:
       L_CROTCH_Y:   0.002625
       L_CROTCH_R:   0.0075
       L_CROTCH_P:   0.0105
-      L_KNEE_P:     0.00525  # this run's effort_limit is 70 for this joint
+      L_KNEE_P:     0.0075   # policy 0's ceiling, 100 N.m, is back
       L_ANKLE_R:    0.00675
       L_ANKLE_P:    0.00975
       R_CROTCH_Y:   0.002625
       R_CROTCH_R:   0.0075
       R_CROTCH_P:   0.0105
-      R_KNEE_P:     0.00525
+      R_KNEE_P:     0.0075
       R_ANKLE_R:    0.00675
       R_ANKLE_P:    0.00975
 

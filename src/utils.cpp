@@ -92,6 +92,11 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
       // ratio the projection enforces -- the projection measuring itself), and it
       // must run in both QP and bypass because the V5 network reads it either way.
       ctl.updateRawTorqueRatio(ctl.q_rl);
+      // Velocity damper, between the qd* estimate and the projection, as
+      // finite_difference_pd_actuator.py:377 has it. It also clamps qd*, so it
+      // must run before the projection reads it. No-op unless the policy block
+      // sets velocity_damper_di.
+      ctl.q_rl = ctl.applyVelocityDamper(ctl.q_rl);
       // Project onto the torque-feasible set, exactly as the training actuator
       // does. No-op unless the policy block sets torque_feasibility_ratio.
       const Eigen::VectorXd qProjected = ctl.projectTorqueFeasible(ctl.q_rl);

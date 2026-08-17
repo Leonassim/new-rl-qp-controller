@@ -347,6 +347,28 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    *  posture_filter_stiffness. */
   Eigen::VectorXd applyPostureFilter(const Eigen::VectorXd & qCmd);
 
+  // Velocity damper, `velocity_damper_di` per policy. mjlab runs it between the
+  // qd* estimate and the torque projection (finite_difference_pd_actuator.py:377)
+  // and it is NOT optional for the observation: _executed_position_target is
+  // allocated unconditionally, so executed_action reads the POST-damper target
+  // even when the projection is off. Under the QP mc_rtc's KinematicsConstraint
+  // covers the command side, but nothing covered the observation, and the bypass
+  // path had no damper at all.
+  //
+  // joint_limits must be mjlab's mj_model.jnt_range, not mc_rtc's -- the damper's
+  // zone is a fraction of the range, so a different range is a different plant.
+  // Declared in the yaml rather than read from the robot so the two cannot drift
+  // apart silently.
+  double damperDi_ = 0.0;
+  double damperDs_ = 0.0;
+  double damperVelPercent_ = 0.9;
+  Eigen::VectorXd jointLower_, jointUpper_, velLimit_;
+
+  /** @brief Clamp qd* to vel_percent * velocity_limits and project the target
+   *  into the joint-limit safe region, as mjlab's _apply_velocity_damper does.
+   *  No-op when the policy declares no velocity_damper_di. */
+  Eigen::VectorXd applyVelocityDamper(const Eigen::VectorXd & qTarget);
+
   /**
    * @brief Advance qd*, compute the raw-torque ratio and push it into rawTorque_.
    *

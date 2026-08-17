@@ -264,6 +264,39 @@ void NewRLQPController::initializeRobot()
   postureQ_          = Eigen::VectorXd::Zero(nbActuatedJoints);
   postureQd_         = Eigen::VectorXd::Zero(nbActuatedJoints);
   postureFilterInit_ = false;
+
+  // Velocity damper, off unless the policy declares velocity_damper_di.
+  const auto & pol = config_("policies")[currentPolicyIndex];
+  damperDi_         = pol("velocity_damper_di", 0.0);
+  damperDs_         = pol("velocity_damper_ds", 0.0);
+  damperVelPercent_ = pol("velocity_damper_vel_percent", 0.9);
+  jointLower_ = Eigen::VectorXd::Zero(nbActuatedJoints);
+  jointUpper_ = Eigen::VectorXd::Zero(nbActuatedJoints);
+  velLimit_   = Eigen::VectorXd::Zero(nbActuatedJoints);
+  if(damperDi_ > 0.0)
+  {
+    // Hard error on a missing entry rather than a default: a joint silently left
+    // at lo == hi is skipped by the damper, i.e. one joint quietly running a
+    // different plant from the other 29.
+    std::map<std::string, std::vector<double>> lim_map = pol("joint_limits");
+    std::map<std::string, double> vlim_map = pol("velocity_limits");
+    for(int i = 0; i < nbActuatedJoints; ++i)
+    {
+      const auto itL = lim_map.find(jointNames[i]);
+      const auto itV = vlim_map.find(jointNames[i]);
+      if(itL == lim_map.end() || itL->second.size() != 2 || itV == vlim_map.end())
+        mc_rtc::log::error_and_throw(
+            "[NewRLQPController] velocity_damper_di is set but joint '{}' has no "
+            "joint_limits [lo, hi] and/or velocity_limits entry",
+            jointNames[i]);
+      jointLower_(i) = itL->second[0];
+      jointUpper_(i) = itL->second[1];
+      velLimit_(i)   = itV->second;
+      if(!(jointUpper_(i) > jointLower_(i)))
+        mc_rtc::log::error_and_throw("[NewRLQPController] joint_limits for '{}' are not lo < hi",
+                                     jointNames[i]);
+    }
+  }
   // The projection is only meaningful when the plant downstream really is the PD
   // it was derived from. Its correctness proof in training is an identity:
   // tau(q*) = kp*(q* - q) + kd*(qd* - qdot) is affine and increasing in q*, so
@@ -534,6 +567,44 @@ Eigen::VectorXd NewRLQPController::applyPostureFilter(const Eigen::VectorXd & qC
   return postureQ_;
 }
 
+Eigen::VectorXd NewRLQPController::applyVelocityDamper(const Eigen::VectorXd & qTarget)
+{
+  if(damperDi_ <= 0.0) { return qTarget; }
+
+  auto & rr = realRobot(robots()[0].name());
+  Eigen::VectorXd out = qTarget;
+  for(int i = 0; i < nbActuatedJoints; ++i)
+  {
+    // Velocity clamp first, as the actuator does: qd* feeds the projection's
+    // v_term, so clamping it after would leave a different window behind.
+    if(velLimit_(i) > 0.0)
+    {
+      const double vMax = damperVelPercent_ * velLimit_(i);
+      qdTarget_(i) = std::clamp(qdTarget_(i), -vMax, vMax);
+    }
+
+    const double lo = jointLower_(i), hi = jointUpper_(i);
+    if(!(hi > lo)) { continue; }
+    const double range = hi - lo;
+    const double dsAbs = damperDs_ * range;
+    const double span = std::max(damperDi_ * range - dsAbs, 1e-6);
+
+    const int mcIdx = rr.jointIndexByName(jointNames[i]);
+    const double q = rr.mbc().q[mcIdx][0];
+
+    // alpha = 1 outside the inflection zone (the target may reach the safety
+    // margin); alpha -> 0 at the margin, where it may not move toward the limit
+    // at all. Squaring through alpha*dist is what makes the approach smooth.
+    const double distHi = (hi - dsAbs) - q;
+    const double qMax = q + std::clamp(distHi / span, 0.0, 1.0) * std::max(distHi, 0.0);
+    const double distLo = q - (lo + dsAbs);
+    const double qMin = q - std::clamp(distLo / span, 0.0, 1.0) * std::max(distLo, 0.0);
+
+    out(i) = std::clamp(qTarget(i), qMin, qMax);
+  }
+  return out;
+}
+
 Eigen::VectorXd NewRLQPController::projectTorqueFeasible(const Eigen::VectorXd & qTarget)
 {
   if(torqueFeasibilityRatio_ <= 0.0) { return qTarget; }
@@ -650,7 +721,7 @@ bool NewRLQPController::byPassQPControl()
     // projection's bound |tau| <= effort_limit only holds for the PD it assumes;
     // feed the servo a different qd* and the kd term leaves the budget, which is
     // what mjlab's own torch.clamp(torque, +/-force_limit) then absorbs.
-    if(torqueFeasibilityRatio_ > 0.0) { robot().mbc().alpha[idx][0] = qdTarget_(i); }
+    if(velTargetFilterAlpha_ > 0.0) { robot().mbc().alpha[idx][0] = qdTarget_(i); }
     else
     {
       const double alphaRaw = (q_rl(i) - q_rl_prev_(i)) / timeStep;
