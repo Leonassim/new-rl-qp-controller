@@ -364,6 +364,31 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   double damperVelPercent_ = 0.9;
   Eigen::VectorXd jointLower_, jointUpper_, velLimit_;
 
+  // Posture pass-through, `posture_passthrough` per policy.
+  //
+  // The QP here is KINEMATIC (the constructor removes dynamicsConstraint), so it
+  // shapes a position command and mc_mujoco's servo -- kp 20000 / kd 400, the
+  // TRAINING gains -- produces the torque. The PostureTask is therefore a stage
+  // training does not have at all: q* -> [task 2nd order + QP] -> q_out -> PD,
+  // against q* -> PD. Its lag is 1/sqrt(K) and it buys nothing, since the
+  // constraints, not the task law, are why the QP is in the loop.
+  //
+  // With stiffness and damping at zero the task objective reduces to
+  // alphaD_des = refAccel (QPTasks.cpp:734, the three terms are additive), so
+  // feeding the acceleration that lands q_out on q* one POLICY step ahead makes
+  // the layer a pass-through while every constraint set stays active -- joint
+  // limits, their velocity limits, self-collision. Recomputed every tick, so it
+  // is a receding horizon rather than a one-shot deadbeat.
+  //
+  // Horizon is policyStepSize, not timeStep: q* only moves once per policy step,
+  // and at 1 kHz a one-tick deadbeat asks for ~10000 rad/s^2 to cross 5 mrad.
+  bool posturePassthrough_ = false;
+  double postureAccelMax_ = 200.0;
+
+  /** @brief Write refAccel = 2 (q* - q_out - dq_out T) / T^2, T = policyStepSize,
+   *  clamped at posture_accel_max. Called only when posture_passthrough is set. */
+  void setPostureRefAccel(mc_tasks::PostureTaskPtr & pt);
+
   /** @brief Clamp qd* to vel_percent * velocity_limits and project the target
    *  into the joint-limit safe region, as mjlab's _apply_velocity_damper does.
    *  No-op when the policy declares no velocity_damper_di. */
