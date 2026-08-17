@@ -441,18 +441,12 @@ Eigen::VectorXd NewRLQPController::projectTorqueFeasible(const Eigen::VectorXd &
 {
   if(torqueFeasibilityRatio_ <= 0.0) { return qTarget; }
 
-  // Under the QP, q_rl is a PostureTask target integrated in OpenLoop and nothing
-  // applies kp = 20000, so the projection stops being the identity it is proved to
-  // be and becomes a hard constraint pinning the target within budget/kp of the
-  // measurement -- 0.0018 rad on CROTCH_Y. On the bypass path q_rl goes straight
-  // to mc_mujoco's servo, whose gains ARE these kp/kd (verified against
-  // share/mc_mujoco/RHPS1/pdgains/RHPS1main/PDgains_sim.dat: 20000/400 legs,
-  // 10000/300 ankles, 44000/440 chest), so there the window is correctly sized.
-  //
-  // No seed to drop on the way out any more: updateRawTorqueRatio() runs every
-  // policy step in both modes, so qTargetPrev_ and qd* are never stale when
-  // bypass is re-entered. That staleness is what blew the robot up on 2026-08-02.
-  if(useQP_) { return qTarget; }
+  // Runs under the QP too. This clamp is part of the plant the policy learned,
+  // not a torque guard for the QP: mjlab projects the position target with the
+  // same formula and the same kp/effort_limit, and at ratio 1.0 the policy emits
+  // targets far outside the window on purpose. On 2026-08-17_00-34-31 at the
+  // nominal pose, ANKLE_R and CROTCH_P overshoot it ~10x -- skipping it here
+  // splayed the legs. Policies without the ratio (index 0) returned above.
 
   auto & rr = realRobot(robots()[0].name());
   Eigen::VectorXd out = qTarget;
