@@ -337,7 +337,13 @@ policies:
     policy_step_size: *policy_step_size
     physics_step_size: *physics_step_size
     pd_gains_ratio: *pd_gains_ratio
-    # posture_stiffness: 1600  # disabled for testing, see note above
+    # The QP PostureTask that training models, integrated upstream of the
+    # projection (see applyPostureFilter). rhps1_constants.py sets
+    # _POSTURE_TASK_STIFFNESS = 1600 on every actuator, so this is the plant
+    # the policy learned. Not the same key as posture_stiffness, which sets the
+    # mc_rtc PostureTask *downstream* -- that one stays at the global default so
+    # the QP tracks the already-filtered target instead of filtering twice.
+    posture_filter_stiffness: 1600
     max_vel_x: *max_vel_x
     max_vel_y: *max_vel_y
     max_yaw: *max_yaw

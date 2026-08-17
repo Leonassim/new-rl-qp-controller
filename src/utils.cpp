@@ -81,6 +81,12 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
           ctl.currentActionScaled(i) = ctl.actionScale(i) * ctl.currentAction(j);
           ctl.q_rl(i) = ctl.currentActionScaled(i) + ctl.q_zero(i);
       }
+      // The QP's PostureTask, reproduced upstream of the finite difference and
+      // the projection because that is where training puts it
+      // (finite_difference_pd_actuator.py:308) and the mc_rtc PostureTask is
+      // downstream of both. No-op unless the policy declares
+      // posture_filter_stiffness.
+      ctl.q_rl = ctl.applyPostureFilter(ctl.q_rl);
       // Order matters: the raw-torque channel is measured on the target BEFORE
       // the projection (measuring it after makes every joint report exactly the
       // ratio the projection enforces -- the projection measuring itself), and it

@@ -300,6 +300,26 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   bool projInitialized_ = false; ///< False until the first target seeds qTargetPrev_.
   Eigen::VectorXd rawTorqueRatio_; ///< |tau_raw| / effort_limit, current step.
 
+  // Upstream PostureTask filter, `posture_filter_stiffness` per policy.
+  //
+  // Training puts the QP's PostureTask BEFORE the finite difference and the
+  // projection (finite_difference_pd_actuator.py:308) -- the mc_rtc PostureTask
+  // is downstream of both, so that ordering only exists here if we integrate it
+  // ourselves. Without it qd* is the finite difference of the RAW target, which
+  // for this policy jumps ~20 action units a step, saturates
+  // vel_target_limit_per_joint and shoves the projection window ~0.3 rad off the
+  // measurement -- the runaway described on qTargetPrev_ below, reached from the
+  // other side. 0 disables it: index 0 trained with no filter at all.
+  double postureFilterK_ = 0.0;
+  Eigen::VectorXd postureQ_;  ///< Filter state, position.
+  Eigen::VectorXd postureQd_; ///< Filter state, velocity.
+  bool postureFilterInit_ = false;
+
+  /** @brief Second-order posture filter, semi-implicit, `n` substeps of
+   *  policyStepSize/n. Returns qCmd unchanged when the policy declares no
+   *  posture_filter_stiffness. */
+  Eigen::VectorXd applyPostureFilter(const Eigen::VectorXd & qCmd);
+
   /**
    * @brief Advance qd*, compute the raw-torque ratio and push it into rawTorque_.
    *

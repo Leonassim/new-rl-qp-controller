@@ -259,6 +259,11 @@ void NewRLQPController::initializeRobot()
   velTargetLimitPerJoint_ = Eigen::VectorXd::Constant(nbActuatedJoints, 1e9);
   qdTarget_       = Eigen::VectorXd::Zero(nbActuatedJoints);
   qTargetPrev_    = Eigen::VectorXd::Zero(nbActuatedJoints);
+  // Upstream posture filter, off unless the policy trained against one.
+  postureFilterK_    = config_("policies")[currentPolicyIndex]("posture_filter_stiffness", 0.0);
+  postureQ_          = Eigen::VectorXd::Zero(nbActuatedJoints);
+  postureQd_         = Eigen::VectorXd::Zero(nbActuatedJoints);
+  postureFilterInit_ = false;
   // The projection is only meaningful when the plant downstream really is the PD
   // it was derived from. Its correctness proof in training is an identity:
   // tau(q*) = kp*(q* - q) + kd*(qd* - qdot) is affine and increasing in q*, so
@@ -435,6 +440,33 @@ void NewRLQPController::updateRawTorqueRatio(const Eigen::VectorXd & qTarget)
   const int actionDim = static_cast<int>(refJointOrderRLAction.size());
   rawTorque_[0] = Eigen::VectorXd::Zero(actionDim);
   for(int j = 0; j < actionDim; ++j) { rawTorque_[0](j) = rawTorqueRatio_(actionToDofMap[j]); }
+}
+
+Eigen::VectorXd NewRLQPController::applyPostureFilter(const Eigen::VectorXd & qCmd)
+{
+  if(postureFilterK_ <= 0.0) { return qCmd; }
+
+  if(!postureFilterInit_)
+  {
+    // Seed on the command, never on zero: from zero the filter sends the robot
+    // to q = 0 on the first step. Same branch as the actuator's `uninitialized`.
+    postureQ_ = qCmd;
+    postureQd_.setZero();
+    postureFilterInit_ = true;
+    return postureQ_;
+  }
+
+  // 2 substeps = the training decimation (sim dt 0.0025, policy dt 0.005).
+  constexpr int nSub = 2;
+  const double dt = policyStepSize / nSub;
+  const double damping = 2.0 * std::sqrt(postureFilterK_); // as mc_rtc derives it
+  for(int s = 0; s < nSub; ++s)
+  {
+    const Eigen::VectorXd acc = postureFilterK_ * (qCmd - postureQ_) - damping * postureQd_;
+    postureQd_ += acc * dt;   // semi-implicit: velocity first,
+    postureQ_ += postureQd_ * dt; // then position with the updated velocity
+  }
+  return postureQ_;
 }
 
 Eigen::VectorXd NewRLQPController::projectTorqueFeasible(const Eigen::VectorXd & qTarget)
