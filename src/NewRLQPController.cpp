@@ -586,7 +586,13 @@ void NewRLQPController::setPostureRefAccel(mc_tasks::PostureTaskPtr & pt)
   // T is the POLICY step: q_rl only moves that often, and at 1 kHz a one-tick
   // deadbeat asks ~10000 rad/s^2 to cross 5 mrad. Recomputed every tick, so this
   // is a receding horizon, not a one-shot.
-  const double T = policyStepSize;
+  // Horizon floor of 3 control ticks. This is a STABILITY bound, not a taste:
+  // the receding-horizon deadbeat on a double integrator has |lambda| = 2.41 at
+  // T == dt (it DIVERGES), 0.50 at 2 dt, 0.77 at 5 dt. On the robot timeStep and
+  // policy_step_size are both 0.005, so T = policyStepSize alone would put it
+  // exactly on the diverging case -- while mc_mujoco at 1 kHz (N = 5) looked
+  // fine. Three ticks gives |lambda| ~ 0.67 with margin.
+  const double T = std::max(policyStepSize, 3.0 * timeStep);
   Eigen::VectorXd a = Eigen::VectorXd::Zero(mb.nrDof());
   for(int i = 0; i < nbActuatedJoints; ++i)
   {
