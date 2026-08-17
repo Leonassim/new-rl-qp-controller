@@ -75,6 +75,13 @@ bool NewRLQPController::run()
     // Every constraint set stays in the loop -- that is the whole point.
     if(posturePassthrough_) { setPostureRefAccel(pt); }
   }
+  else if(posturePassthrough_)
+  {
+    // Holding must mean zero: at zero gains refAccel IS the objective, so the
+    // last value would keep accelerating after a disarm.
+    auto pt = getPostureTask(robot().name());
+    if(pt) { pt->refAccel(Eigen::VectorXd::Zero(robot().mb().nrDof())); }
+  }
 
   bool ret = mc_control::fsm::Controller::run(mc_solver::FeedbackType::OpenLoop);
   // Same gate on the bypass path: disarmed means no policy output reaches the
@@ -126,12 +133,7 @@ void NewRLQPController::reset(const mc_control::ControllerResetData & reset_data
 {
   mc_control::fsm::Controller::reset(reset_data);
 
-  auto pt = getPostureTask(robot().name());
-  if(pt)
-  {
-    if(posturePassthrough_) { pt->stiffness(0.0); pt->damping(0.0); }
-    else { pt->stiffness(postureStiffness()); }
-  }
+  applyPostureMode();
 
   q_rl       = q_zero;
   q_rl_prev_ = q_zero;
@@ -544,8 +546,7 @@ bool NewRLQPController::switchPolicy(size_t index)
   postureFilterInit_ = false;
   histInitialized_ = false;
 
-  auto pt = getPostureTask(robot().name());
-  if(pt) pt->stiffness(postureStiffness());
+  applyPostureMode();
 
   mc_rtc::log::success("[NewRLQPController] policy {} -> {} loaded ({}), QP {}, disarmed", previous,
                        index, policyPaths_[index], useQP_ ? "enforced" : "bypassed");
@@ -577,6 +578,15 @@ Eigen::VectorXd NewRLQPController::applyPostureFilter(const Eigen::VectorXd & qC
     postureQ_ += postureQd_ * dt; // then position with the updated velocity
   }
   return postureQ_;
+}
+
+void NewRLQPController::applyPostureMode()
+{
+  auto pt = getPostureTask(robot().name());
+  if(!pt) { return; }
+  pt->refAccel(Eigen::VectorXd::Zero(robot().mb().nrDof()));
+  if(posturePassthrough_) { pt->stiffness(0.0); pt->damping(0.0); }
+  else { pt->stiffness(postureStiffness()); }
 }
 
 void NewRLQPController::setPostureRefAccel(mc_tasks::PostureTaskPtr & pt)
@@ -965,20 +975,9 @@ void NewRLQPController::addGui()
     // hardware time behind it with the classic task.
     mc_rtc::gui::Button("Toggle posture pass-through", [this]() {
       posturePassthrough_ = !posturePassthrough_;
-      auto pt = getPostureTask(robot().name());
-      if(!pt) return;
-      if(posturePassthrough_) { pt->stiffness(0.0); pt->damping(0.0); }
-      else
-      {
-        // Restore the task law AND drop the feedforward: a stale refAccel would
-        // keep being added to the PD term.
-        pt->stiffness(postureStiffness());
-        pt->refAccel(Eigen::VectorXd::Zero(robot().mb().nrDof()));
-      }
-      mc_rtc::log::warning("[NewRLQPController] posture {} (accel clamp {} rad/s^2)",
-                           posturePassthrough_ ? "PASS-THROUGH (refAccel, zero gains)"
-                                               : "classic 2nd-order task",
-                           postureAccelMax_);
+      applyPostureMode();
+      mc_rtc::log::warning("[NewRLQPController] posture {}",
+                           posturePassthrough_ ? "PASS-THROUGH" : "2nd-order task");
     }),
     mc_rtc::gui::Label("Posture mode", [this]() {
       return posturePassthrough_ ? "pass-through (refAccel)" : "2nd-order task"; }),
