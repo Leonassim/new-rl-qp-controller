@@ -89,23 +89,22 @@ policy_path: [
 # Stays 0: the real-robot entry is the only one with hardware time behind it.
 default_policy_index: 0
 
-# N*Kt par joint, pour convertir en N.m ce que le robot mesure.
+# N*Kt per joint, to convert what the robot measures into N.m.
 #
-# Ce que RobotHardware publie sur `tau` n'est PAS un couple sur RHPS1 : le VRML
-# donne gearRatio = 1 et torqueConst = 1 sur les 62 joints, donc la valeur vaut
-# ratedCurrent * 0x6077/1000, soit un COURANT en amperes. Le controleur
-# journalise les deux : NewRLQPController_joint_current (A, brut) et
-# NewRLQPController_joint_torque (N.m, = courant * la valeur ci-dessous).
+# What RobotHardware publishes on `tau` is NOT a torque on RHPS1: the VRML
+# sets gearRatio=1 and torqueConst=1 for all 62 joints, so the value is really
+# ratedCurrent * 0x6077/1000, a CURRENT in amps. The controller logs both:
+# NewRLQPController_joint_current (A, raw) and NewRLQPController_joint_torque
+# (N.m, = current * the value below).
 #
-# Source : scripts/ppc/joint_torque_limits_rotate.csv, lignes type=solo,
-# remappees le 2026-08-03 apres correction du bug d'association Drive<->joint.
+# Source: scripts/ppc/joint_torque_limits_rotate.csv, type=solo rows,
+# remapped 2026-08-03 after fixing the Drive<->joint association bug.
 #
-# Volontairement limite aux six joints a moteur unique. Les paires
-# differentielles (epaule R/Y, coude P/Y, poignet P/Y, chest, head) ont un N
-# mais aucun Kt par articulation, et les articulations a verins (crotch P/R,
-# ankle P/R) ont un bras de levier variable qui demande CylinderToAngle. Les
-# joints absents d'ici restent a 0 dans le log plutot que d'etre convertis
-# avec un facteur invente.
+# Deliberately limited to the six single-motor joints. The differential pairs
+# (shoulder R/Y, elbow P/Y, wrist P/Y, chest, head) have an N but no per-joint
+# Kt, and the piston joints (crotch P/R, ankle P/R) have a variable lever arm
+# needing CylinderToAngle. Joints absent here stay at 0 in the log rather than
+# being converted with a made-up factor.
 joint_torque_scale:
   L_CROTCH_Y:    9.259   # 159.0907 * 0.0582
   R_CROTCH_Y:    9.259   # 159.0907 * 0.0582
