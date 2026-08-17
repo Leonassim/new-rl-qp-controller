@@ -574,9 +574,24 @@ bool NewRLQPController::byPassQPControl()
     // becomes a 20+ rad/s velocity target and the kd term injects torque
     // kicks the policy never experienced in training (observed: hip-yaw
     // blow-up at the first inference of the 2026-07-16 checkpoint).
-    const double alphaRaw = (q_rl(i) - q_rl_prev_(i)) / timeStep;
-    robot().mbc().alpha[idx][0] =
-        std::max(-velTargetLimit_, std::min(velTargetLimit_, alphaRaw));
+    //
+    // When the policy declares a ratio, qd* already exists: updateRawTorqueRatio()
+    // maintains exactly the signal the training PD is handed -- finite difference
+    // over the POLICY step, per-joint clamp, EMA at vel_target_filter_alpha. Use
+    // it rather than re-deriving one here. The old derivation differed three ways:
+    // dt was timeStep (1 ms in mc_mujoco, 5x too large, and a one-tick-in-five
+    // spike since q_rl only moves on a policy step), no EMA, and the legacy
+    // scalar clamp instead of the per-joint one. That matters because the
+    // projection's bound |tau| <= effort_limit only holds for the PD it assumes;
+    // feed the servo a different qd* and the kd term leaves the budget, which is
+    // what mjlab's own torch.clamp(torque, +/-force_limit) then absorbs.
+    if(torqueFeasibilityRatio_ > 0.0) { robot().mbc().alpha[idx][0] = qdTarget_(i); }
+    else
+    {
+      const double alphaRaw = (q_rl(i) - q_rl_prev_(i)) / timeStep;
+      robot().mbc().alpha[idx][0] =
+          std::max(-velTargetLimit_, std::min(velTargetLimit_, alphaRaw));
+    }
   }
   q_rl_prev_ = q_rl;
   return true;
