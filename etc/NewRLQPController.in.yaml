@@ -74,17 +74,19 @@ init: NewRLQPController_Initial
 policy_path: [
   # index 0: V3 (126 dims), the conservative policy that walked on the robot.
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
-  # index 1: run 2026-08-17_00-34-31, checkpoint 7200. Back to policy 0's exact
+  # index 1: run 2026-08-17_00-34-31, checkpoint 9750. Back to policy 0's exact
   # randomization (not abl7's widened set), its buggy rewards fixed, and the
-  # PostureTask delay filter added (posture_stiffness: 1600 below). This is the
-  # run that closed the train/play gap seen all session: confirmed walking in
-  # both wandb videos and `uv run play` on 2026-08-17. Observation 246 dims
-  # (utils.cpp case 1), ni gait_phase ni raw_torque.
+  # PostureTask delay filter added -- posture_stiffness override currently
+  # DISABLED below, see the note on the policies[] block: at 1600 it splayed
+  # the legs and did not walk in mc_mujoco. This is the run that closed the
+  # train/play gap seen all session: confirmed walking in both wandb videos
+  # and `uv run play` on 2026-08-17. Observation 246 dims (utils.cpp case 1),
+  # ni gait_phase ni raw_torque.
   #
   # INTERIM CHECKPOINT -- the run was still training when this was exported
-  # (7200/15000). Re-export at completion:
+  # (9750/15000). Re-export at completion:
   #   uv run python scripts/tools/export_onnx.py 2026-08-17_00-34-31 model_<final>.pt
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v8_policy0fix_it7200.onnx",
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v8_policy0fix_it9750.onnx",
 ]
 # Stays 0: the real-robot entry is the only one with hardware time behind it.
 default_policy_index: 0
@@ -302,7 +304,7 @@ policies:
     q0: *q0
     ref_joint_order: *ref_joint_order
 
-  # index 1 : run 2026-08-17_00-34-31, checkpoint 7200 (interim -- run still
+  # index 1 : run 2026-08-17_00-34-31, checkpoint 9750 (interim -- run still
   # training, see policy_path above).
   #
   # Back to policy 0's exact randomization, its buggy rewards fixed, and the
@@ -313,20 +315,29 @@ policies:
   # OBSERVATION 246 DIMS, utils.cpp case 1 (shared with the old index 4): the
   # body-only vector, no gait_phase, no raw_torque. 15+3+3+30+30+150+15 = 246.
   #
-  # posture_stiffness is set here rather than in mc_mujoco's own yaml because
-  # this policy trained against the second-order PostureTask filter at
-  # K=1600 -- the filter is part of the plant it learned, so the stiffness is
-  # a property of the policy, not of the environment. 1600 at 200 Hz and
-  # 40000 at 1 kHz both give sqrt(K)*dt = 0.20 (equal numerical stability
-  # margin) but not the same physical delay: delay is 1/sqrt(K), independent
-  # of dt -- 25 ms at K=1600 vs 5 ms at K=40000. The policy learned 25 ms, it
-  # must see 25 ms; overriding the global to 1600 here gives it that in both
-  # mc_mujoco and on the robot.
+  # posture_stiffness OVERRIDE DISABLED 2026-08-17 for a live test: with it at
+  # 1600 the robot splayed its legs and did not walk in mc_mujoco, where the
+  # global default is 40000 -- a uniform 25x softer PostureTask than policy 0
+  # gets (which has no override and inherits the 40000 global). The delay
+  # argument below (1/sqrt(K) independent of dt) is about a decoupled
+  # per-joint oscillator; the real QP task is coupled through the whole
+  # floating-base dynamics, self-collision and contact constraints, where
+  # under-stiffness can plausibly lose to gravity instead of just adding lag.
+  # Testing without the override first to isolate the variable before
+  # concluding anything.
+  #
+  # Original reasoning, kept for when this gets revisited: this policy
+  # trained against the second-order PostureTask filter at K=1600 -- the
+  # filter is part of the plant it learned, so the stiffness is a property of
+  # the policy, not of the environment. 1600 at 200 Hz and 40000 at 1 kHz
+  # both give sqrt(K)*dt = 0.20 (equal numerical stability margin) but not
+  # the same physical delay: delay is 1/sqrt(K), independent of dt -- 25 ms
+  # at K=1600 vs 5 ms at K=40000. The policy learned 25 ms, it must see 25 ms.
   - use_QP: *use_QP
     policy_step_size: *policy_step_size
     physics_step_size: *physics_step_size
     pd_gains_ratio: *pd_gains_ratio
-    posture_stiffness: 1600
+    # posture_stiffness: 1600  # disabled for testing, see note above
     max_vel_x: *max_vel_x
     max_vel_y: *max_vel_y
     max_yaw: *max_yaw
