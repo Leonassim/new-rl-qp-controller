@@ -367,11 +367,6 @@ policies:
     velocity_damper_ds: 0.01
     velocity_damper_vel_percent: 0.9
 
-    # Posture pass-through: zero the task gains and feed refAccel instead, so the
-    # QP layer stops adding a 2nd order the training plant does not have.
-    # Toggleable live from ControlMode; off here so index 1 starts like index 0.
-    # posture_passthrough: true
-    # posture_accel_max: 200.0
 
     # mjlab's mj_model.jnt_range, the bounds its damper measures its zone
     # against. Declared here rather than read from the robot module: the zone is

@@ -364,21 +364,7 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   double damperVelPercent_ = 0.9;
   Eigen::VectorXd jointLower_, jointUpper_, velLimit_;
 
-  // Posture pass-through, `posture_passthrough` per policy. The QP here is
-  // kinematic, so the task's 2nd order is a stage training does not have:
-  // q* -> [task + QP] -> q_out -> PD, against q* -> PD. At zero gains the
-  // objective reduces to alphaD = refAccel (QPTasks.cpp:734), so a deadbeat
-  // refAccel makes the layer transparent while every constraint stays active.
-  bool posturePassthrough_ = false;
-  double postureAccelMax_ = 200.0;
-  bool postureRefAccelWritten_ = false;
-
-  /** @brief refAccel = 2 (q* - q_out - dq_out T) / T^2, clamped. */
-  void setPostureRefAccel(mc_tasks::PostureTaskPtr & pt);
-
-  /** @brief Apply the posture mode: zero gains for pass-through, else the
-   *  configured stiffness. Always drops refAccel -- at zero gains it IS the
-   *  objective, so a stale one keeps accelerating. */
+  /** @brief Apply the posture task gains for the current policy. */
   void applyPostureMode();
 
   /** @brief Clamp qd* to vel_percent * velocity_limits and project the target

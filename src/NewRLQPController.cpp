@@ -69,22 +69,6 @@ bool NewRLQPController::run()
     for(int i = 0; i < nbActuatedJoints; ++i)
       q_target[jointNames[i]] = {q_rl(i)};
     pt->target(q_target);
-    // Pass-through: zero gains so the objective reduces to alphaD = refAccel
-    // (QPTasks.cpp:734, the three terms are additive), and ask for the
-    // acceleration that lands the QP's output on q_rl one policy step ahead.
-    // Every constraint set stays in the loop -- that is the whole point.
-    if(posturePassthrough_) { setPostureRefAccel(pt); }
-  }
-  else if(posturePassthrough_)
-  {
-    // Holding must mean zero: at zero gains refAccel IS the objective, so the
-    // last value would keep accelerating after a disarm.
-    auto pt = getPostureTask(robot().name());
-    if(pt && postureRefAccelWritten_)
-    {
-      pt->refAccel(Eigen::VectorXd::Zero(robot().mb().nrDof()));
-      postureRefAccelWritten_ = false;
-    }
   }
 
   bool ret = mc_control::fsm::Controller::run(mc_solver::FeedbackType::OpenLoop);
@@ -280,8 +264,6 @@ void NewRLQPController::initializeRobot()
   postureQd_         = Eigen::VectorXd::Zero(nbActuatedJoints);
   postureFilterInit_ = false;
 
-  posturePassthrough_ = config_("policies")[currentPolicyIndex]("posture_passthrough", false);
-  postureAccelMax_    = config_("policies")[currentPolicyIndex]("posture_accel_max", 200.0);
 
   // Velocity damper, off unless the policy declares velocity_damper_di.
   const auto & pol = config_("policies")[currentPolicyIndex];
@@ -587,54 +569,7 @@ Eigen::VectorXd NewRLQPController::applyPostureFilter(const Eigen::VectorXd & qC
 void NewRLQPController::applyPostureMode()
 {
   auto pt = getPostureTask(robot().name());
-  if(!pt) { return; }
-  // Only touch refAccel when the pass-through is involved. This controller runs
-  // Backend::TVM, whose PostureTask is a different implementation from the Tasks
-  // one the additive law was read in, so writing it unconditionally poked a path
-  // of unknown semantics on every reset -- including disarmed, where nothing
-  // should move.
-  if(posturePassthrough_)
-  {
-    pt->stiffness(0.0);
-    pt->damping(0.0);
-  }
-  else
-  {
-    if(postureRefAccelWritten_)
-    {
-      pt->refAccel(Eigen::VectorXd::Zero(robot().mb().nrDof()));
-      postureRefAccelWritten_ = false;
-    }
-    pt->stiffness(postureStiffness());
-  }
-}
-
-void NewRLQPController::setPostureRefAccel(mc_tasks::PostureTaskPtr & pt)
-{
-  const auto & mb = robot().mb();
-  const auto & mbc = robot().mbc();
-  // T is the POLICY step: q_rl only moves that often, and at 1 kHz a one-tick
-  // deadbeat asks ~10000 rad/s^2 to cross 5 mrad. Recomputed every tick, so this
-  // is a receding horizon, not a one-shot.
-  // Horizon floor of 3 control ticks. This is a STABILITY bound, not a taste:
-  // the receding-horizon deadbeat on a double integrator has |lambda| = 2.41 at
-  // T == dt (it DIVERGES), 0.50 at 2 dt, 0.77 at 5 dt. On the robot timeStep and
-  // policy_step_size are both 0.005, so T = policyStepSize alone would put it
-  // exactly on the diverging case -- while mc_mujoco at 1 kHz (N = 5) looked
-  // fine. Three ticks gives |lambda| ~ 0.67 with margin.
-  const double T = std::max(policyStepSize, 3.0 * timeStep);
-  Eigen::VectorXd a = Eigen::VectorXd::Zero(mb.nrDof());
-  for(int i = 0; i < nbActuatedJoints; ++i)
-  {
-    const int jIdx = robot().jointIndexByName(jointNames[i]);
-    const int dof = mb.jointPosInDof(jIdx);
-    const double q = mbc.q[jIdx][0];      // the QP's own integrated output (OpenLoop)
-    const double dq = mbc.alpha[jIdx][0];
-    const double acc = 2.0 * (q_rl(i) - q - dq * T) / (T * T);
-    a(dof) = std::clamp(acc, -postureAccelMax_, postureAccelMax_);
-  }
-  pt->refAccel(a);
-  postureRefAccelWritten_ = true;
+  if(pt) { pt->stiffness(postureStiffness()); }
 }
 
 Eigen::VectorXd NewRLQPController::applyVelocityDamper(const Eigen::VectorXd & qTarget)
@@ -991,17 +926,6 @@ void NewRLQPController::addGui()
 
   gui()->addElement({"ControlMode"},
     mc_rtc::gui::Button("Toggle QP Control",       [this]() { useQP_ = !useQP_; }),
-    // Posture pass-through vs the classic 2nd-order task, switchable live so the
-    // two can be compared on the same policy -- including index 0, which has
-    // hardware time behind it with the classic task.
-    mc_rtc::gui::Button("Toggle posture pass-through", [this]() {
-      posturePassthrough_ = !posturePassthrough_;
-      applyPostureMode();
-      mc_rtc::log::warning("[NewRLQPController] posture {}",
-                           posturePassthrough_ ? "PASS-THROUGH" : "2nd-order task");
-    }),
-    mc_rtc::gui::Label("Posture mode", [this]() {
-      return posturePassthrough_ ? "pass-through (refAccel)" : "2nd-order task"; }),
     mc_rtc::gui::Label("QP Control",               [this]() { return useQP_ ? "Enforced" : "Bypassed"; }),
     mc_rtc::gui::Button("Toggle print limits",     [this]() { printLimits_ = !printLimits_; }),
     mc_rtc::gui::Label("Print joint limits",       [this]() { return printLimits_ ? "Enabled" : "Disabled"; })
