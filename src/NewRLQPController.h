@@ -371,6 +371,7 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   // refAccel makes the layer transparent while every constraint stays active.
   bool posturePassthrough_ = false;
   double postureAccelMax_ = 200.0;
+  bool postureRefAccelWritten_ = false;
 
   /** @brief refAccel = 2 (q* - q_out - dq_out T) / T^2, clamped. */
   void setPostureRefAccel(mc_tasks::PostureTaskPtr & pt);

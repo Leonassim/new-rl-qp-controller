@@ -80,7 +80,11 @@ bool NewRLQPController::run()
     // Holding must mean zero: at zero gains refAccel IS the objective, so the
     // last value would keep accelerating after a disarm.
     auto pt = getPostureTask(robot().name());
-    if(pt) { pt->refAccel(Eigen::VectorXd::Zero(robot().mb().nrDof())); }
+    if(pt && postureRefAccelWritten_)
+    {
+      pt->refAccel(Eigen::VectorXd::Zero(robot().mb().nrDof()));
+      postureRefAccelWritten_ = false;
+    }
   }
 
   bool ret = mc_control::fsm::Controller::run(mc_solver::FeedbackType::OpenLoop);
@@ -584,9 +588,25 @@ void NewRLQPController::applyPostureMode()
 {
   auto pt = getPostureTask(robot().name());
   if(!pt) { return; }
-  pt->refAccel(Eigen::VectorXd::Zero(robot().mb().nrDof()));
-  if(posturePassthrough_) { pt->stiffness(0.0); pt->damping(0.0); }
-  else { pt->stiffness(postureStiffness()); }
+  // Only touch refAccel when the pass-through is involved. This controller runs
+  // Backend::TVM, whose PostureTask is a different implementation from the Tasks
+  // one the additive law was read in, so writing it unconditionally poked a path
+  // of unknown semantics on every reset -- including disarmed, where nothing
+  // should move.
+  if(posturePassthrough_)
+  {
+    pt->stiffness(0.0);
+    pt->damping(0.0);
+  }
+  else
+  {
+    if(postureRefAccelWritten_)
+    {
+      pt->refAccel(Eigen::VectorXd::Zero(robot().mb().nrDof()));
+      postureRefAccelWritten_ = false;
+    }
+    pt->stiffness(postureStiffness());
+  }
 }
 
 void NewRLQPController::setPostureRefAccel(mc_tasks::PostureTaskPtr & pt)
@@ -614,6 +634,7 @@ void NewRLQPController::setPostureRefAccel(mc_tasks::PostureTaskPtr & pt)
     a(dof) = std::clamp(acc, -postureAccelMax_, postureAccelMax_);
   }
   pt->refAccel(a);
+  postureRefAccelWritten_ = true;
 }
 
 Eigen::VectorXd NewRLQPController::applyVelocityDamper(const Eigen::VectorXd & qTarget)
