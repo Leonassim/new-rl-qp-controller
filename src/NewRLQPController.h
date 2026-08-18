@@ -385,12 +385,35 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   double postureAccelMax_ = 200.0;
   bool postureRefAccelWritten_ = false;
 
+  // Feedforward on the 2nd-order task. Gains alone are pure feedback, so the
+  // task lags any moving target by 1/sqrt(K) and, worse, low-passes it at
+  // sqrt(K) rad/s -- 40 here. Feeding the commanded trajectory's own qd* and
+  // qdd* alongside makes the QP row q_ddot = qdd* + K(q* - q) + Kv(qd* - qd):
+  // the gains only correct error, and a target the policy slews smoothly is
+  // tracked without lag. mc_tvm::PostureFunction already composes it that way
+  // (velocity_ -= refVel_, normalAcceleration_ = -refAccel).
+  //
+  // Off by default: qd*/qdd* are finite differences, so they amplify tremor by
+  // 1/dt and 1/dt^2. Worth having only for a policy trained with the smoothness
+  // penalties -- on a shaky one it makes things worse, not better.
+  bool postureFeedforward_ = false;
+  bool ffInit_ = false;
+  Eigen::VectorXd ffPrevQ_, ffVel_, ffPrevVel_, ffAcc_;
+
   /** @brief Dofs the posture function spans: nrDof minus the floating base. */
   int postureDofOffset() const;
 
   /** @brief refAccel = 2 (q* - q_out - dq_out T) / T^2, clamped, T floored at
    *  3 ticks -- the receding-horizon deadbeat diverges at T == dt. */
   void setPostureRefAccel(mc_tasks::PostureTaskPtr & pt);
+
+  /** @brief Refresh the velocity and acceleration feedforward from finite
+   *  differences of q_rl, once per policy step (q_rl is a staircase when
+   *  policyStepSize > timeStep). */
+  void updatePostureFeedforward();
+
+  /** @brief Write the feedforward as refVel and refAccel, gains kept. */
+  void setPostureFeedforward(mc_tasks::PostureTaskPtr & pt);
 
   /** @brief Clamp qd* to vel_percent * velocity_limits and project the target
    *  into the joint-limit safe region, as mjlab's _apply_velocity_damper does.

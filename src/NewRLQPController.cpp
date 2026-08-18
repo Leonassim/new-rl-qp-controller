@@ -70,15 +70,24 @@ bool NewRLQPController::run()
       q_target[jointNames[i]] = {q_rl(i)};
     pt->target(q_target);
     if(posturePassthrough_) { setPostureRefAccel(pt); }
+    else if(postureFeedforward_)
+    {
+      updatePostureFeedforward();
+      setPostureFeedforward(pt);
+    }
   }
-  else if(posturePassthrough_ && postureRefAccelWritten_)
+  else if(postureRefAccelWritten_)
   {
-    // Holding must mean zero: at zero gains refAccel IS the objective.
+    // Holding must mean zero. At zero gains refAccel IS the objective; with
+    // gains it is a feedforward that would keep pushing a target nobody updates.
     auto pt = getPostureTask(robot().name());
     if(pt)
     {
-      pt->refAccel(Eigen::VectorXd::Zero(robot().mb().nrDof() - postureDofOffset()));
+      const Eigen::VectorXd z = Eigen::VectorXd::Zero(robot().mb().nrDof() - postureDofOffset());
+      pt->refAccel(z);
+      pt->refVel(z);
       postureRefAccelWritten_ = false;
+      ffInit_ = false;
     }
   }
 
@@ -145,6 +154,7 @@ void NewRLQPController::reset(const mc_control::ControllerResetData & reset_data
   qdTarget_.setZero();
   currentVelCmd_.setZero();
   histInitialized_ = false;
+  ffInit_ = false;
   // Never resume armed across a reset: a controller switch or a re-reset must
   // put the robot back in the held state and require a deliberate re-arm.
   policyArmed_ = false;
@@ -210,6 +220,11 @@ void NewRLQPController::initializeRobot()
 
   q_rl              = Eigen::VectorXd::Zero(nbActuatedJoints);
   q_rl_prev_        = Eigen::VectorXd::Zero(nbActuatedJoints);
+  ffPrevQ_          = Eigen::VectorXd::Zero(nbActuatedJoints);
+  ffVel_            = Eigen::VectorXd::Zero(nbActuatedJoints);
+  ffPrevVel_        = Eigen::VectorXd::Zero(nbActuatedJoints);
+  ffAcc_            = Eigen::VectorXd::Zero(nbActuatedJoints);
+  ffInit_           = false;
   q_zero            = Eigen::VectorXd::Zero(nbActuatedJoints);
   actionScale       = Eigen::VectorXd::Zero(nbActuatedJoints);
   currentActionScaled = Eigen::VectorXd::Zero(nbActuatedJoints);
@@ -277,6 +292,7 @@ void NewRLQPController::initializeRobot()
 
   posturePassthrough_ = config_("policies")[currentPolicyIndex]("posture_passthrough", false);
   postureAccelMax_    = config_("policies")[currentPolicyIndex]("posture_accel_max", 200.0);
+  postureFeedforward_ = config_("policies")[currentPolicyIndex]("posture_feedforward", false);
 
 
   // Velocity damper, off unless the policy declares velocity_damper_di.
@@ -545,6 +561,7 @@ bool NewRLQPController::switchPolicy(size_t index)
   projInitialized_ = false;
   postureFilterInit_ = false;
   histInitialized_ = false;
+  ffInit_ = false;
 
   applyPostureMode();
 
@@ -592,9 +609,11 @@ void NewRLQPController::applyPostureMode()
   if(posturePassthrough_) { pt->stiffness(0.0); pt->damping(0.0); }
   else
   {
-    if(postureRefAccelWritten_)
+    if(postureRefAccelWritten_ && !postureFeedforward_)
     {
-      pt->refAccel(Eigen::VectorXd::Zero(robot().mb().nrDof() - postureDofOffset()));
+      const Eigen::VectorXd z = Eigen::VectorXd::Zero(robot().mb().nrDof() - postureDofOffset());
+      pt->refAccel(z);
+      pt->refVel(z);
       postureRefAccelWritten_ = false;
     }
     pt->stiffness(postureStiffness());
@@ -620,6 +639,50 @@ void NewRLQPController::setPostureRefAccel(mc_tasks::PostureTaskPtr & pt)
     const double acc = 2.0 * (q_rl(i) - q - dq * T) / (T * T);
     a(dof) = std::clamp(acc, -postureAccelMax_, postureAccelMax_);
   }
+  pt->refAccel(a);
+  postureRefAccelWritten_ = true;
+}
+
+void NewRLQPController::updatePostureFeedforward()
+{
+  if(!ffInit_)
+  {
+    ffPrevQ_ = q_rl;
+    ffVel_.setZero();
+    ffPrevVel_.setZero();
+    ffAcc_.setZero();
+    ffInit_ = true;
+    return;
+  }
+  // Hold across substeps: q_rl only moves on a policy step, so differentiating
+  // every tick would give one spike in policyStepSize/timeStep ticks and zeros
+  // in between.
+  if(q_rl == ffPrevQ_) { return; }
+  const double dt = std::max(policyStepSize, timeStep);
+  ffVel_     = (q_rl - ffPrevQ_) / dt;
+  ffAcc_     = (ffVel_ - ffPrevVel_) / dt;
+  ffPrevVel_ = ffVel_;
+  ffPrevQ_   = q_rl;
+}
+
+void NewRLQPController::setPostureFeedforward(mc_tasks::PostureTaskPtr & pt)
+{
+  const auto & mb = robot().mb();
+  const int off = postureDofOffset();
+  const int n = mb.nrDof() - off;
+  Eigen::VectorXd v = Eigen::VectorXd::Zero(n);
+  Eigen::VectorXd a = Eigen::VectorXd::Zero(n);
+  for(int i = 0; i < nbActuatedJoints; ++i)
+  {
+    const int dof = mb.jointPosInDof(robot().jointIndexByName(jointNames[i])) - off;
+    if(dof < 0 || dof >= n) { continue; }
+    // Same clamps the command itself already respects: the feedforward must not
+    // ask for a velocity the damper forbids, nor an acceleration the deadbeat
+    // path caps. Finite differences of a jittery target overshoot both.
+    v(dof) = std::clamp(ffVel_(i), -velTargetLimit_, velTargetLimit_);
+    a(dof) = std::clamp(ffAcc_(i), -postureAccelMax_, postureAccelMax_);
+  }
+  pt->refVel(v);
   pt->refAccel(a);
   postureRefAccelWritten_ = true;
 }
@@ -984,8 +1047,17 @@ void NewRLQPController::addGui()
       mc_rtc::log::warning("[NewRLQPController] posture {}",
                            posturePassthrough_ ? "PASS-THROUGH" : "2nd-order task");
     }),
+    mc_rtc::gui::Button("Toggle posture feedforward", [this]() {
+      postureFeedforward_ = !postureFeedforward_;
+      ffInit_ = false;
+      applyPostureMode();
+      mc_rtc::log::warning("[NewRLQPController] posture feedforward {}",
+                           postureFeedforward_ ? "ON" : "OFF");
+    }),
     mc_rtc::gui::Label("Posture mode", [this]() {
-      return posturePassthrough_ ? "pass-through (refAccel)" : "2nd-order task"; }),
+      return posturePassthrough_ ? "pass-through (refAccel)"
+             : postureFeedforward_ ? "2nd-order task + feedforward"
+                                   : "2nd-order task"; }),
     mc_rtc::gui::Label("QP Control",               [this]() { return useQP_ ? "Enforced" : "Bypassed"; }),
     mc_rtc::gui::Button("Toggle print limits",     [this]() { printLimits_ = !printLimits_; }),
     mc_rtc::gui::Label("Print joint limits",       [this]() { return printLimits_ ? "Enabled" : "Disabled"; })
