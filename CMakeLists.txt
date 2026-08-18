@@ -28,7 +28,9 @@ add_subdirectory(src)
 # Bundled policies, installed so the configured yaml can reference them with
 # a machine-independent path.
 set(RL_POLICY_INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}/share/${PROJECT_NAME}/policy")
-file(GLOB RL_POLICY_FILES "${CMAKE_CURRENT_SOURCE_DIR}/policy/*.onnx")
+# CONFIGURE_DEPENDS: without it the glob is evaluated once, at configure time,
+# and a newly added policy is silently left out of the install tree.
+file(GLOB RL_POLICY_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/policy/*.onnx")
 install(FILES ${RL_POLICY_FILES} DESTINATION "${RL_POLICY_INSTALL_PREFIX}")
 
 configure_file(etc/NewRLQPController.in.yaml

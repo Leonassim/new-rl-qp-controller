@@ -74,22 +74,28 @@ init: NewRLQPController_Initial
 policy_path: [
   # index 0: V3 (126 dims), the conservative policy that walked on the robot.
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
-  # index 1: run 2026-08-17_23-05-46. Policy 0's plant restored -- no PostureTask
-  # filter, no torque projection, knee back to 100 N.m -- with the reward fixes
-  # kept and the wider randomisation added (actuator_gains, link_com,
-  # link_inertia, push_base, sensor_bias, joint dispersion +/-0.05).
+  # index 1: run 2026-08-17_23-05-46, iteration 9000. Policy 0's plant restored
+  # -- no PostureTask filter, no torque projection -- with the reward fixes kept,
+  # the knee at 70 N.m and the wider randomisation added (actuator_gains,
+  # link_com, link_inertia, push_base, sensor_bias, joint dispersion +/-0.05).
   # Observation 246 dims, utils.cpp case 1, unchanged from the previous run.
   #
-  # THE FILE BELOW DOES NOT EXIST YET: the run started 2026-08-17 20:51 and had
-  # ~750 iterations when this was written. Switching to index 1 will fail loudly
-  # until it is exported, which is deliberate -- the previous ONNX
-  # (v8_policy0fix_it10350) needs the projection and the filter that this block
-  # no longer declares, so pointing here at it would silently run a policy in
-  # the wrong plant. Export with:
+  # This is the run's own export, written beside model_9000.pt at the same save,
+  # not a re-export. Verified against the run's params/env.yaml: all 30
+  # action_scale and q0 entries match, torque_feasibility_ratio and
+  # posture_task_stiffness are null there as they are absent here.
+  #
+  # The training was still running when this was exported, so later checkpoints
+  # exist. Re-export a specific one with:
   #   uv run python scripts/tools/export_onnx.py 2026-08-17_23-05-46 model_<it>.pt \
   #     ~/src/rl_controller/policy/rhps1_velocity_v9_nofilter_it<it>.onnx
-  # then set the iteration in the filename below.
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v9_nofilter_it0000.onnx",
+  #
+  # Plant gap to watch: this run has posture_task_stiffness null, so the network
+  # never saw a posture filter, while the QP's PostureTask adds a 1/sqrt(K) lag
+  # -- 25 ms at the global K=1600. posture_passthrough (GUI) is the matched
+  # setting; a per-policy posture_stiffness here is the other lever. Left as is
+  # until measured.
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v9_nofilter_it9000.onnx",
 ]
 # Stays 0: the real-robot entry is the only one with hardware time behind it.
 default_policy_index: 0

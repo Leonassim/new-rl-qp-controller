@@ -227,10 +227,11 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       break;
     }
     case 1: // RHPS1 velocity policies — 246 dims
-            // mjlab-rhps1 run 2026-08-07_15-40-43, checkpoint 7050 : le retour
-            // a la base policy 0 (echelle x1.5, keyframe genou 0.622) avec les
-            // armatures reelles et joint_vel par difference finie. C'est le
-            // corps commun tout court : ni gait_phase, ni raw_torque.
+            // Currently mjlab-rhps1 run 2026-08-17_23-05-46 (see policy_path).
+            // Format introduced by run 2026-08-07_15-40-43 : le retour a la base
+            // policy 0 (echelle x1.5, keyframe genou 0.622) avec les armatures
+            // reelles et joint_vel par difference finie. C'est le corps commun
+            // tout court : ni gait_phase, ni raw_torque.
             // 15+3+3+30+30+150+15 = 246.
             //
             // joint_vel ne demande rien de special ici : l'entrainement derive
