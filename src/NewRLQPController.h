@@ -367,6 +367,31 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   /** @brief Apply the posture task gains for the current policy. */
   void applyPostureMode();
 
+  // Posture pass-through, `posture_passthrough` per policy. The QP here is
+  // kinematic, so the task's 2nd order is a stage training does not have:
+  // q* -> [task + QP] -> q_out -> PD, against q* -> PD.
+  //
+  // Under TVM, PostureFunction is an IdentityFunction over qJoints and refAccel
+  // sets normalAcceleration_ = -acc, so the QP row reads
+  // q̈ = -Kp f - Kv ḟ + refAccel: additive, and zero gains leave q̈ = refAccel.
+  //
+  // SIZE TRAP: mc_tasks::PostureTask::refAccel asserts nrDof, the TVM function
+  // asserts its own size, and on a floating base those differ by 6. Both are
+  // compiled out in RelWithDebInfo, so a nrDof vector silently resizes
+  // refAccel_ and corrupts the function -- that is what blew the robot up on
+  // 2026-08-18. The function size is the correct one; a Debug build will trip
+  // the mc_tasks assert, which is an mc_rtc inconsistency worth reporting.
+  bool posturePassthrough_ = false;
+  double postureAccelMax_ = 200.0;
+  bool postureRefAccelWritten_ = false;
+
+  /** @brief Dofs the posture function spans: nrDof minus the floating base. */
+  int postureDofOffset() const;
+
+  /** @brief refAccel = 2 (q* - q_out - dq_out T) / T^2, clamped, T floored at
+   *  3 ticks -- the receding-horizon deadbeat diverges at T == dt. */
+  void setPostureRefAccel(mc_tasks::PostureTaskPtr & pt);
+
   /** @brief Clamp qd* to vel_percent * velocity_limits and project the target
    *  into the joint-limit safe region, as mjlab's _apply_velocity_damper does.
    *  No-op when the policy declares no velocity_damper_di. */

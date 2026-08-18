@@ -69,6 +69,17 @@ bool NewRLQPController::run()
     for(int i = 0; i < nbActuatedJoints; ++i)
       q_target[jointNames[i]] = {q_rl(i)};
     pt->target(q_target);
+    if(posturePassthrough_) { setPostureRefAccel(pt); }
+  }
+  else if(posturePassthrough_ && postureRefAccelWritten_)
+  {
+    // Holding must mean zero: at zero gains refAccel IS the objective.
+    auto pt = getPostureTask(robot().name());
+    if(pt)
+    {
+      pt->refAccel(Eigen::VectorXd::Zero(robot().mb().nrDof() - postureDofOffset()));
+      postureRefAccelWritten_ = false;
+    }
   }
 
   bool ret = mc_control::fsm::Controller::run(mc_solver::FeedbackType::OpenLoop);
@@ -263,6 +274,9 @@ void NewRLQPController::initializeRobot()
   postureQ_          = Eigen::VectorXd::Zero(nbActuatedJoints);
   postureQd_         = Eigen::VectorXd::Zero(nbActuatedJoints);
   postureFilterInit_ = false;
+
+  posturePassthrough_ = config_("policies")[currentPolicyIndex]("posture_passthrough", false);
+  postureAccelMax_    = config_("policies")[currentPolicyIndex]("posture_accel_max", 200.0);
 
 
   // Velocity damper, off unless the policy declares velocity_damper_di.
@@ -566,10 +580,48 @@ Eigen::VectorXd NewRLQPController::applyPostureFilter(const Eigen::VectorXd & qC
   return postureQ_;
 }
 
+int NewRLQPController::postureDofOffset() const
+{
+  return robot().mb().joint(0).type() == rbd::Joint::Free ? 6 : 0;
+}
+
 void NewRLQPController::applyPostureMode()
 {
   auto pt = getPostureTask(robot().name());
-  if(pt) { pt->stiffness(postureStiffness()); }
+  if(!pt) { return; }
+  if(posturePassthrough_) { pt->stiffness(0.0); pt->damping(0.0); }
+  else
+  {
+    if(postureRefAccelWritten_)
+    {
+      pt->refAccel(Eigen::VectorXd::Zero(robot().mb().nrDof() - postureDofOffset()));
+      postureRefAccelWritten_ = false;
+    }
+    pt->stiffness(postureStiffness());
+  }
+}
+
+void NewRLQPController::setPostureRefAccel(mc_tasks::PostureTaskPtr & pt)
+{
+  const auto & mb = robot().mb();
+  const auto & mbc = robot().mbc();
+  const int off = postureDofOffset();
+  // T floored at 3 ticks: the deadbeat has |lambda| 2.41 at T == dt (diverges),
+  // 0.58 at 3 dt. On the robot timeStep and policy_step_size are both 0.005.
+  const double T = std::max(policyStepSize, 3.0 * timeStep);
+  Eigen::VectorXd a = Eigen::VectorXd::Zero(mb.nrDof() - off);
+  for(int i = 0; i < nbActuatedJoints; ++i)
+  {
+    const int jIdx = robot().jointIndexByName(jointNames[i]);
+    const int dof = mb.jointPosInDof(jIdx) - off; // index into qJoints, not nrDof
+    if(dof < 0 || dof >= a.size()) { continue; }
+    const double q = mbc.q[jIdx][0];
+    const double dq = mbc.alpha[jIdx][0];
+    const double acc = 2.0 * (q_rl(i) - q - dq * T) / (T * T);
+    a(dof) = std::clamp(acc, -postureAccelMax_, postureAccelMax_);
+  }
+  pt->refAccel(a);
+  postureRefAccelWritten_ = true;
 }
 
 Eigen::VectorXd NewRLQPController::applyVelocityDamper(const Eigen::VectorXd & qTarget)
@@ -926,6 +978,14 @@ void NewRLQPController::addGui()
 
   gui()->addElement({"ControlMode"},
     mc_rtc::gui::Button("Toggle QP Control",       [this]() { useQP_ = !useQP_; }),
+    mc_rtc::gui::Button("Toggle posture pass-through", [this]() {
+      posturePassthrough_ = !posturePassthrough_;
+      applyPostureMode();
+      mc_rtc::log::warning("[NewRLQPController] posture {}",
+                           posturePassthrough_ ? "PASS-THROUGH" : "2nd-order task");
+    }),
+    mc_rtc::gui::Label("Posture mode", [this]() {
+      return posturePassthrough_ ? "pass-through (refAccel)" : "2nd-order task"; }),
     mc_rtc::gui::Label("QP Control",               [this]() { return useQP_ ? "Enforced" : "Bypassed"; }),
     mc_rtc::gui::Button("Toggle print limits",     [this]() { printLimits_ = !printLimits_; }),
     mc_rtc::gui::Label("Print joint limits",       [this]() { return printLimits_ ? "Enabled" : "Disabled"; })
