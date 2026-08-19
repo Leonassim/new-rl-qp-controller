@@ -38,8 +38,7 @@ NewRLQPController::NewRLQPController(mc_rbdyn::RobotModulePtr rm, double dt, con
   // the requested torque and the one the dynamic model produces, so without
   // dynamicsConstraint there is no relation between alphaD and tau to solve
   // against. The kinematic (position-target) route does not want it.
-  useTorqueTask_ = config_("policies")[currentPolicyIndex]("use_torque_task", false);
-  if(!useTorqueTask_) { solver().removeConstraintSet(dynamicsConstraint); }
+  solver().removeConstraintSet(dynamicsConstraint);
   // Replace the base class's joint-limit constraint before adding it. Leaving
   // this line out does NOT disable anything -- MCController has already built a
   // kinematicsConstraint of its own, and the addConstraintSet below would then
@@ -72,11 +71,8 @@ NewRLQPController::NewRLQPController(mc_rbdyn::RobotModulePtr rm, double dt, con
 
   initializeRLPolicy();
 
-  if(useTorqueTask_) { setupTorqueTask(); }
-
   addGui();
   addLog();
-  logInertiaModel();
   mc_rtc::log::success("NewRLQPController init done");
 }
 
@@ -90,32 +86,30 @@ bool NewRLQPController::run()
   // QP until the operator arms the policy from the GUI.
   if(useQP_ && policyArmed_)
   {
-    if(useTorqueTask_)
+    auto pt = getPostureTask(robot().name());
+    std::map<std::string, std::vector<double>> q_target;
+    for(int i = 0; i < nbActuatedJoints; ++i)
+      q_target[jointNames[i]] = {q_rl(i)};
+    pt->target(q_target);
+    if(posturePassthrough_) { setPostureRefAccel(pt); }
+    else if(postureFeedforward_)
     {
-      // Both channels, independently, exactly as the training actuator has
-      // them: the task turns them into tau itself instead of leaving
-      // mc_mujoco's PD to reconstruct one from the other.
-      Eigen::VectorXd qd    = torqueTask_->posTarget();
-      Eigen::VectorXd qdDot = torqueTask_->velTarget();
-      for(int i = 0; i < nbActuatedJoints; ++i)
-      {
-        const int k = refIdx_[i];
-        if(k < 0) continue;
-        qd(k)    = q_rl(i);
-        qdDot(k) = qdTarget_(i);
-      }
-      torqueTask_->setPosTarget(qd);
-      torqueTask_->setVelTarget(qdDot);
+      updatePostureFeedforward();
+      setPostureFeedforward(pt);
     }
-    else
+  }
+  else if(postureRefAccelWritten_)
+  {
+    // Holding must mean zero. At zero gains refAccel IS the objective; with
+    // gains it is a feedforward that would keep pushing a target nobody updates.
+    auto pt = getPostureTask(robot().name());
+    if(pt)
     {
-      auto pt = getPostureTask(robot().name());
-      std::map<std::string, std::vector<double>> q_target;
-      for(int i = 0; i < nbActuatedJoints; ++i)
-        q_target[jointNames[i]] = {q_rl(i)};
-      pt->target(q_target);
-
-      if(qpAccelTask_) { applyAccelFeedforward(*pt); }
+      const Eigen::VectorXd z = Eigen::VectorXd::Zero(robot().mb().nrDof() - postureDofOffset());
+      pt->refAccel(z);
+      pt->refVel(z);
+      postureRefAccelWritten_ = false;
+      ffInit_ = false;
     }
   }
 
@@ -127,153 +121,49 @@ bool NewRLQPController::run()
   return ret;
 }
 
-void NewRLQPController::logInertiaModel()
+double NewRLQPController::postureStiffness() const
 {
-  // One-shot dump, printed whatever qp_accel_task says: dividing tau by an
-  // inertia nobody has checked is what produced 970000 rad/s^2 on the first
-  // attempt, and the values only became suspicious after the robot broke.
+  // posture_stiffness is read from the GLOBAL configuration, not from this
+  // controller's yaml: load_config() uses the global one as the base and lets
+  // the controller yaml override it, so leaving the key out of
+  // NewRLQPController.yaml is what allows mc_rtc_superbuild.yaml (real robot)
+  // and mc_rtc_superbuild_mujoco.yaml (simulation) to carry different values.
   //
-  // The URDF is symmetric (L/R links carry identical mass and inertia, only
-  // the off-diagonal signs mirror), so the left/right ratio printed here is a
-  // model-independent correctness check on the whole chain name -> mb index ->
-  // dof index -> H. A ratio far from 1.0 means the mapping is wrong, not the
-  // robot.
-  rbd::ForwardDynamics fd(robot().mb());
-  fd.computeHIr(robot().mb());
-  fd.computeH(robot().mb(), robot().mbc());
-  const Eigen::MatrixXd & H = fd.H();
-  const Eigen::MatrixXd & HIr = fd.HIr();
+  // Without it, the fallback is the historical 0.2/(policyDt*timeStep). That
+  // formula scales with the control rate, so it yields 8000 on the robot at
+  // 200 Hz and 40000 in mc_mujoco at 1 kHz -- two very different plants.
+  const auto & pol = config_("policies")[currentPolicyIndex];
+  const double policyDt = pol("policy_step_size", 0.005);
 
-  mc_rtc::log::info("[NewRLQPController] inertia model check (nrDof={}, H is {}x{})", robot().mb().nrDof(),
-                    H.rows(), H.cols());
-  mc_rtc::log::info("  joint_armature = {} (URDF carries no rotor inertia, so HIr below is 0; the plant runs with "
-                    "armature=1 -- see jointArmature_)", jointArmature_);
-  mc_rtc::log::info("  {:<14s} {:>6s} {:>6s} {:>9s} {:>9s} {:>9s} {:>9s}", "joint", "mbIdx", "dof", "H", "HIr", "m",
-                    "wn*dt");
-
-  std::map<std::string, double> byName;
-  for(int i = 0; i < nbActuatedJoints; ++i)
+  // Per-policy override, checked first (2026-08-13). Training now reproduces
+  // this very filter (FiniteDifferencePdActuator's posture_task_stiffness), so
+  // the stiffness stopped being a property of the environment and became a
+  // property of the policy: it is part of the plant the network learned on, and
+  // running it under a different one is a sim-to-real gap we put there
+  // ourselves.
+  //
+  // Why this matters concretely, and why the older reasoning was incomplete:
+  // 1600 at 200 Hz and 40000 at 1 kHz were called "the same setting" because
+  // both give sqrt(K)*dt = 0.20. That equality is about NUMERICAL STABILITY
+  // MARGIN, not about the physical response. The lag is 1/sqrt(K), independent
+  // of dt: 25 ms at K=1600, 5 ms at K=40000. Five times apart. A policy trained
+  // against a 25 ms lag must see 25 ms in mc_mujoco too, so it needs K=1600
+  // there -- which is perfectly stable at 1 kHz (sqrt(K)*dt = 0.04).
+  //
+  // The global value stays the fallback so the older indices, trained with no
+  // filter at all, keep whatever their environment yaml says.
+  if(pol.has("posture_stiffness"))
   {
-    const int mbIdx = static_cast<int>(robot().jointIndexByName(jointNames[i]));
-    const int dof = robot().mb().jointPosInDof(mbIdx);
-    const double h = (dof >= 0 && dof < H.rows()) ? H(dof, dof) : std::nan("");
-    const double hir = (dof >= 0 && dof < HIr.rows()) ? HIr(dof, dof) : std::nan("");
-    const double m = h + hir + jointArmature_;
-    byName[jointNames[i]] = m;
-    // wn*dt is the number that decides stability: past ~1 the task diverges,
-    // which is exactly what killed the first attempt on the ankles.
-    const double wndt = m > 1e-9 ? std::sqrt(kpBase_(i) / m) * timeStep : std::nan("");
-    mc_rtc::log::info("  {:<14s} {:6d} {:6d} {:9.5f} {:9.5f} {:9.5f} {:9.2f}{}", jointNames[i], mbIdx, dof, h, hir, m,
-                      wndt, wndt > 1.0 ? "  <-- UNSTABLE" : "");
+    return pol("posture_stiffness");
   }
-
-  // The verdict line. Anything but ~1.00 and the feedforward must stay off.
-  for(const auto & [l, r] : std::vector<std::pair<std::string, std::string>>{
-          {"L_CROTCH_Y", "R_CROTCH_Y"}, {"L_CROTCH_R", "R_CROTCH_R"}, {"L_CROTCH_P", "R_CROTCH_P"},
-          {"L_KNEE_P", "R_KNEE_P"},     {"L_ANKLE_R", "R_ANKLE_R"},   {"L_ANKLE_P", "R_ANKLE_P"}})
-  {
-    if(!byName.count(l) || !byName.count(r)) continue;
-    const double a = byName[l], b = byName[r];
-    const double ratio = std::abs(b) > 1e-12 ? a / b : std::nan("");
-    mc_rtc::log::info("  symmetry {:<12s} / {:<12s} = {:8.5f} / {:8.5f} = {:6.2f}{}", l, r, a, b, ratio,
-                      (ratio > 0.9 && ratio < 1.1) ? "  ok" : "  <-- MAPPING WRONG");
-  }
-}
-
-void NewRLQPController::applyAccelFeedforward(mc_tasks::PostureTask & pt)
-{
-  // Recomputed EVERY controller tick, not once per policy step: q_rl and
-  // qdTarget_ are held between inferences, but q_meas/qdot_meas move, and the
-  // whole point of tau is that its feedback stays live at the control rate.
-  fd_.computeH(robot().mb(), robot().mbc());
-  const Eigen::MatrixXd & H = fd_.H();
-  const Eigen::MatrixXd & HIr = fd_.HIr();
-
-  auto & rr = realRobot(robots()[0].name());
-  Eigen::VectorXd qddot = Eigen::VectorXd::Zero(robot().mb().nrDof());
-  qddotRef_.setZero();
-  // Reset too: skipped joints kept a stale value otherwise, and the zeros in
-  // the first run's log read as "measured zero inertia" when they were "never
-  // written".
-  jointInertia_.setZero();
-
-  for(int i = 0; i < nbActuatedJoints; ++i)
-  {
-    const int dofPos = robot().mb().jointPosInDof(robot().jointIndexByName(jointNames[i]));
-    if(dofPos < 0) continue;
-
-    // Rigid-body inertia plus rotor inertia. HIr matters: the training model
-    // declares an armature per actuator, and on a geared joint the rotor term
-    // often dominates -- dropping it would understate m and inflate qddot.
-    // + jointArmature_: HIr is identically zero here because the URDF has no
-    // rotor inertia, while the plant (and training) run with armature=1.
-    const double m = H(dofPos, dofPos) + HIr(dofPos, dofPos) + jointArmature_;
-    if(m < 1e-9) continue;
-
-    const int mcIdx = rr.jointIndexByName(jointNames[i]);
-    // IdealPdActuator's law, on the measured state, exactly as in training.
-    const double tau = kp_(i) * (q_rl(i) - rr.mbc().q[mcIdx][0])
-                     + kd_(i) * (qdTarget_(i) - rr.mbc().alpha[mcIdx][0]);
-
-    jointInertia_(i) = m;
-    qddotRef_(i)     = tau / m;
-    qddot(dofPos)    = qddotRef_(i);
-  }
-
-  pt.refAccel(qddot);
-  // Only touched on this path: reset() already sets the stiffness, and the GUI
-  // lets the operator retune it, so overwriting it unconditionally would fight
-  // both. Negative means "leave the task's own gains alone".
-  if(qpAccelStiffness_ >= 0.0)
-  {
-    pt.setGains(qpAccelStiffness_,
-                qpAccelDamping_ >= 0.0 ? qpAccelDamping_ : 2.0 * std::sqrt(qpAccelStiffness_));
-  }
-}
-
-void NewRLQPController::setupTorqueTask()
-{
-  // Weight 1000 against the PostureTask's default 10: the posture task stays in
-  // the solver (the FSM owns it) and would otherwise fight the torque task for
-  // the same joints. Its target is whatever reset() captured, so it pulls
-  // toward the standing posture; outweighing it leaves it as a weak regulariser
-  // on the joints the policy does not drive.
-  torqueTask_ = std::make_shared<mc_tasks::TorqueJointTask>(solver(), 0, 1.0, 1000.0);
-  torqueTask_->reset();
-
-  // TorqueJointTask indexes its vectors by position in the FULL refJointOrder,
-  // while kp_/kd_/jointNames are the filtered 30. refIdx_ is the bridge -- the
-  // same table jointTorques() needs, and for the same reason: without it
-  // everything after L_HAND is shifted by one.
-  const int n = static_cast<int>(robot().refJointOrder().size());
-  Eigen::VectorXd kp = Eigen::VectorXd::Zero(n);
-  Eigen::VectorXd kd = Eigen::VectorXd::Zero(n);
-  for(int i = 0; i < nbActuatedJoints; ++i)
-  {
-    const int k = refIdx_[i];
-    if(k < 0) continue;
-    kp(k) = kp_(i);
-    kd(k) = kd_(i);
-  }
-  torqueTask_->setStiffness(kp);
-  torqueTask_->setDamping(kd);
-  // Velocity target comes from the policy (qdTarget_), never differentiated
-  // from the position target: the two are independent channels in training.
-  torqueTask_->setDeriveVelocityTargetFromPosition(false);
-  solver().addTask(torqueTask_);
-
-  mc_rtc::log::info("[NewRLQPController] TorqueJointTask active ({} joints mapped into {} refJointOrder slots). "
-                    "mc_mujoco MUST run with --torque-control, otherwise it applies its own PD to (q, alpha) "
-                    "and these torques are ignored.",
-                    nbActuatedJoints, n);
+  return config_("posture_stiffness", 0.2 / (policyDt * timeStep));
 }
 
 void NewRLQPController::reset(const mc_control::ControllerResetData & reset_data)
 {
   mc_control::fsm::Controller::reset(reset_data);
 
-  auto pt = getPostureTask(robot().name());
-  if(pt) pt->stiffness(postureStiffness());
+  applyPostureMode();
 
   q_rl       = q_zero;
   q_rl_prev_ = q_zero;
@@ -286,6 +176,7 @@ void NewRLQPController::reset(const mc_control::ControllerResetData & reset_data
   qdTarget_.setZero();
   currentVelCmd_.setZero();
   histInitialized_ = false;
+  ffInit_ = false;
   // Never resume armed across a reset: a controller switch or a re-reset must
   // put the robot back in the held state and require a deliberate re-arm.
   policyArmed_ = false;
@@ -352,6 +243,11 @@ void NewRLQPController::initializeRobot()
 
   q_rl              = Eigen::VectorXd::Zero(nbActuatedJoints);
   q_rl_prev_        = Eigen::VectorXd::Zero(nbActuatedJoints);
+  ffPrevQ_          = Eigen::VectorXd::Zero(nbActuatedJoints);
+  ffVel_            = Eigen::VectorXd::Zero(nbActuatedJoints);
+  ffPrevVel_        = Eigen::VectorXd::Zero(nbActuatedJoints);
+  ffAcc_            = Eigen::VectorXd::Zero(nbActuatedJoints);
+  ffInit_           = false;
   q_zero            = Eigen::VectorXd::Zero(nbActuatedJoints);
   actionScale       = Eigen::VectorXd::Zero(nbActuatedJoints);
   currentActionScaled = Eigen::VectorXd::Zero(nbActuatedJoints);
@@ -411,23 +307,48 @@ void NewRLQPController::initializeRobot()
   velTargetLimitPerJoint_ = Eigen::VectorXd::Constant(nbActuatedJoints, 1e9);
   qdTarget_       = Eigen::VectorXd::Zero(nbActuatedJoints);
   qTargetPrev_    = Eigen::VectorXd::Zero(nbActuatedJoints);
+  // Upstream posture filter, off unless the policy trained against one.
+  postureFilterK_    = config_("policies")[currentPolicyIndex]("posture_filter_stiffness", 0.0);
+  postureQ_          = Eigen::VectorXd::Zero(nbActuatedJoints);
+  postureQd_         = Eigen::VectorXd::Zero(nbActuatedJoints);
+  postureFilterInit_ = false;
 
-  // Acceleration feedforward. HIr (rotor inertias) only depends on the model,
-  // so it is computed once here; H is configuration-dependent and recomputed
-  // every tick in run().
-  qpAccelTask_      = config_("policies")[currentPolicyIndex]("qp_accel_task", false);
-  qpAccelStiffness_ = config_("policies")[currentPolicyIndex]("qp_accel_stiffness", -1.0);
-  qpAccelDamping_   = config_("policies")[currentPolicyIndex]("qp_accel_damping", -1.0);
-  jointArmature_    = config_("policies")[currentPolicyIndex]("joint_armature", 0.0);
-  jointInertia_     = Eigen::VectorXd::Zero(nbActuatedJoints);
-  qddotRef_         = Eigen::VectorXd::Zero(nbActuatedJoints);
-  if(qpAccelTask_)
+  posturePassthrough_ = config_("policies")[currentPolicyIndex]("posture_passthrough", false);
+  postureAccelMax_    = config_("policies")[currentPolicyIndex]("posture_accel_max", 200.0);
+  postureFeedforward_ = config_("policies")[currentPolicyIndex]("posture_feedforward", false);
+
+
+  // Velocity damper, off unless the policy declares velocity_damper_di.
+  const auto & pol = config_("policies")[currentPolicyIndex];
+  damperDi_         = pol("velocity_damper_di", 0.0);
+  damperDs_         = pol("velocity_damper_ds", 0.0);
+  damperVelPercent_ = pol("velocity_damper_vel_percent", 0.9);
+  jointLower_ = Eigen::VectorXd::Zero(nbActuatedJoints);
+  jointUpper_ = Eigen::VectorXd::Zero(nbActuatedJoints);
+  velLimit_   = Eigen::VectorXd::Zero(nbActuatedJoints);
+  if(damperDi_ > 0.0)
   {
-    fd_ = rbd::ForwardDynamics(robot().mb());
-    fd_.computeHIr(robot().mb());
-    mc_rtc::log::info("[NewRLQPController] qp_accel_task ON (refAccel = tau/diag(H+HIr)), "
-                      "gains {} / {} (<0 = keep the posture task's own)",
-                      qpAccelStiffness_, qpAccelDamping_);
+    // Hard error on a missing entry rather than a default: a joint silently left
+    // at lo == hi is skipped by the damper, i.e. one joint quietly running a
+    // different plant from the other 29.
+    std::map<std::string, std::vector<double>> lim_map = pol("joint_limits");
+    std::map<std::string, double> vlim_map = pol("velocity_limits");
+    for(int i = 0; i < nbActuatedJoints; ++i)
+    {
+      const auto itL = lim_map.find(jointNames[i]);
+      const auto itV = vlim_map.find(jointNames[i]);
+      if(itL == lim_map.end() || itL->second.size() != 2 || itV == vlim_map.end())
+        mc_rtc::log::error_and_throw(
+            "[NewRLQPController] velocity_damper_di is set but joint '{}' has no "
+            "joint_limits [lo, hi] and/or velocity_limits entry",
+            jointNames[i]);
+      jointLower_(i) = itL->second[0];
+      jointUpper_(i) = itL->second[1];
+      velLimit_(i)   = itV->second;
+      if(!(jointUpper_(i) > jointLower_(i)))
+        mc_rtc::log::error_and_throw("[NewRLQPController] joint_limits for '{}' are not lo < hi",
+                                     jointNames[i]);
+    }
   }
   // The projection is only meaningful when the plant downstream really is the PD
   // it was derived from. Its correctness proof in training is an identity:
@@ -487,7 +408,6 @@ void NewRLQPController::initializeRobot()
   // Matches the training actuator's velocity_target_limit (rad/s): clamp on
   // the finite-difference velocity feedforward in byPassQPControl().
   velTargetLimit_   = config_("policies")[currentPolicyIndex]("vel_target_limit",  8.0);
-
 
   const double K = postureStiffness();
   auto pt = getPostureTask(robot().name());
@@ -645,22 +565,236 @@ void NewRLQPController::updateRawTorqueRatio(const Eigen::VectorXd & qTarget)
   for(int j = 0; j < actionDim; ++j) { rawTorque_[0](j) = rawTorqueRatio_(actionToDofMap[j]); }
 }
 
+bool NewRLQPController::switchPolicy(size_t index)
+{
+  if(policyArmed_)
+  {
+    mc_rtc::log::error("[NewRLQPController] refusing to switch policy while ARMED -- disarm first");
+    return false;
+  }
+  if(index >= policyPaths_.size())
+  {
+    mc_rtc::log::error("[NewRLQPController] policy index {} out of range (have {})", index,
+                       policyPaths_.size());
+    return false;
+  }
+  if(index == currentPolicyIndex)
+  {
+    mc_rtc::log::info("[NewRLQPController] policy {} already loaded", index);
+    return true;
+  }
+
+  const size_t previous = currentPolicyIndex;
+  // Hold the commanded posture and the operator's QP choice across the reload:
+  // initializeRobot() re-reads use_QP from the policy block, and a switch is not
+  // a reason to put the QP back in the loop behind the operator's back.
+  const Eigen::VectorXd qHold = q_rl;
+  const bool qpChoice = useQP_;
+
+  currentPolicyIndex = index;
+  try
+  {
+    initializeRobot();     // per-policy kp/kd/q0/action_scale/effort_limit/ratio/filter
+    initializeRLPolicy();  // ONNX + mappings + observation buffers
+  }
+  catch(const std::exception & e)
+  {
+    mc_rtc::log::error("[NewRLQPController] policy {} failed to load ({}), reverting to {}", index,
+                       e.what(), previous);
+    currentPolicyIndex = previous;
+    initializeRobot();
+    initializeRLPolicy();
+    useQP_ = qpChoice;
+    q_rl = qHold;
+    return false;
+  }
+
+  useQP_ = qpChoice;
+  // Same clearing as reset(): the projection seeds qTargetPrev_ on its next call,
+  // the posture filter seeds on its next command, and the observation history is
+  // re-seeded by initializeRLObservation() above. Carrying any of it over would
+  // mix two different plants.
+  q_rl = qHold;
+  q_rl_prev_ = qHold;
+  qTargetPrev_ = qHold;
+  qdTarget_.setZero();
+  projInitialized_ = false;
+  postureFilterInit_ = false;
+  histInitialized_ = false;
+  ffInit_ = false;
+
+  applyPostureMode();
+
+  mc_rtc::log::success("[NewRLQPController] policy {} -> {} loaded ({}), QP {}, disarmed", previous,
+                       index, policyPaths_[index], useQP_ ? "enforced" : "bypassed");
+  return true;
+}
+
+Eigen::VectorXd NewRLQPController::applyPostureFilter(const Eigen::VectorXd & qCmd)
+{
+  if(postureFilterK_ <= 0.0) { return qCmd; }
+
+  if(!postureFilterInit_)
+  {
+    // Seed on the command, never on zero: from zero the filter sends the robot
+    // to q = 0 on the first step. Same branch as the actuator's `uninitialized`.
+    postureQ_ = qCmd;
+    postureQd_.setZero();
+    postureFilterInit_ = true;
+    return postureQ_;
+  }
+
+  // 2 substeps = the training decimation (sim dt 0.0025, policy dt 0.005).
+  constexpr int nSub = 2;
+  const double dt = policyStepSize / nSub;
+  const double damping = 2.0 * std::sqrt(postureFilterK_); // as mc_rtc derives it
+  for(int s = 0; s < nSub; ++s)
+  {
+    const Eigen::VectorXd acc = postureFilterK_ * (qCmd - postureQ_) - damping * postureQd_;
+    postureQd_ += acc * dt;   // semi-implicit: velocity first,
+    postureQ_ += postureQd_ * dt; // then position with the updated velocity
+  }
+  return postureQ_;
+}
+
+int NewRLQPController::postureDofOffset() const
+{
+  return robot().mb().joint(0).type() == rbd::Joint::Free ? 6 : 0;
+}
+
+void NewRLQPController::applyPostureMode()
+{
+  auto pt = getPostureTask(robot().name());
+  if(!pt) { return; }
+  if(posturePassthrough_) { pt->stiffness(0.0); pt->damping(0.0); }
+  else
+  {
+    if(postureRefAccelWritten_ && !postureFeedforward_)
+    {
+      const Eigen::VectorXd z = Eigen::VectorXd::Zero(robot().mb().nrDof() - postureDofOffset());
+      pt->refAccel(z);
+      pt->refVel(z);
+      postureRefAccelWritten_ = false;
+    }
+    pt->stiffness(postureStiffness());
+  }
+}
+
+void NewRLQPController::setPostureRefAccel(mc_tasks::PostureTaskPtr & pt)
+{
+  const auto & mb = robot().mb();
+  const auto & mbc = robot().mbc();
+  const int off = postureDofOffset();
+  // T floored at 3 ticks: the deadbeat has |lambda| 2.41 at T == dt (diverges),
+  // 0.58 at 3 dt. On the robot timeStep and policy_step_size are both 0.005.
+  const double T = std::max(policyStepSize, 3.0 * timeStep);
+  Eigen::VectorXd a = Eigen::VectorXd::Zero(mb.nrDof() - off);
+  for(int i = 0; i < nbActuatedJoints; ++i)
+  {
+    const int jIdx = robot().jointIndexByName(jointNames[i]);
+    const int dof = mb.jointPosInDof(jIdx) - off; // index into qJoints, not nrDof
+    if(dof < 0 || dof >= a.size()) { continue; }
+    const double q = mbc.q[jIdx][0];
+    const double dq = mbc.alpha[jIdx][0];
+    const double acc = 2.0 * (q_rl(i) - q - dq * T) / (T * T);
+    a(dof) = std::clamp(acc, -postureAccelMax_, postureAccelMax_);
+  }
+  pt->refAccel(a);
+  postureRefAccelWritten_ = true;
+}
+
+void NewRLQPController::updatePostureFeedforward()
+{
+  if(!ffInit_)
+  {
+    ffPrevQ_ = q_rl;
+    ffVel_.setZero();
+    ffPrevVel_.setZero();
+    ffAcc_.setZero();
+    ffInit_ = true;
+    return;
+  }
+  // Hold across substeps: q_rl only moves on a policy step, so differentiating
+  // every tick would give one spike in policyStepSize/timeStep ticks and zeros
+  // in between.
+  if(q_rl == ffPrevQ_) { return; }
+  const double dt = std::max(policyStepSize, timeStep);
+  ffVel_     = (q_rl - ffPrevQ_) / dt;
+  ffAcc_     = (ffVel_ - ffPrevVel_) / dt;
+  ffPrevVel_ = ffVel_;
+  ffPrevQ_   = q_rl;
+}
+
+void NewRLQPController::setPostureFeedforward(mc_tasks::PostureTaskPtr & pt)
+{
+  const auto & mb = robot().mb();
+  const int off = postureDofOffset();
+  const int n = mb.nrDof() - off;
+  Eigen::VectorXd v = Eigen::VectorXd::Zero(n);
+  Eigen::VectorXd a = Eigen::VectorXd::Zero(n);
+  for(int i = 0; i < nbActuatedJoints; ++i)
+  {
+    const int dof = mb.jointPosInDof(robot().jointIndexByName(jointNames[i])) - off;
+    if(dof < 0 || dof >= n) { continue; }
+    // Same clamps the command itself already respects: the feedforward must not
+    // ask for a velocity the damper forbids, nor an acceleration the deadbeat
+    // path caps. Finite differences of a jittery target overshoot both.
+    v(dof) = std::clamp(ffVel_(i), -velTargetLimit_, velTargetLimit_);
+    a(dof) = std::clamp(ffAcc_(i), -postureAccelMax_, postureAccelMax_);
+  }
+  pt->refVel(v);
+  pt->refAccel(a);
+  postureRefAccelWritten_ = true;
+}
+
+Eigen::VectorXd NewRLQPController::applyVelocityDamper(const Eigen::VectorXd & qTarget)
+{
+  if(damperDi_ <= 0.0) { return qTarget; }
+
+  auto & rr = realRobot(robots()[0].name());
+  Eigen::VectorXd out = qTarget;
+  for(int i = 0; i < nbActuatedJoints; ++i)
+  {
+    // Velocity clamp first, as the actuator does: qd* feeds the projection's
+    // v_term, so clamping it after would leave a different window behind.
+    if(velLimit_(i) > 0.0)
+    {
+      const double vMax = damperVelPercent_ * velLimit_(i);
+      qdTarget_(i) = std::clamp(qdTarget_(i), -vMax, vMax);
+    }
+
+    const double lo = jointLower_(i), hi = jointUpper_(i);
+    if(!(hi > lo)) { continue; }
+    const double range = hi - lo;
+    const double dsAbs = damperDs_ * range;
+    const double span = std::max(damperDi_ * range - dsAbs, 1e-6);
+
+    const int mcIdx = rr.jointIndexByName(jointNames[i]);
+    const double q = rr.mbc().q[mcIdx][0];
+
+    // alpha = 1 outside the inflection zone (the target may reach the safety
+    // margin); alpha -> 0 at the margin, where it may not move toward the limit
+    // at all. Squaring through alpha*dist is what makes the approach smooth.
+    const double distHi = (hi - dsAbs) - q;
+    const double qMax = q + std::clamp(distHi / span, 0.0, 1.0) * std::max(distHi, 0.0);
+    const double distLo = q - (lo + dsAbs);
+    const double qMin = q - std::clamp(distLo / span, 0.0, 1.0) * std::max(distLo, 0.0);
+
+    out(i) = std::clamp(qTarget(i), qMin, qMax);
+  }
+  return out;
+}
+
 Eigen::VectorXd NewRLQPController::projectTorqueFeasible(const Eigen::VectorXd & qTarget)
 {
   if(torqueFeasibilityRatio_ <= 0.0) { return qTarget; }
 
-  // Under the QP, q_rl is a PostureTask target integrated in OpenLoop and nothing
-  // applies kp = 20000, so the projection stops being the identity it is proved to
-  // be and becomes a hard constraint pinning the target within budget/kp of the
-  // measurement -- 0.0018 rad on CROTCH_Y. On the bypass path q_rl goes straight
-  // to mc_mujoco's servo, whose gains ARE these kp/kd (verified against
-  // share/mc_mujoco/RHPS1/pdgains/RHPS1main/PDgains_sim.dat: 20000/400 legs,
-  // 10000/300 ankles, 44000/440 chest), so there the window is correctly sized.
-  //
-  // No seed to drop on the way out any more: updateRawTorqueRatio() runs every
-  // policy step in both modes, so qTargetPrev_ and qd* are never stale when
-  // bypass is re-entered. That staleness is what blew the robot up on 2026-08-02.
-  if(useQP_) { return qTarget; }
+  // Runs under the QP too. This clamp is part of the plant the policy learned,
+  // not a torque guard for the QP: mjlab projects the position target with the
+  // same formula and the same kp/effort_limit, and at ratio 1.0 the policy emits
+  // targets far outside the window on purpose. On 2026-08-17_00-34-31 at the
+  // nominal pose, ANKLE_R and CROTCH_P overshoot it ~10x -- skipping it here
+  // splayed the legs. Policies without the ratio (index 0) returned above.
 
   auto & rr = realRobot(robots()[0].name());
   Eigen::VectorXd out = qTarget;
@@ -750,17 +884,30 @@ bool NewRLQPController::byPassQPControl()
   {
     const int idx = robot().jointIndexByName(jointNames[i]);
     robot().mbc().q[idx][0] = q_rl(i);
-    // Velocity feedforward = qdTarget_, the SAME finite-difference-of-target
-    // estimate updateRawTorqueRatio() already computes once per policy step
-    // (divided by policyStepSize, clamped by velTargetLimitPerJoint_,
-    // EMA-filtered by velTargetFilterAlpha_). Do NOT recompute it here from
-    // (q_rl - q_rl_prev_)/timeStep: byPassQPControl() runs every controller
-    // tick, but q_rl only changes once per policy step, so under decimation
-    // (policyStepSize > timeStep, e.g. policy 4's 0.01s vs the 0.005s
-    // controller tick) that finite difference is a spike on the tick q_rl
-    // changes and zero on every other tick -- exactly the kind of velocity
-    // kick documented above for the finite-difference actuator.
-    robot().mbc().alpha[idx][0] = qdTarget_(i);
+    // Velocity feedforward from finite differences of the position target.
+    // Clamped like the training actuator (FiniteDifferencePdActuator
+    // velocity_target_limit): a policy-step target jump of 0.1 rad otherwise
+    // becomes a 20+ rad/s velocity target and the kd term injects torque
+    // kicks the policy never experienced in training (observed: hip-yaw
+    // blow-up at the first inference of the 2026-07-16 checkpoint).
+    //
+    // When the policy declares a ratio, qd* already exists: updateRawTorqueRatio()
+    // maintains exactly the signal the training PD is handed -- finite difference
+    // over the POLICY step, per-joint clamp, EMA at vel_target_filter_alpha. Use
+    // it rather than re-deriving one here. The old derivation differed three ways:
+    // dt was timeStep (1 ms in mc_mujoco, 5x too large, and a one-tick-in-five
+    // spike since q_rl only moves on a policy step), no EMA, and the legacy
+    // scalar clamp instead of the per-joint one. That matters because the
+    // projection's bound |tau| <= effort_limit only holds for the PD it assumes;
+    // feed the servo a different qd* and the kd term leaves the budget, which is
+    // what mjlab's own torch.clamp(torque, +/-force_limit) then absorbs.
+    if(velTargetFilterAlpha_ > 0.0) { robot().mbc().alpha[idx][0] = qdTarget_(i); }
+    else
+    {
+      const double alphaRaw = (q_rl(i) - q_rl_prev_(i)) / timeStep;
+      robot().mbc().alpha[idx][0] =
+          std::max(-velTargetLimit_, std::min(velTargetLimit_, alphaRaw));
+    }
   }
   return true;
 }
@@ -811,12 +958,6 @@ void NewRLQPController::addLog()
   logger().addLogEntry("NewRLQPController_RL_q",             [this]() { return q_rl; });
   logger().addLogEntry("NewRLQPController_RL_qZero",         [this]() { return q_zero; });
   logger().addLogEntry("NewRLQPController_qdTarget",         [this]() { return qdTarget_; });
-  // Both only move while qp_accel_task is on. Logged together on purpose: an
-  // ineffective feedforward and a badly estimated inertia look identical from
-  // the velocity ratio alone, and telling them apart after the fact is what
-  // cost several iterations on the neighbouring paths.
-  logger().addLogEntry("NewRLQPController_qddot_ref",        [this]() { return qddotRef_; });
-  logger().addLogEntry("NewRLQPController_joint_inertia",    [this]() { return jointInertia_; });
   // What mc_mujoco's PD actually receives. The stock qOut/alphaOut entries
   // read outputRobot() (the canonical robot), NOT the control robot mujoco
   // reads -- in bypass they showed alpha=0.0003 while the commanded value was
@@ -832,18 +973,6 @@ void NewRLQPController::addLog()
     Eigen::VectorXd v = Eigen::VectorXd::Zero(nbActuatedJoints);
     for(int i = 0; i < nbActuatedJoints; ++i)
       v(i) = robot().mbc().alpha[robot().jointIndexByName(jointNames[i])][0];
-    return v;
-  });
-  // The torque the QP actually commands. Only meaningful with
-  // use_torque_task + mc_mujoco --torque-control; zero otherwise, which is
-  // itself the quickest way to see the flag was forgotten.
-  logger().addLogEntry("NewRLQPController_ctrl_tau", [this]() -> Eigen::VectorXd {
-    Eigen::VectorXd v = Eigen::VectorXd::Zero(nbActuatedJoints);
-    for(int i = 0; i < nbActuatedJoints; ++i)
-    {
-      const auto & t = robot().mbc().jointTorque[robot().jointIndexByName(jointNames[i])];
-      if(!t.empty()) v(i) = t[0];
-    }
     return v;
   });
   logger().addLogEntry("NewRLQPController_RL_currentObservation", [this]() { return currentObservation; });
@@ -946,6 +1075,11 @@ void NewRLQPController::addLog()
 void NewRLQPController::addGui()
 {
   gui()->addElement({"NewRLQPController", "Policy"},
+    // Switching is refused while ARMED, so this is safe to leave in the GUI.
+    mc_rtc::gui::IntegerInput("Policy index (disarm to change)",
+                              [this]() { return static_cast<int>(currentPolicyIndex); },
+                              [this](int i) { if(i >= 0) switchPolicy(static_cast<size_t>(i)); }),
+    mc_rtc::gui::Label("Policies available", [this]() { return std::to_string(policyPaths_.size()); }),
     mc_rtc::gui::Label("Current policy",   [this]() -> const std::string & { return policyPaths_[currentPolicyIndex]; }),
     mc_rtc::gui::Label("Policy Loaded",    [this]() { return rlPolicy->isLoaded() ? "Yes" : "No"; }),
     mc_rtc::gui::Label("Observation Size", [this]() { return std::to_string(rlPolicy->getObservationSize()); }),
@@ -984,6 +1118,23 @@ void NewRLQPController::addGui()
 
   gui()->addElement({"ControlMode"},
     mc_rtc::gui::Button("Toggle QP Control",       [this]() { useQP_ = !useQP_; }),
+    mc_rtc::gui::Button("Toggle posture pass-through", [this]() {
+      posturePassthrough_ = !posturePassthrough_;
+      applyPostureMode();
+      mc_rtc::log::warning("[NewRLQPController] posture {}",
+                           posturePassthrough_ ? "PASS-THROUGH" : "2nd-order task");
+    }),
+    mc_rtc::gui::Button("Toggle posture feedforward", [this]() {
+      postureFeedforward_ = !postureFeedforward_;
+      ffInit_ = false;
+      applyPostureMode();
+      mc_rtc::log::warning("[NewRLQPController] posture feedforward {}",
+                           postureFeedforward_ ? "ON" : "OFF");
+    }),
+    mc_rtc::gui::Label("Posture mode", [this]() {
+      return posturePassthrough_ ? "pass-through (refAccel)"
+             : postureFeedforward_ ? "2nd-order task + feedforward"
+                                   : "2nd-order task"; }),
     mc_rtc::gui::Label("QP Control",               [this]() { return useQP_ ? "Enforced" : "Bypassed"; }),
     mc_rtc::gui::Button("Toggle print limits",     [this]() { printLimits_ = !printLimits_; }),
     mc_rtc::gui::Label("Print joint limits",       [this]() { return printLimits_ ? "Enabled" : "Disabled"; })

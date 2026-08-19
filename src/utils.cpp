@@ -172,37 +172,52 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
       }
       else
       {
-        // position_action (policies 0-3, mjlab FiniteDifferencePdActuator):
-        // position target recomputed fresh each step from q_zero; the
-        // velocity feedforward is reconstructed downstream by finite-
-        // differencing consecutive q_rl targets, exactly as the training
-        // actuator does.
+        // position_action (policies 0-3): the target is rebuilt from q_zero
+        // every step, not integrated. Kept in this branch rather than in the
+        // loop above because velocity_action integrates instead.
         for (int j = 0; j < ctl.currentAction.size(); ++j) {
             int i = ctl.actionToDofMap[j];
             ctl.q_rl(i) = ctl.currentActionScaled(i) + ctl.q_zero(i);
         }
+        // The QP's PostureTask, reproduced upstream of the finite difference and
+        // the projection because that is where training puts it
+        // (finite_difference_pd_actuator.py:308) and the mc_rtc PostureTask is
+        // downstream of both. No-op unless the policy declares
+        // posture_filter_stiffness.
+        ctl.q_rl = ctl.applyPostureFilter(ctl.q_rl);
         // Order matters: the raw-torque channel is measured on the target BEFORE
         // the projection (measuring it after makes every joint report exactly the
         // ratio the projection enforces -- the projection measuring itself), and it
         // must run in both QP and bypass because the V5 network reads it either way.
         ctl.updateRawTorqueRatio(ctl.q_rl);
+        // Velocity damper, between the qd* estimate and the projection, as
+        // finite_difference_pd_actuator.py:377 has it. It also clamps qd*, so it
+        // must run before the projection reads it. No-op unless the policy block
+        // sets velocity_damper_di.
+        ctl.q_rl = ctl.applyVelocityDamper(ctl.q_rl);
         // Project onto the torque-feasible set, exactly as the training actuator
         // does. No-op unless the policy block sets torque_feasibility_ratio.
-        ctl.q_rl = ctl.projectTorqueFeasible(ctl.q_rl);
+        const Eigen::VectorXd qProjected = ctl.projectTorqueFeasible(ctl.q_rl);
+        // The projected target drives the command only on the bypass path, where
+        // the plant really is the PD the projection was derived from. Under the QP
+        // it would hand the PostureTask a torque encoding as if it were a pose --
+        // see NewRLQPController::projectionFeedsCommand().
+        if(ctl.projectionFeedsCommand()) { ctl.q_rl = qProjected; }
         // Feed back the action as EXECUTED, not as requested: the V4 observation's
         // actions block is executed_action. Beyond the feasible window many raw
         // actions map to one execution, and a policy that only ever sees what it
         // asked for cannot tell them apart -- which is the whole reason the
-        // training observation switched away from last_action.
+        // training observation switched away from last_action. Always the projected
+        // target, whatever drives the command: that is the signal training feeds.
         for (int j = 0; j < ctl.currentAction.size(); ++j) {
             int i = ctl.actionToDofMap[j];
             const double scale = ctl.actionScale(i);
             if(std::abs(scale) > 1e-12)
             {
-              ctl.currentActionScaled(i) = ctl.q_rl(i) - ctl.q_zero(i);
+              ctl.currentActionScaled(i) = qProjected(i) - ctl.q_zero(i);
               ctl.currentAction(j) = ctl.currentActionScaled(i) / scale;
             }
-        }
+      }
       }
       syncTime_ -= ctl.policyStepSize;
     }
@@ -213,14 +228,31 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
   }
 }
 
+// Les formats recents partagent un meme corps et ne different que par leurs
+// blocs de queue, chacun optionnel :
+//
+//   246  corps seul                      index 1, 4
+//   266  corps + gait_phase[20]          index 2   (V4)
+//   566  corps + gait_phase + raw[300]   index 3   (V5)
+//
+// Enonce ici une fois, lu la ou les blocs sont ecrits. Ajouter un index a l'un
+// de ces formats demande une etiquette de case ET une entree ici ; en oublier
+// une leve sur la taille d'observation, ce qui est le role de ce controle.
+//
+// L'index 4 (run 2026-08-12_20-36-28, filtre de PostureTask modelise) a ete
+// ajoute au yaml le 2026-08-13 SANS toucher a ce switch -- l'erreur exacte que
+// ce commentaire previent depuis le debut. Résultat mesure le 2026-08-14 :
+// aucune case ne correspond, l'observation reste a zero, "Wrote 0 expects
+// 246". Case 4 ajoutee juste en dessous pour corriger.
+bool utils::hasGaitPhase(int policyIndex)
+{
+  // 2 was the V4 entry; it is the velocity-action policy now, which has none.
+  return policyIndex == 3;
+}
+
 bool utils::isV5(int policyIndex)
 {
-  // Kept next to the switch it serves: the V5 cases fall through the V4 body and
-  // append one extra block, so "which indices are V5" has to be stated once and
-  // read twice. Extending V5 to a new index means adding a case label AND this
-  // number; missing either one throws on the observation size, which is the
-  // point of that check.
-  return policyIndex == 1 || policyIndex == 3;
+  return policyIndex == 3;
 }
 
 Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
@@ -294,8 +326,29 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.velCmd_[i]);
       break;
     }
-    case 1: // RHPS1 velocity policies — V5 format (566 dims)
-    case 3: // (index 3 = same run's final checkpoint, same V5 observation)
+    case 1: // RHPS1 velocity policies — 246 dims
+            // Currently mjlab-rhps1 run 2026-08-17_23-05-46 (see policy_path).
+            // Format introduced by run 2026-08-07_15-40-43 : le retour a la base
+            // policy 0 (echelle x1.5, keyframe genou 0.622) avec les armatures
+            // reelles et joint_vel par difference finie. C'est le corps commun
+            // tout court : ni gait_phase, ni raw_torque.
+            // 15+3+3+30+30+150+15 = 246.
+            //
+            // joint_vel ne demande rien de special ici : l'entrainement derive
+            // desormais les positions, et sur le robot l'EncoderObserver fait
+            // exactement pareil (mc_rtc ne recoit aucune vitesse articulaire).
+            // Les deux cotes coincident sans code supplementaire.
+    case 4: // RHPS1 velocity policies — 246 dims, meme format que l'index 1
+            // mjlab-rhps1 run 2026-08-12_20-36-28 : premiere policy entrainee
+            // avec le filtre de PostureTask modelise (posture_stiffness=1600
+            // par policy, voir NewRLQPController::postureStiffness()). Le
+            // corps d'observation lui-meme n'a pas change par rapport a
+            // l'index 1 -- le filtre vit dans l'actionneur d'entrainement et
+            // dans la PostureTask du QP ici, pas dans le vecteur d'observation.
+            // hasGaitPhase(4) et isV5(4) valent false par construction (les
+            // deux predicats testent explicitement 2 et 3), donc ce cas tombe
+            // bien sur le corps seul, 246 dims.
+    case 3: // RHPS1 velocity policies — V5 format (566 dims)
             // mjlab-rhps1 run 2026-08-05_11-17-44 ("abl15"). V5 is V4 with one
             // block appended and nothing else moved:
             //   raw_torque[300] = 10x30  (NEW)
@@ -308,7 +361,6 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
             // Falls through the V4 body below: everything up to gait_phase is
             // byte-for-byte identical, and duplicating 60 lines to append one
             // block is how the two drift apart.
-    case 2: // RHPS1 velocity policies — V4 format (266 dims)
             // mjlab-rhps1 run 2026-08-01_14-55-55 ("abl7"). Two blocks grew and
             // one is new relative to V3:
             //   base_lin_vel[15]  = 5x3   (unchanged)
@@ -348,7 +400,7 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       ctl.jointAct_[0] = ctl.currentAction;
       // Advance the clock exactly once per inference, after velCmd_[0] is set
       // (the cadence depends on it) and before the block is written out.
-      ctl.gaitPhaseStep();
+      if(utils::hasGaitPhase(ctl.currentPolicyIndex)) { ctl.gaitPhaseStep(); }
 
       const int actionDim = static_cast<int>(ctl.refJointOrderRLAction.size());
       ctl.jointPos_[0] = Eigen::VectorXd::Zero(actionDim);
@@ -372,7 +424,10 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       appendToObs(ctl.jointVel_[0]);
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointAct_[i]);
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.velCmd_[i]);
-      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write4(ctl.gaitPhase_[i]);
+      if(utils::hasGaitPhase(ctl.currentPolicyIndex))
+      {
+        for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write4(ctl.gaitPhase_[i]);
+      }
 
       // V5 tail. rawTorque_ is pushed by updateRawTorqueRatio() at the END of the
       // previous policy step, so index 0 holds the demand of the action that has
@@ -384,7 +439,11 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       }
       break;
     }
-    case 4: // hippolyte's run, 2026-08-06_15-18-01 -- obs = 4080 dims.
+    case 2: // hippolyte's velocity-action run -- obs = 4080 dims.
+            // Index 2 is this policy now: the list was condensed to v3 (0),
+            // v9 (1) and this one (2), so the V4 label that used to sit on
+            // case 2 was dropped from the shared body above. The only
+            // velocity_action entry (see NewRLQPController::velocityAction_).
             // observation_names (ONNX metadata): base_lin_vel, base_ang_vel,
             // projected_gravity, joint_pos, joint_vel, actions, command --
             // ALL seven terms at history depth 40 (unlike V3/V4/V5's depth 5,

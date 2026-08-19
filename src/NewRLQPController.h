@@ -1,10 +1,8 @@
 #pragma once
 
 #include <array>
-#include <RBDyn/FD.h>
 #include <mc_control/fsm/Controller.h>
 #include <mc_rbdyn/SCHAddon.h>
-#include <mc_tasks/TorqueJointTask.h>
 
 #include "api.h"
 
@@ -97,6 +95,42 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    * @endcode
    */
   void initializeRLObservation();
+
+  /** @brief PostureTask stiffness: `posture_stiffness` from the current
+   *  policy's entry if it declares one, else from the global configuration,
+   *  else the historical 0.2/(policyDt*timeStep).
+   *
+   *  A policy trained against a modelled PostureTask filter must run under the
+   *  same stiffness: the lag it learned is 1/sqrt(K) and does not depend on the
+   *  control rate -- see the note in the implementation. */
+  double postureStiffness() const;
+
+  /** @brief Whether the projected target drives the command, or only the
+   *  observation.
+   *
+   *  The projection encodes a torque, not a pose: its correctness is the
+   *  identity "clamping tau and projecting q* onto tau's preimage are the same
+   *  operation", which holds only for the PD it was derived from. Measured in
+   *  mc_mujoco, the projected ankle-roll target sits 26 window widths from the
+   *  measurement (the v_term shift, by design) -- fine for a PD that turns it
+   *  into exactly effort_limit, absurd for a PostureTask at K=40000, which reads
+   *  it as a ~4700 rad/s^2 demand. So under the QP the command keeps the
+   *  filtered physical target and the QP's own torque bounds do the clamping;
+   *  the observation still reads the projected target, as training does. */
+  bool projectionFeedsCommand() const { return !useQP_; }
+
+  /** @brief Load another policy index at runtime, from the GUI.
+   *
+   *  Refuses while ARMED: every per-policy plant parameter changes underneath
+   *  the running loop otherwise. Replays initializeRobot() + initializeRLPolicy(),
+   *  which is what startup does, then clears the projection, posture-filter and
+   *  observation-history state so nothing carries over from the previous policy.
+   *  The commanded posture is preserved across the switch so the PostureTask
+   *  target does not jump, and the operator's QP toggle is preserved too --
+   *  switching a policy is not a reason to silently re-enter the QP.
+   *
+   *  @return false and logs an error if armed or the index is out of range. */
+  bool switchPolicy(size_t index);
 
   // =========================================================================
   // Robot state
@@ -370,6 +404,99 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   bool projInitialized_ = false; ///< False until the first target seeds qTargetPrev_.
   Eigen::VectorXd rawTorqueRatio_; ///< |tau_raw| / effort_limit, current step.
 
+  // Upstream PostureTask filter, `posture_filter_stiffness` per policy.
+  //
+  // Training puts the QP's PostureTask BEFORE the finite difference and the
+  // projection (finite_difference_pd_actuator.py:308) -- the mc_rtc PostureTask
+  // is downstream of both, so that ordering only exists here if we integrate it
+  // ourselves. Without it qd* is the finite difference of the RAW target, which
+  // for this policy jumps ~20 action units a step, saturates
+  // vel_target_limit_per_joint and shoves the projection window ~0.3 rad off the
+  // measurement -- the runaway described on qTargetPrev_ below, reached from the
+  // other side. 0 disables it: index 0 trained with no filter at all.
+  double postureFilterK_ = 0.0;
+  Eigen::VectorXd postureQ_;  ///< Filter state, position.
+  Eigen::VectorXd postureQd_; ///< Filter state, velocity.
+  bool postureFilterInit_ = false;
+
+  /** @brief Second-order posture filter, semi-implicit, `n` substeps of
+   *  policyStepSize/n. Returns qCmd unchanged when the policy declares no
+   *  posture_filter_stiffness. */
+  Eigen::VectorXd applyPostureFilter(const Eigen::VectorXd & qCmd);
+
+  // Velocity damper, `velocity_damper_di` per policy. mjlab runs it between the
+  // qd* estimate and the torque projection (finite_difference_pd_actuator.py:377)
+  // and it is NOT optional for the observation: _executed_position_target is
+  // allocated unconditionally, so executed_action reads the POST-damper target
+  // even when the projection is off. Under the QP mc_rtc's KinematicsConstraint
+  // covers the command side, but nothing covered the observation, and the bypass
+  // path had no damper at all.
+  //
+  // joint_limits must be mjlab's mj_model.jnt_range, not mc_rtc's -- the damper's
+  // zone is a fraction of the range, so a different range is a different plant.
+  // Declared in the yaml rather than read from the robot so the two cannot drift
+  // apart silently.
+  double damperDi_ = 0.0;
+  double damperDs_ = 0.0;
+  double damperVelPercent_ = 0.9;
+  Eigen::VectorXd jointLower_, jointUpper_, velLimit_;
+
+  /** @brief Apply the posture task gains for the current policy. */
+  void applyPostureMode();
+
+  // Posture pass-through, `posture_passthrough` per policy. The QP here is
+  // kinematic, so the task's 2nd order is a stage training does not have:
+  // q* -> [task + QP] -> q_out -> PD, against q* -> PD.
+  //
+  // Under TVM, PostureFunction is an IdentityFunction over qJoints and refAccel
+  // sets normalAcceleration_ = -acc, so the QP row reads
+  // q̈ = -Kp f - Kv ḟ + refAccel: additive, and zero gains leave q̈ = refAccel.
+  //
+  // SIZE TRAP: mc_tasks::PostureTask::refAccel asserts nrDof, the TVM function
+  // asserts its own size, and on a floating base those differ by 6. Both are
+  // compiled out in RelWithDebInfo, so a nrDof vector silently resizes
+  // refAccel_ and corrupts the function -- that is what blew the robot up on
+  // 2026-08-18. The function size is the correct one; a Debug build will trip
+  // the mc_tasks assert, which is an mc_rtc inconsistency worth reporting.
+  bool posturePassthrough_ = false;
+  double postureAccelMax_ = 200.0;
+  bool postureRefAccelWritten_ = false;
+
+  // Feedforward on the 2nd-order task. Gains alone are pure feedback, so the
+  // task lags any moving target by 1/sqrt(K) and, worse, low-passes it at
+  // sqrt(K) rad/s -- 40 here. Feeding the commanded trajectory's own qd* and
+  // qdd* alongside makes the QP row q_ddot = qdd* + K(q* - q) + Kv(qd* - qd):
+  // the gains only correct error, and a target the policy slews smoothly is
+  // tracked without lag. mc_tvm::PostureFunction already composes it that way
+  // (velocity_ -= refVel_, normalAcceleration_ = -refAccel).
+  //
+  // Off by default: qd*/qdd* are finite differences, so they amplify tremor by
+  // 1/dt and 1/dt^2. Worth having only for a policy trained with the smoothness
+  // penalties -- on a shaky one it makes things worse, not better.
+  bool postureFeedforward_ = false;
+  bool ffInit_ = false;
+  Eigen::VectorXd ffPrevQ_, ffVel_, ffPrevVel_, ffAcc_;
+
+  /** @brief Dofs the posture function spans: nrDof minus the floating base. */
+  int postureDofOffset() const;
+
+  /** @brief refAccel = 2 (q* - q_out - dq_out T) / T^2, clamped, T floored at
+   *  3 ticks -- the receding-horizon deadbeat diverges at T == dt. */
+  void setPostureRefAccel(mc_tasks::PostureTaskPtr & pt);
+
+  /** @brief Refresh the velocity and acceleration feedforward from finite
+   *  differences of q_rl, once per policy step (q_rl is a staircase when
+   *  policyStepSize > timeStep). */
+  void updatePostureFeedforward();
+
+  /** @brief Write the feedforward as refVel and refAccel, gains kept. */
+  void setPostureFeedforward(mc_tasks::PostureTaskPtr & pt);
+
+  /** @brief Clamp qd* to vel_percent * velocity_limits and project the target
+   *  into the joint-limit safe region, as mjlab's _apply_velocity_damper does.
+   *  No-op when the policy declares no velocity_damper_di. */
+  Eigen::VectorXd applyVelocityDamper(const Eigen::VectorXd & qTarget);
+
   /**
    * @brief Advance qd*, compute the raw-torque ratio and push it into rawTorque_.
    *
@@ -501,114 +628,15 @@ private:
   bool byPassQPControl();
   bool useQP_ = true; ///< Route torques through CBF-QP (true) or apply directly (false)
 
-  /**
-   * @brief Acceleration feedforward on the PostureTask (config: qp_accel_task).
-   *
-   * Computes the training actuator's torque explicitly and hands the solver the
-   * matching acceleration:
-   *   tau  = kp*(q_rl - q_meas) + kd*(qdTarget_ - qdot_meas)
-   *   qddot = tau / m,            m = diag(H + HIr)
-   *
-   * Why: with only pt->target(q_rl) the commanded velocity survives merely as
-   * the slope of q_rl and the solver has to re-derive it by tracking the ramp.
-   * It recovers 85.6% (measured 2026-08-12 14:06, bypass 1.000 in the same
-   * run). The shortfall is NOT bandwidth -- 99.8% of the command's variance is
-   * below the task's 10 Hz -- but the anti-windup clamp biting on transients:
-   * it bounds the position error at the steady-state value 2|qdot|/sqrt(K),
-   * while *changing* velocity transiently needs more, and the two joints
-   * clamped ~33% of the time are exactly the two delivering the least
-   * (L_ANKLE_P 0.644, R_CROTCH_Y 0.725). A feedforward supplies that
-   * acceleration directly instead of extracting it from a bounded error.
-   *
-   * refAccel is a native task input, so this needs NO contacts: the QP stays
-   * kinematic. TorqueJointTask, by contrast, needs dynamicsConstraint and
-   * produced 3064 Nm with no contact set defined. The output remains entirely
-   * the solver's, so the CBF joint limits and self-collisions stay guaranteed.
-   *
-   * CAVEAT: mc_mujoco still applies its own PD (kp=20000, kd=400) to the QP's
-   * (q, alpha). The torque the robot feels is kp(q_QP - q_meas) +
-   * kd(alpha_QP - qdot_meas), not tau. This transmits the intent; it does not
-   * reproduce tau exactly -- which is why the position feedback is kept by
-   * default rather than running pure feedforward.
-   */
-  bool qpAccelTask_ = false;
 
-  /**
-   * @brief Task gains used while qpAccelTask_ is on (qp_accel_stiffness/damping).
-   *
-   * Default to the existing values (postureStiffness() and its 2*sqrt(K)), so
-   * the feedforward is *added* to the current behaviour rather than replacing
-   * it. Set both to 0 for the literal "qddot = tau/m and nothing else" variant
-   * -- but note the reference then has no pull back towards q_rl, while tau is
-   * computed from the MEASURED state and the QP integrates its own
-   * (FeedbackType::OpenLoop): the two can drift apart with nothing to rejoin
-   * them. Watch ctrl_q against qIn if testing that.
-   */
-  double qpAccelStiffness_ = -1.0; ///< <0 means "use postureStiffness()"
-  double qpAccelDamping_ = -1.0;   ///< <0 means "use 2*sqrt(stiffness)"
 
-  /**
-   * @brief Rotor inertia added to diag(H) (config key: joint_armature).
-   *
-   * The mc_rtc model comes from the URDF, which carries no rotor inertia --
-   * fd_.HIr() is 0.00000 on every joint. The plant actually being controlled
-   * has one: mc_mujoco's RHPS1main.xml sets armature="1" in its <joint>
-   * default, and mjlab's rhps1_constants.py sets armature=1.0 on every
-   * actuator, so training and simulation both run with it.
-   *
-   * Ignoring it is not a detail, it is the difference between stable and
-   * divergent. diag(H) alone spans 13000x across the robot (L_WRIST_Y 0.0003,
-   * CHEST_P 4.26), so kp/m explodes on the light distal segments: the ankles
-   * sit at sqrt(kp/m)*dt = 3.9-4.6, far past the ~1 stability limit, and the
-   * first attempt diverged there -- qddot doubling every ~3 ticks on
-   * R_ANKLE_P, 3235 -> 17564 rad/s^2 in nine ticks. Adding 1.0 compresses the
-   * spread to 5.3x and puts every joint between 0.42 and 0.68.
-   */
-  double jointArmature_ = 0.0;
 
-  /** @brief Inertia model, reused across ticks (HIr is configuration-independent). */
-  rbd::ForwardDynamics fd_;
 
-  /** @brief diag(H + HIr) at the last tick, indexed like jointNames. Logged. */
-  Eigen::VectorXd jointInertia_;
 
-  /** @brief Last commanded qddot, indexed like jointNames. Logged. */
-  Eigen::VectorXd qddotRef_;
 
-  /**
-   * @brief Torque-control mode (config key: use_torque_task).
-   *
-   * The PostureTask route puts TWO regulators in series -- the task, then
-   * mc_mujoco's own joint PD acting on the (q, qdot) the QP produced -- while
-   * training had exactly one. That cascade is why the QP path could never
-   * reproduce the bypass: the QP's single coupled output cannot feed the two
-   * independent channels (q_ref, alpha_ref) that PD consumes, and every mode
-   * trades one against the other (measured: velocity ratio 1.00 but position
-   * feedforward 61%, or full position bias and no holding torque at all).
-   *
-   * TorqueJointTask removes the cascade. It computes
-   *   tau = gainsRatio*kp*(qd - q) + sqrt(gainsRatio)*kd*(qd_dot - qdot) + tau_ff
-   * -- the training law verbatim, same gains convention as kp_/kd_ -- and the
-   * QP solves for the accelerations realising it under the constraints. The
-   * resulting torques go straight to the robot, so mc_mujoco's PD is out of
-   * the loop entirely.
-   *
-   * REQUIRES: dynamicsConstraint in the solver (TorqueTask needs the dynamic
-   * model to relate accelerations to torques), and mc_mujoco started with
-   * --torque-control, otherwise sendControl() falls back to its PD on
-   * (q_ref, alpha_ref) and the torques are ignored.
-   */
-  bool useTorqueTask_ = false;
-  std::shared_ptr<mc_tasks::TorqueJointTask> torqueTask_;
 
-  /** @brief Build the TorqueJointTask, size its gains, and add it to the solver. */
-  void setupTorqueTask();
 
-  /** @brief Set the posture task's refAccel to tau/diag(H+HIr). See qpAccelTask_. */
-  void applyAccelFeedforward(mc_tasks::PostureTask & pt);
 
-  /** @brief One-shot startup dump of the inertia model, with an L/R symmetry check. */
-  void logInertiaModel();
 
   /** @brief Read joystick via datastore and apply velocity ramp to currentVelCmd_. */
   void updateVelocityCommand();

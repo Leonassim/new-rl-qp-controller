@@ -98,6 +98,9 @@ struct utils
    * appended. Static: it answers a question about the configuration, not about
    * any particular utils instance.
    */
+  /** @brief Cet index ecrit-il le bloc gait_phase (20 valeurs) ? */
+  static bool hasGaitPhase(int policyIndex);
+
   static bool isV5(int policyIndex);
 
   private:
