@@ -14,9 +14,16 @@ robots:
   ground:
     module: env/ground
 
-# Note: mc_rtc always adds the robot module's minimalSelfCollisions in
-# MCController; this section only appends to them. The leg-leg pairs are
-# removed in the controller constructor (they block lateral stepping).
+# This block is the ONLY thing that actually puts a self-collision constraint
+# in the solver: MCController.cpp:322-331 builds a CollisionsConstraint from
+# the "collisions" key and calls solver().addConstraintSet() on it. The
+# selfCollisionConstraint member tweaked in NewRLQPController's constructor
+# (thigh iDist correction, setCollisionsDampers) is a SEPARATE object that is
+# never added to the solver, so editing it there changes nothing -- and
+# commenting this block out is what actually disables the protection.
+#
+# Briefly disabled on 2026-08-07 to test whether self-collision explained the
+# QP-vs-bypass gap. It did not; restored.
 collisions:
 - type: collision
   useMinimal: true
@@ -80,9 +87,13 @@ policy_path: [
   # index 3: abl15 at its final iteration 14999, same V5 format as index 1.
   # Kept for comparison -- lower peak torque, three times the falls.
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v5_abl15_it14999.onnx",
+  # index 4: hippolyte's velocity policy with history 40
+  "@RL_POLICY_INSTALL_PREFIX@/2026-08-16_22-14-14.onnx"
+
+
 ]
 # Stays 0: the real-robot entry is the only one with hardware time behind it.
-default_policy_index: 0
+default_policy_index: 4
 
 # N*Kt par joint, pour convertir en N.m ce que le robot mesure.
 #
@@ -1077,6 +1088,315 @@ policies:
       - R_ANKLE_R
       - R_ANKLE_P
 
+  - use_QP: false
+    # Velocity-action policy (mjlab JointVelocityAction + IdealPdActuator):
+    # q_rl = measured joint position + action * policy_step_size, and the
+    # commanded velocity is passed separately as qdTarget_. See
+    # NewRLQPController::velocityAction_. torque_feasibility_ratio and
+    # vel_target_filter_alpha below are position-action-only concepts and
+    # are unused on this path; left in only because this block started as a
+    # copy of a position-action entry.
+    velocity_action: true
+    #
+    # --- QP-mode tuning (no effect while use_QP is false) ---
+    #
+    # use_torque_task: drive the QP with a TorqueJointTask instead of the
+    # PostureTask. The PostureTask route stacks two regulators -- the task,
+    # then mc_mujoco's own joint PD on the (q, qdot) the QP produced -- where
+    # training had one, and the QP's single coupled output cannot feed that
+    # PD's two independent channels: every setting trades one for the other
+    # (velocity ratio 1.00 but 61% of the position feedforward, or full
+    # position bias and no holding torque at all). TorqueJointTask computes
+    # tau = kp*(qd - q) + kd*(qd_dot - qdot) itself -- the training law, same
+    # gains convention -- and the QP solves for the accelerations realising it
+    # under the constraints.
+    #
+    # REQUIRES mc_mujoco started with --torque-control. Without that flag
+    # sendControl() falls back to its own PD on (q_ref, alpha_ref) and every
+    # torque computed here is silently discarded. Also keeps
+    # dynamicsConstraint in the solver, which the kinematic route removes.
+    use_torque_task: false
+    #
+    # qp_accel_task: hand the solver the training actuator's acceleration
+    # instead of leaving it to re-derive the commanded velocity from the slope
+    # of q_rl:
+    #   tau   = kp*(q_rl - q_meas) + kd*(qdTarget - qdot_meas)
+    #   qddot = tau / m            -> pt->refAccel()
+    # Gravity and external forces are deliberately neglected: this is a
+    # feedforward, not a simulation. refAccel is a native task input, so unlike
+    # use_torque_task it needs no contacts and the QP stays kinematic -- the
+    # output remains fully the solver's, constraints included.
+    #
+    # Without it, measured on the legs (bypass 1.000 in the same run):
+    # velocity ratio 0.884, with the anti-windup clamp biting 36-41% of the
+    # time on the knees.
+    qp_accel_task: false
+    #
+    # joint_armature: rotor inertia added to diag(H). The mc_rtc model comes
+    # from the URDF, which has none -- fd_.HIr() logs 0.00000 on every joint --
+    # while the plant does: mc_mujoco's RHPS1main.xml sets armature="1" in its
+    # <joint> default and mjlab's rhps1_constants.py sets armature=1.0 on every
+    # actuator, so training and simulation both run with it.
+    #
+    # Not optional. diag(H) alone spans 13000x across the robot (L_WRIST_Y
+    # 0.0003 against CHEST_P 4.26), so kp/m explodes on the light distal
+    # segments: the ankles land at sqrt(kp/m)*dt = 3.9-4.6 against a stability
+    # limit near 1, and the first attempt diverged exactly there (qddot
+    # doubling every ~3 ticks on R_ANKLE_P, 3235 -> 17564 rad/s^2 in nine
+    # ticks). With 1.0 the spread drops to 5.3x and every joint sits between
+    # 0.42 and 0.68. The startup dump prints wn*dt per joint and flags anything
+    # above 1 -- check it before trusting a run.
+    joint_armature: 1.0
+    #
+    # Gains while qp_accel_task is on. Left unset, the posture task keeps its
+    # own (4000 / 2*sqrt(K)) so the feedforward is ADDED to current behaviour.
+    # Set both to 0 for pure feedforward -- the reference then has no pull back
+    # towards q_rl while tau reads the measured state and the QP integrates its
+    # own (OpenLoop), so watch ctrl_q against qIn for drift.
+    # qp_accel_stiffness: 0
+    # qp_accel_damping: 0
+    policy_step_size: 0.01   # 100 Hz (10 ms)
+    physics_step_size: 0.0025  # mc_mujoco at 400 Hz (2.5 ms)
+    pd_gains_ratio: 1.0
+    # Memes plages que l'index 1 : meme run, meme etage final de curriculum.
+    max_vel_x: 0.3
+    max_vel_y: 0.2
+    max_yaw: 0.45
+    joystick_deadzone: 0.05
+    vel_ramp_rate: 0.5
+
+    # Torque-feasibility projection (mirrors mjlab's FiniteDifferencePdActuator).
+    # Active only when torque_feasibility_ratio is set. This policy trained WITH
+    # it, so without it here the plant differs from the one it learned on --
+    # visibly so in transients. This run measured raw_torque_peak_mean 1.019 and
+    # over_limit_fraction 0.377 at the end of training, under exploration noise;
+    # the deterministic figure is not measured yet.
+    torque_feasibility_ratio: 1.0
+    vel_target_filter_alpha: 0.8
+
+    effort_limit:
+      CHEST_Y:        120
+      CHEST_P:        120
+      HEAD_Y:         13
+      HEAD_P:         13
+      L_SHOULDER_P:   50
+      L_SHOULDER_R:   50
+      L_SHOULDER_Y:   50
+      L_ELBOW_P:      40
+      L_ELBOW_Y:      40
+      L_WRIST_R:      30
+      L_WRIST_Y:      30
+      R_SHOULDER_P:   50
+      R_SHOULDER_R:   50
+      R_SHOULDER_Y:   50
+      R_ELBOW_P:      40
+      R_ELBOW_Y:      40
+      R_WRIST_R:      30
+      R_WRIST_Y:      30
+      L_CROTCH_Y:     35
+      L_CROTCH_R:     100
+      L_CROTCH_P:     140
+      L_KNEE_P:       70
+      L_ANKLE_R:      45
+      L_ANKLE_P:      65
+      R_CROTCH_Y:     35
+      R_CROTCH_R:     100
+      R_CROTCH_P:     140
+      R_KNEE_P:       70
+      R_ANKLE_R:      45
+      R_ANKLE_P:      65
+
+    vel_target_limit_per_joint:
+      CHEST_Y:        6
+      CHEST_P:        6
+      HEAD_Y:         4
+      HEAD_P:         4
+      L_SHOULDER_P:   6
+      L_SHOULDER_R:   6
+      L_SHOULDER_Y:   6
+      L_ELBOW_P:      6
+      L_ELBOW_Y:      6
+      L_WRIST_R:      6
+      L_WRIST_Y:      6
+      R_SHOULDER_P:   6
+      R_SHOULDER_R:   6
+      R_SHOULDER_Y:   6
+      R_ELBOW_P:      6
+      R_ELBOW_Y:      6
+      R_WRIST_R:      6
+      R_WRIST_Y:      6
+      L_CROTCH_Y:     8
+      L_CROTCH_R:     8
+      L_CROTCH_P:     8
+      L_KNEE_P:       10
+      L_ANKLE_R:      10
+      L_ANKLE_P:      10
+      R_CROTCH_Y:     8
+      R_CROTCH_R:     8
+      R_CROTCH_P:     8
+      R_KNEE_P:       10
+      R_ANKLE_R:      10
+      R_ANKLE_P:      10
+
+    action_scale:
+      CHEST_Y:      0.11363636363636363
+      CHEST_P:      0.11363636363636363
+      HEAD_Y:       0.14285714285714285
+      HEAD_P:       0.14285714285714285
+      L_SHOULDER_P: 0.1282051282051282
+      L_SHOULDER_R: 0.13157894736842105
+      L_SHOULDER_Y: 0.13157894736842105
+      L_ELBOW_P:    0.10526315789473684
+      L_ELBOW_Y:    0.10526315789473684
+      L_WRIST_R:    0.07894736842105263
+      L_WRIST_Y:    0.07894736842105263
+      R_SHOULDER_P: 0.1282051282051282
+      R_SHOULDER_R: 0.13157894736842105
+      R_SHOULDER_Y: 0.13157894736842105
+      R_ELBOW_P:    0.10526315789473684
+      R_ELBOW_Y:    0.10526315789473684
+      R_WRIST_R:    0.07894736842105263
+      R_WRIST_Y:    0.07894736842105263
+      L_CROTCH_Y:   0.05
+      L_CROTCH_R:   0.125
+      L_CROTCH_P:   0.2
+      L_KNEE_P:     0.11666666666666667
+      L_ANKLE_R:    0.075
+      L_ANKLE_P:    0.125
+      R_CROTCH_Y:   0.05
+      R_CROTCH_R:   0.125
+      R_CROTCH_P:   0.2
+      R_KNEE_P:     0.11666666666666667
+      R_ANKLE_R:    0.075
+      R_ANKLE_P:    0.125
+
+    kp:
+      L_CROTCH_Y:   20000.0
+      L_CROTCH_R:   20000.0
+      L_CROTCH_P:   20000.0
+      L_KNEE_P:     20000.0
+      L_ANKLE_R:    10000.0
+      L_ANKLE_P:    10000.0
+      CHEST_Y:      44000.0
+      CHEST_P:      44000.0
+      R_CROTCH_Y:   20000.0
+      R_CROTCH_R:   20000.0
+      R_CROTCH_P:   20000.0
+      R_KNEE_P:     20000.0
+      R_ANKLE_R:    10000.0
+      R_ANKLE_P:    10000.0
+      HEAD_Y:       2000.0
+      HEAD_P:       2000.0
+      L_SHOULDER_P: 15000.0
+      L_SHOULDER_R: 14000.0
+      L_SHOULDER_Y: 14000.0
+      L_ELBOW_P:    14000.0
+      L_ELBOW_Y:    14000.0
+      L_WRIST_R:    14000.0
+      L_WRIST_Y:    14000.0
+      R_SHOULDER_P: 15000.0
+      R_SHOULDER_R: 14000.0
+      R_SHOULDER_Y: 14000.0
+      R_ELBOW_P:    14000.0
+      R_ELBOW_Y:    14000.0
+      R_WRIST_R:    14000.0
+      R_WRIST_Y:    14000.0
+
+    kd:
+      L_CROTCH_Y:   400.0
+      L_CROTCH_R:   400.0
+      L_CROTCH_P:   400.0
+      L_KNEE_P:     400.0
+      L_ANKLE_R:    300.0
+      L_ANKLE_P:    300.0
+      CHEST_Y:      440.0
+      CHEST_P:      440.0
+      R_CROTCH_Y:   400.0
+      R_CROTCH_R:   400.0
+      R_CROTCH_P:   400.0
+      R_KNEE_P:     400.0
+      R_ANKLE_R:    300.0
+      R_ANKLE_P:    300.0
+      HEAD_Y:       50.0
+      HEAD_P:       50.0
+      L_SHOULDER_P: 240.0
+      L_SHOULDER_R: 240.0
+      L_SHOULDER_Y: 240.0
+      L_ELBOW_P:    240.0
+      L_ELBOW_Y:    240.0
+      L_WRIST_R:    240.0
+      L_WRIST_Y:    240.0
+      R_SHOULDER_P: 240.0
+      R_SHOULDER_R: 240.0
+      R_SHOULDER_Y: 240.0
+      R_ELBOW_P:    240.0
+      R_ELBOW_Y:    240.0
+      R_WRIST_R:    240.0
+      R_WRIST_Y:    240.0
+
+    q0:
+      CHEST_Y:      0.0
+      CHEST_P:      0.0
+      HEAD_Y:       0.0
+      HEAD_P:       0.0
+      L_SHOULDER_P: 0.261799
+      L_SHOULDER_R: 0.174533
+      L_SHOULDER_Y: -0.087266
+      L_ELBOW_P:    -0.523599
+      L_ELBOW_Y:    0.0
+      L_WRIST_R:    0.0
+      L_WRIST_Y:    0.0
+      R_SHOULDER_P: 0.261799
+      R_SHOULDER_R: -0.174533
+      R_SHOULDER_Y: 0.087266
+      R_ELBOW_P:    -0.523599
+      R_ELBOW_Y:    0.0
+      R_WRIST_R:    0.0
+      R_WRIST_Y:    0.0
+      L_CROTCH_Y:   -0.010533
+      L_CROTCH_R:   0.028787
+      L_CROTCH_P:   -0.271191
+      L_KNEE_P:     0.622021
+      L_ANKLE_R:    -0.030652
+      L_ANKLE_P:    -0.350679
+      R_CROTCH_Y:   0.010533
+      R_CROTCH_R:   -0.028787
+      R_CROTCH_P:   -0.271191
+      R_KNEE_P:     0.622021
+      R_ANKLE_R:    0.030652
+      R_ANKLE_P:    -0.350679
+
+    ref_joint_order:
+      - CHEST_Y
+      - CHEST_P
+      - HEAD_Y
+      - HEAD_P
+      - L_SHOULDER_P
+      - L_SHOULDER_R
+      - L_SHOULDER_Y
+      - L_ELBOW_P
+      - L_ELBOW_Y
+      - L_WRIST_R
+      - L_WRIST_Y
+      - R_SHOULDER_P
+      - R_SHOULDER_R
+      - R_SHOULDER_Y
+      - R_ELBOW_P
+      - R_ELBOW_Y
+      - R_WRIST_R
+      - R_WRIST_Y
+      - L_CROTCH_Y
+      - L_CROTCH_R
+      - L_CROTCH_P
+      - L_KNEE_P
+      - L_ANKLE_R
+      - L_ANKLE_P
+      - R_CROTCH_Y
+      - R_CROTCH_R
+      - R_CROTCH_P
+      - R_KNEE_P
+      - R_ANKLE_R
+      - R_ANKLE_P
 use_async_inference: false
 log_timing: true
 timing_log_interval: 100

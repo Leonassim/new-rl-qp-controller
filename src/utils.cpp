@@ -1,4 +1,6 @@
 #include "utils.h"
+#include <algorithm>
+#include <cmath>
 #include <Eigen/src/Core/Matrix.h>
 #include <mc_rtc/logging.h>
 
@@ -76,32 +78,131 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
     {
       ctl.currentObservation = getCurrentObservation(ctl);
       ctl.currentAction = ctl.rlPolicy->predict(ctl.currentObservation);
+
+      // Raw policy output -> velocity feedforward, needed by both contracts
+      // below (also feeds the "actions"/last_action observation term).
       for (int j = 0; j < ctl.currentAction.size(); ++j) {
           int i = ctl.actionToDofMap[j];
           ctl.currentActionScaled(i) = ctl.actionScale(i) * ctl.currentAction(j);
-          ctl.q_rl(i) = ctl.currentActionScaled(i) + ctl.q_zero(i);
       }
-      // Order matters: the raw-torque channel is measured on the target BEFORE
-      // the projection (measuring it after makes every joint report exactly the
-      // ratio the projection enforces -- the projection measuring itself), and it
-      // must run in both QP and bypass because the V5 network reads it either way.
-      ctl.updateRawTorqueRatio(ctl.q_rl);
-      // Project onto the torque-feasible set, exactly as the training actuator
-      // does. No-op unless the policy block sets torque_feasibility_ratio.
-      ctl.q_rl = ctl.projectTorqueFeasible(ctl.q_rl);
-      // Feed back the action as EXECUTED, not as requested: the V4 observation's
-      // actions block is executed_action. Beyond the feasible window many raw
-      // actions map to one execution, and a policy that only ever sees what it
-      // asked for cannot tell them apart -- which is the whole reason the
-      // training observation switched away from last_action.
-      for (int j = 0; j < ctl.currentAction.size(); ++j) {
-          int i = ctl.actionToDofMap[j];
-          const double scale = ctl.actionScale(i);
-          if(std::abs(scale) > 1e-12)
-          {
-            ctl.currentActionScaled(i) = ctl.q_rl(i) - ctl.q_zero(i);
-            ctl.currentAction(j) = ctl.currentActionScaled(i) / scale;
-          }
+
+      if(ctl.velocityAction_)
+      {
+        // velocity_action (policy 4, mjlab JointVelocityAction +
+        // IdealPdActuator): free-running integral of the commanded velocity,
+        //   self.pos_target[ids] = self.pos_target[ids] + cmd.velocity_target[ids] * dt
+        // i.e. the target advances on its own rather than being reseeded from
+        // the measurement each step. Both variants exist in mjlab's
+        // pd_actuator.py; this one is what the QP can actually transmit.
+        //
+        // Why it matters: the QP emits ONE coupled (q, qdot) trajectory. A
+        // target pinned to the measurement (q_meas + v*dt) holds a constant
+        // position error whatever the joint is doing, so every velocity --
+        // including zero -- satisfies it and the solver picks the cheapest;
+        // the command simply is not in the position channel. Measured under
+        // QP: qdot ~ 1/3 of commanded, and no lead/stiffness/feedback-mode
+        // combination fixed both channels at once. A free-running integral is
+        // a genuine ramp at v, and a critically damped task tracks a ramp with
+        // zero steady-state velocity error, so qdot = v falls out on its own
+        // -- no lead term, no refVel, nothing to calibrate.
+        //
+        // The two clamps below are not optional: they are what makes the
+        // free-running integral usable at all.
+        auto & rr = ctl.realRobot(ctl.robots()[0].name());
+        for (int j = 0; j < ctl.currentAction.size(); ++j) {
+            int i = ctl.actionToDofMap[j];
+            ctl.q_rl(i) += ctl.currentActionScaled(i) * ctl.policyStepSize;
+
+            const int mcIdx = static_cast<int>(rr.jointIndexByName(ctl.jointNames[i]));
+            const double q = rr.mbc().q[mcIdx][0];
+
+            // Anti-windup, IdealPdActuator's
+            //   max_dev = force_limit / stiffness
+            //   pos_target = clamp(pos_target, pos - max_dev, pos + max_dev)
+            // Once a joint saturates it stops following the target, and the
+            // integral would otherwise gain velocity*dt of error every step
+            // with nothing to unwind it. Pinning it to the measured position
+            // bounds that.
+            double dev = ctl.maxTargetDev_(i);
+            if(dev > 0.0 && ctl.useQP())
+            {
+              // Under the QP that bound has a side effect it does not have in
+              // training, and it is disabling. The solver emits one coupled
+              // (q, qdot), so the ONLY way it can produce velocity is the
+              // position error: qdot = sqrt(K)*e/2. Bounding e therefore caps
+              // the achievable velocity at sqrt(K)*max_dev/2 -- 0.055 rad/s on
+              // CROTCH_Y against the ~0.9 the policy asks for. Measured on the
+              // 2026-08-12 13:58 log: the per-joint cap/demand ratio predicts
+              // the delivered velocity almost exactly (0.06 -> 0.23, 0.14 ->
+              // 0.16, 0.52 -> 0.51, 1.01 -> 0.56), overall 0.43, and the robot
+              // fell. Bypass is unaffected because alpha_ref is a separate
+              // channel there, which is why the same clamp is harmless in
+              // training and in bypass (ratio 1.000 in the same run).
+              //
+              // Widen it to the smallest bound that does not clip the current
+              // command, 2*|qdot|/sqrt(K), keeping the training value as the
+              // floor. Still bounded, still unwinds, but no longer a velocity
+              // ceiling. Windup beyond this is additionally contained by the
+              // QP's own joint-limit constraint, which the bypass path lacks --
+              // that asymmetry is the whole reason the clamp is needed there.
+              const double K = ctl.postureTaskStiffness();
+              if(K > 1e-9)
+              {
+                dev = std::max(dev, 2.0 * std::abs(ctl.currentActionScaled(i)) / std::sqrt(K));
+              }
+            }
+            if(dev > 0.0) { ctl.q_rl(i) = std::max(q - dev, std::min(q + dev, ctl.q_rl(i))); }
+
+            // And the physical joint range, as the actuator also does.
+            const auto & lo = rr.ql()[mcIdx];
+            const auto & hi = rr.qu()[mcIdx];
+            if(!lo.empty() && !hi.empty()) { ctl.q_rl(i) = std::max(lo[0], std::min(hi[0], ctl.q_rl(i))); }
+        }
+        // Defensive clamp (config key: vel_target_limit_per_joint, already
+        // loaded for every policy but previously unused here): nothing
+        // bounds the raw network output, and a log of the QP run showed it
+        // is exactly this quantity that runs away -- stable (~0.4 max)
+        // under bypass, then diverging past +/-2 within ~8s of switching to
+        // QP, well before the robot's orientation visibly degrades.
+        for(int i = 0; i < ctl.nbActuatedJoints; ++i)
+        {
+          const double lim = ctl.velTargetLimitPerJoint_(i);
+          ctl.qdTarget_(i) = std::max(-lim, std::min(lim, ctl.currentActionScaled(i)));
+        }
+      }
+      else
+      {
+        // position_action (policies 0-3, mjlab FiniteDifferencePdActuator):
+        // position target recomputed fresh each step from q_zero; the
+        // velocity feedforward is reconstructed downstream by finite-
+        // differencing consecutive q_rl targets, exactly as the training
+        // actuator does.
+        for (int j = 0; j < ctl.currentAction.size(); ++j) {
+            int i = ctl.actionToDofMap[j];
+            ctl.q_rl(i) = ctl.currentActionScaled(i) + ctl.q_zero(i);
+        }
+        // Order matters: the raw-torque channel is measured on the target BEFORE
+        // the projection (measuring it after makes every joint report exactly the
+        // ratio the projection enforces -- the projection measuring itself), and it
+        // must run in both QP and bypass because the V5 network reads it either way.
+        ctl.updateRawTorqueRatio(ctl.q_rl);
+        // Project onto the torque-feasible set, exactly as the training actuator
+        // does. No-op unless the policy block sets torque_feasibility_ratio.
+        ctl.q_rl = ctl.projectTorqueFeasible(ctl.q_rl);
+        // Feed back the action as EXECUTED, not as requested: the V4 observation's
+        // actions block is executed_action. Beyond the feasible window many raw
+        // actions map to one execution, and a policy that only ever sees what it
+        // asked for cannot tell them apart -- which is the whole reason the
+        // training observation switched away from last_action.
+        for (int j = 0; j < ctl.currentAction.size(); ++j) {
+            int i = ctl.actionToDofMap[j];
+            const double scale = ctl.actionScale(i);
+            if(std::abs(scale) > 1e-12)
+            {
+              ctl.currentActionScaled(i) = ctl.q_rl(i) - ctl.q_zero(i);
+              ctl.currentAction(j) = ctl.currentActionScaled(i) / scale;
+            }
+        }
       }
       syncTime_ -= ctl.policyStepSize;
     }
@@ -281,6 +382,66 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       {
         for(int i = ctl.RAW_TORQUE_HISTORY-1; i >= 0; --i) appendToObs(ctl.rawTorque_[i]);
       }
+      break;
+    }
+    case 4: // hippolyte's run, 2026-08-06_15-18-01 -- obs = 4080 dims.
+            // observation_names (ONNX metadata): base_lin_vel, base_ang_vel,
+            // projected_gravity, joint_pos, joint_vel, actions, command --
+            // ALL seven terms at history depth 40 (unlike V3/V4/V5's depth 5,
+            // and V3's depth-5-on-two-terms-only). Uses its own *Deep_
+            // buffers (V3_DEEP_HISTORY_SIZE), not the shared HISTORY_SIZE
+            // ones case 0 uses, so this doesn't disturb any other index:
+            // 40 * (3+3+3+30+30+30+3) = 40 * 102 = 4080.
+    {
+      auto & rr = ctl.realRobot(ctl.robots()[0].name());
+      const std::string & baseName = rr.mb().body(0).name();
+      const Eigen::Matrix3d R_w2b = rr.bodyPosW(baseName).rotation();
+
+      // Shift history buffers: drop oldest (index V3_DEEP_HISTORY_SIZE-1), push at index 0
+      for(int i = ctl.V3_DEEP_HISTORY_SIZE - 1; i > 0; --i)
+      {
+        ctl.linVelDeep_[i]   = ctl.linVelDeep_[i-1];
+        ctl.angVelDeep_[i]   = ctl.angVelDeep_[i-1];
+        ctl.projGravDeep_[i] = ctl.projGravDeep_[i-1];
+        ctl.jointPosDeep_[i] = ctl.jointPosDeep_[i-1];
+        ctl.jointVelDeep_[i] = ctl.jointVelDeep_[i-1];
+        ctl.jointActDeep_[i] = ctl.jointActDeep_[i-1];
+        ctl.velCmdDeep_[i]   = ctl.velCmdDeep_[i-1];
+      }
+
+      // Fill index 0 with current state
+      ctl.linVelDeep_[0]   = R_w2b * rr.bodyVelW(baseName).linear();
+      ctl.angVelDeep_[0]   = R_w2b * rr.bodyVelW(baseName).angular();
+      ctl.projGravDeep_[0] = R_w2b * Eigen::Vector3d(0, 0, -1);
+      ctl.velCmdDeep_[0]   = ctl.currentVelCmd_;
+
+      // jointActDeep_[0] = raw NN output from the previous step (before scaling)
+      ctl.jointActDeep_[0] = ctl.currentAction;
+
+      const int actionDim = static_cast<int>(ctl.refJointOrderRLAction.size());
+      ctl.jointPosDeep_[0] = Eigen::VectorXd::Zero(actionDim);
+      ctl.jointVelDeep_[0] = Eigen::VectorXd::Zero(actionDim);
+      for(int j = 0; j < actionDim; ++j)
+      {
+        const int mcIdx = rr.jointIndexByName(ctl.refJointOrderRLAction[j]);
+        // mjlab's joint_pos_rel observation term: joint_pos - default_joint_pos
+        // (velocity_env_cfg_rhps1.py, "joint_pos": func=mdp.joint_pos_rel).
+        ctl.jointPosDeep_[0](j) = rr.mbc().q[mcIdx][0] - ctl.q_zero[ctl.actionToDofMap[j]];
+        ctl.jointVelDeep_[0](j) = rr.mbc().alpha[mcIdx][0];
+      }
+
+      // Build observation: every term stacked as history, oldest first
+      // (index V3_DEEP_HISTORY_SIZE-1 -> 0)
+      auto write3 = [&](const Eigen::Vector3d & v)
+      { obs.segment(offset, 3) = v; offset += 3; };
+
+      for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) write3(ctl.linVelDeep_[i]);
+      for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) write3(ctl.angVelDeep_[i]);
+      for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) write3(ctl.projGravDeep_[i]);
+      for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointPosDeep_[i]);
+      for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointVelDeep_[i]);
+      for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointActDeep_[i]);
+      for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) write3(ctl.velCmdDeep_[i]);
       break;
     }
     default:
