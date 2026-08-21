@@ -113,7 +113,11 @@ policy_path: [
   "@RL_POLICY_INSTALL_PREFIX@/2026-08-20_18-46-29.onnx",
 ]
 # Stays 0: the real-robot entry is the only one with hardware time behind it.
-default_policy_index: 2
+# Back to 0 on 2026-08-21 for a real-robot session. Index 0 is the only entry
+# with hardware time behind it; whatever is being tested gets selected from the
+# GUI, so the default is what the controller falls back to, not what anyone
+# intends to run. It had been left at 2 by a merge.
+default_policy_index: 0
 
 # N*Kt per joint, to convert what the robot measures into N.m.
 #
