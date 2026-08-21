@@ -120,21 +120,29 @@ default_policy_index: 2
 # NewRLQPController_joint_current (A, raw) and NewRLQPController_joint_torque
 # (N.m, = current * the value below).
 #
-# Source: scripts/ppc/joint_torque_limits_rotate.csv, type=solo rows,
-# remapped 2026-08-03 after fixing the Drive<->joint association bug.
+# Source: scripts/ppc/joint_torque_limits_rotate.csv, synced 2026-08-21 with
+# Leonassim/RHPS1_gains. The Kt before that sync were wrong -- 0.0582/0.101/0.047
+# against nameplate 0.116/0.424/0.246 -- so every torque this table produced was
+# understated by 2.0x, 4.2x or 5.2x depending on the joint. Do not hand-edit:
+# mc-rtc-superbuild/scripts/ppc/apply_kt.py writes all four files that carry
+# these constants together.
 #
-# Deliberately limited to the six single-motor joints. The differential pairs
-# (shoulder R/Y, elbow P/Y, wrist P/Y, chest, head) have an N but no per-joint
-# Kt, and the piston joints (crotch P/R, ankle P/R) have a variable lever arm
-# needing CylinderToAngle. Joints absent here stay at 0 in the log rather than
-# being converted with a made-up factor.
+# Deliberately limited to the six single-motor joints. Chest now has a Kt
+# (0.246) but stays out anyway: its two drives are ChestYPL = P+Y and
+# ChestYPR = P-Y, and the IOB sums the current over a joint's drives with no
+# sign, which is the common mode. That sum is right for CHEST_P and wrong for
+# CHEST_Y, and one scale cannot be both. The other differential pairs (shoulder
+# R/Y, elbow P/Y, wrist P/Y, head) still have no sourced Kt, and the piston
+# joints (crotch P/R, ankle P/R) have a variable lever arm needing
+# CylinderToAngle. Joints absent here stay at 0 in the log rather than being
+# converted with a made-up factor.
 joint_torque_scale:
-  L_CROTCH_Y:    9.259   # 159.0907 * 0.0582
-  R_CROTCH_Y:    9.259   # 159.0907 * 0.0582
-  L_KNEE_P:     21.210   # 210.0    * 0.101
-  R_KNEE_P:     21.210   # 210.0    * 0.101
-  L_SHOULDER_P:  9.400   # 200.0    * 0.047
-  R_SHOULDER_P:  9.400   # 200.0    * 0.047
+  L_CROTCH_Y:    18.455   # 159.091 * 0.116
+  R_CROTCH_Y:    18.455   # 159.091 * 0.116
+  L_KNEE_P:     89.040   # 210 * 0.424
+  R_KNEE_P:     89.040   # 210 * 0.424
+  L_SHOULDER_P:  49.200   # 200 * 0.246
+  R_SHOULDER_P:  49.200   # 200 * 0.246
 
 # kp/kd/q0/ref_joint_order below are identical for index 0 and index 1: PD
 # gains and reference pose are a hardware/QP choice, not something the
