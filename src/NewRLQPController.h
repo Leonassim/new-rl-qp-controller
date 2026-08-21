@@ -650,6 +650,25 @@ private:
   double velTargetLimit_   = 8.0; ///< rad/s clamp on the finite-difference velocity feedforward (training actuator velocity_target_limit)
   bool   useJoystick_      = true;
 
+  /** @brief Detect foot touchdown from the ankle F/T sensors (RHPS1_MuJoCo's
+   * rf_force/lf_force sites, see RHPS1main.xml) and record the ankle body
+   * velocity at the instant of impact. Config key log_impact_vel -- present
+   * in the yaml since the project's first commit but never wired up until
+   * now. Rising-edge detection on Fz with hysteresis so noise around the
+   * threshold does not retrigger it mid-stance. */
+  void updateImpactVelocity();
+
+  // --- Impact velocity logging ---
+  bool   logImpactVel_          = false; ///< config: log_impact_vel
+  double impactForceThreshold_  = 30.0;  ///< N on Fz, rising edge = touchdown. config: impact_force_threshold
+  double impactForceHysteresis_ = 0.5;   ///< falling-edge threshold = ratio * impactForceThreshold_. config: impact_force_hysteresis_ratio
+  bool   leftFootContact_       = false;
+  bool   rightFootContact_      = false;
+  double leftFootForceZ_        = 0.0;   ///< last-read Fz, logged raw to help pick impactForceThreshold_
+  double rightFootForceZ_       = 0.0;
+  Eigen::Vector3d leftFootImpactVel_  = Eigen::Vector3d::Zero(); ///< world-frame linear velocity of L_ANKLE_P_LINK at last touchdown; holds between impacts
+  Eigen::Vector3d rightFootImpactVel_ = Eigen::Vector3d::Zero();
+
   /** @brief Log warnings when joint position/velocity/torque limits are exceeded. */
   void computeLimits();
   bool printLimits_ = true;

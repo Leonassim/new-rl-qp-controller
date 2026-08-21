@@ -80,6 +80,7 @@ bool NewRLQPController::run()
 {
   updateVelocityCommand();
   if(printLimits_) computeLimits();
+  if(logImpactVel_) updateImpactVelocity();
 
   // Disarmed: never write the target. Whichever task is driving then keeps
   // whatever mc_rtc captured at reset, so the robot holds its stance under the
@@ -408,6 +409,10 @@ void NewRLQPController::initializeRobot()
   // Matches the training actuator's velocity_target_limit (rad/s): clamp on
   // the finite-difference velocity feedforward in byPassQPControl().
   velTargetLimit_   = config_("policies")[currentPolicyIndex]("vel_target_limit",  8.0);
+
+  logImpactVel_          = config_("log_impact_vel", false);
+  impactForceThreshold_  = config_("impact_force_threshold", 30.0);
+  impactForceHysteresis_ = config_("impact_force_hysteresis_ratio", 0.5);
 
   const double K = postureStiffness();
   auto pt = getPostureTask(robot().name());
@@ -876,6 +881,41 @@ void NewRLQPController::updateVelocityCommand()
   }
 }
 
+void NewRLQPController::updateImpactVelocity()
+{
+  // realRobot(), not robot(): a force reading only means something against
+  // the measured plant. robot() is the QP's own kinematic plan (see the
+  // ctrl_q/ctrl_alpha comment above) and carries no contact information of
+  // its own.
+  auto & rr = realRobot(robots()[0].name());
+
+  auto processFoot = [&](const std::string & sensorName, const std::string & bodyName, bool & contact,
+                         double & forceZ, Eigen::Vector3d & impactVel)
+  {
+    if(!rr.hasForceSensor(sensorName)) return;
+    forceZ = rr.forceSensor(sensorName).wrench().force().z();
+
+    if(!contact && forceZ > impactForceThreshold_)
+    {
+      // Rising edge: touchdown. Body velocity read this same tick, i.e. at
+      // (or a control period after) the instant the force crossed the
+      // threshold -- the closest available approximation of the pre-impact
+      // velocity without sub-stepping the detection.
+      contact = true;
+      impactVel = rr.bodyVelW(bodyName).linear();
+    }
+    else if(contact && forceZ < impactForceHysteresis_ * impactForceThreshold_)
+    {
+      // Falling edge, with hysteresis so noise around the threshold mid-stance
+      // does not flip contact_ back and forth and refire the impact.
+      contact = false;
+    }
+  };
+
+  processFoot("LeftFootForceSensor", "L_ANKLE_P_LINK", leftFootContact_, leftFootForceZ_, leftFootImpactVel_);
+  processFoot("RightFootForceSensor", "R_ANKLE_P_LINK", rightFootContact_, rightFootForceZ_, rightFootImpactVel_);
+}
+
 bool NewRLQPController::byPassQPControl()
 {
   if(useQP_) return false;
@@ -980,6 +1020,21 @@ void NewRLQPController::addLog()
   logger().addLogEntry("NewRLQPController_RL_actionScale",   [this]() { return actionScale; });
   logger().addLogEntry("NewRLQPController_useQP",            [this]() { return useQP_; });
   logger().addLogEntry("NewRLQPController_velCmd",           [this]() { return currentVelCmd_; });
+
+  if(logImpactVel_)
+  {
+    // Raw Fz logged unconditionally: needed to pick impactForceThreshold_ in
+    // the first place, from a run with the default value.
+    logger().addLogEntry("NewRLQPController_leftFootForceZ",   [this]() { return leftFootForceZ_; });
+    logger().addLogEntry("NewRLQPController_rightFootForceZ",  [this]() { return rightFootForceZ_; });
+    logger().addLogEntry("NewRLQPController_leftFootContact",  [this]() { return leftFootContact_; });
+    logger().addLogEntry("NewRLQPController_rightFootContact", [this]() { return rightFootContact_; });
+    // World-frame linear velocity of the ankle body, captured on the tick of
+    // the last rising edge. Held between impacts -- find the value at each
+    // touchdown by reading it where *FootContact_ steps 0 -> 1.
+    logger().addLogEntry("NewRLQPController_leftFootImpactVel",  [this]() { return leftFootImpactVel_; });
+    logger().addLogEntry("NewRLQPController_rightFootImpactVel", [this]() { return rightFootImpactVel_; });
+  }
 
   // Ce que les drives mesurent, en amperes : sur RHPS1 le "tau" de
   // RobotHardware est un courant, gearRatio et torqueConst valant 1 dans le

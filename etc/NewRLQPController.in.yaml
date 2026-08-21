@@ -107,7 +107,7 @@ policy_path: [
   # IdealPdActuator, obs 4080 = 40x102). The ONLY entry with
   # velocity_action: true -- q_rl is a free-running integral of the commanded
   # velocity instead of being rebuilt from q_zero. utils.cpp case 2.
-  "@RL_POLICY_INSTALL_PREFIX@/2026-08-09_00-06-45.onnx",
+  "@RL_POLICY_INSTALL_PREFIX@/2026-08-20_18-46-29.onnx",
 ]
 # Stays 0: the real-robot entry is the only one with hardware time behind it.
 default_policy_index: 2
@@ -557,7 +557,7 @@ policies:
     q0: *q0
     ref_joint_order: *ref_joint_order
 
-  - use_QP: false
+  - use_QP: true
     # Velocity-action policy (mjlab JointVelocityAction + IdealPdActuator):
     # q_rl = measured joint position + action * policy_step_size, and the
     # commanded velocity is passed separately as qdTarget_. See
@@ -869,4 +869,19 @@ policies:
 use_async_inference: false
 log_timing: true
 timing_log_interval: 100
+# log_impact_vel: rising-edge detection on the ankle F/T sensors' Fz
+# (RightFootForceSensor/LeftFootForceSensor, RHPS1main.xml's rf_force/
+# lf_force sites). On touchdown, logs the ankle body's world-frame linear
+# velocity (NewRLQPController_leftFootImpactVel / _rightFootImpactVel) --
+# holds the last value between impacts, read it where
+# NewRLQPController_{left,right}FootContact steps 0 -> 1. Raw Fz is logged
+# unconditionally as NewRLQPController_{left,right}FootForceZ, needed to
+# pick impact_force_threshold in the first place. This key existed in the
+# yaml since the project's first commit but had no implementation behind it
+# until 2026-08-20.
 log_impact_vel: true
+# impact_force_threshold: N on Fz, rising edge = touchdown.
+impact_force_threshold: 30.0
+# impact_force_hysteresis_ratio: falling-edge threshold = ratio * impact_force_threshold,
+# so sensor noise straddling the threshold mid-stance does not retrigger the impact.
+impact_force_hysteresis_ratio: 0.5
