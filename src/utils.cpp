@@ -269,6 +269,12 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
   };
 
   switch (ctl.currentPolicyIndex) {
+    case 1: // 2026-08-21 : l'index 1 porte desormais une policy 126 dims
+            // (run 2026-08-21_11-47-31, paquet `lift` sur p0+rand), donc le
+            // meme corps que l'index 0 et non plus les 246 dims. L'ONNX le
+            // confirme : obs [1,126], history 5 sur base_lin_vel et command
+            // seulement. Rebasculer l'etiquette si on reinstalle une policy
+            // 246 dims sur cet index.
     case 0: // RHPS1 velocity policies — V3 format (126 dims)
             // mjlab-rhps1 training 2026-07-10_13-52-54: history (length 5,
             // oldest first) on base_lin_vel and command only, all other terms
@@ -326,8 +332,7 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.velCmd_[i]);
       break;
     }
-    case 1: // RHPS1 velocity policies — 246 dims
-            // Currently mjlab-rhps1 run 2026-08-17_23-05-46 (see policy_path).
+    // Le bloc 246 dims ci-dessous : l'index 1 l'a quitte le 2026-08-21.
             // Format introduced by run 2026-08-07_15-40-43 : le retour a la base
             // policy 0 (echelle x1.5, keyframe genou 0.622) avec les armatures
             // reelles et joint_vel par difference finie. C'est le corps commun

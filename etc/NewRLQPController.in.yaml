@@ -81,28 +81,31 @@ init: NewRLQPController_Initial
 policy_path: [
   # index 0: V3 (126 dims), the conservative policy that walked on the robot.
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
-  # index 1: run 2026-08-17_23-05-46, iteration 9000. Policy 0's plant restored
-  # -- no PostureTask filter, no torque projection -- with the reward fixes kept,
-  # the knee at 70 N.m and the wider randomisation added (actuator_gains,
-  # link_com, link_inertia, push_base, sensor_bias, joint dispersion +/-0.05).
-  # Observation 246 dims, utils.cpp case 1, unchanged from the previous run.
+  # index 1: run 2026-08-21_11-47-31, checkpoint model_2100 (iteration 2100).
+  # p0+rand+lift -- policy 0's plant and observation, the randomisation, and the
+  # foot package: min_foot_height 8 cm -> 2 cm with a 60 ms liftoff ramp,
+  # foot_swing_height target 0.15 -> 0.03, air_time threshold_max pinned at 0.25
+  # with the curriculum removed. Knee back at 100 N.m, torque_limit_margin
+  # untouched.
   #
-  # This is the run's own export, written beside model_9000.pt at the same save,
-  # not a re-export. Verified against the run's params/env.yaml: all 30
-  # action_scale and q0 entries match, torque_feasibility_ratio and
-  # posture_task_stiffness are null there as they are absent here.
+  # 126 dims, NOT 246: this is policy 0's observation format, so utils.cpp now
+  # lists index 1 with case 0. Verified against the run: obs [1,126],
+  # actions [1,30], history 5 on base_lin_vel and command only, and all 21
+  # action_scale plus 30 q0 entries match the config exactly (the ONNX metadata
+  # prints them at %.3f, so 0.002625 reads as 0.003 -- a display artifact, not a
+  # disagreement).
   #
-  # The training was still running when this was exported, so later checkpoints
-  # exist. Re-export a specific one with:
-  #   uv run python scripts/tools/export_onnx.py 2026-08-17_23-05-46 model_<it>.pt \
-  #     ~/src/rl_controller/policy/rhps1_velocity_v9_nofilter_it<it>.onnx
+  # NOT a real-robot candidate. The run was at iteration 2100 of 15000 when this
+  # was exported, and velocity_damper -- the curriculum that ramps in the mc_rtc
+  # KinematicsConstraint damper, i.e. the deployment plant -- only starts at
+  # iteration 7500 and is full at 12750. This policy has never seen it. It is
+  # for mc_mujoco, to catch gross failures early.
   #
-  # Plant gap to watch: this run has posture_task_stiffness null, so the network
-  # never saw a posture filter, while the QP's PostureTask adds a 1/sqrt(K) lag
-  # -- 25 ms at the global K=1600. posture_passthrough (GUI) is the matched
-  # setting; a per-policy posture_stiffness here is the other lever. Left as is
-  # until measured.
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v9_nofilter_it9000.onnx",
+  # Re-export a later checkpoint with:
+  #   RHPS1_ABLATION=p0+rand+lift uv run python scripts/tools/export_onnx.py \
+  #     2026-08-21_11-47-31 model_<it>.pt \
+  #     ~/src/rl_controller/policy/rhps1_velocity_lift_it<it>.onnx
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_lift_it2100.onnx",
   # index 2: velocity-action policy (mjlab JointVelocityAction +
   # IdealPdActuator, obs 4080 = 40x102). The ONLY entry with
   # velocity_action: true -- q_rl is a free-running integral of the commanded
