@@ -81,12 +81,28 @@ init: NewRLQPController_Initial
 policy_path: [
   # index 0: V3 (126 dims), the conservative policy that walked on the robot.
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
-  # index 1: run 2026-08-21_11-47-31, checkpoint model_2100 (iteration 2100).
-  # p0+rand+lift -- policy 0's plant and observation, the randomisation, and the
-  # foot package: min_foot_height 8 cm -> 2 cm with a 60 ms liftoff ramp,
-  # foot_swing_height target 0.15 -> 0.03, air_time threshold_max pinned at 0.25
-  # with the curriculum removed. Knee back at 100 N.m, torque_limit_margin
-  # untouched.
+  # index 1: run 2026-08-22_04-28-49, checkpoint model_7800 (iteration 7800).
+  # p0+rand+lift+steplen+freevel+freeroll, resumed from the lift lineage that
+  # walked on the robot. On top of the foot package (min_foot_height 8 cm ->
+  # 2 cm with a 60 ms liftoff ramp, foot_swing_height target 0.15 -> 0.03,
+  # air_time threshold_max 0.25, curriculum removed), three reward changes that
+  # only remove or add pressure -- observations and actions are untouched:
+  #
+  #   freevel   direction_progress replaces most of track_linear_velocity. The
+  #             std-0.20 isotropic kernel scored instantaneous velocity, and a
+  #             real step is oscillatory in every component, so it cut 76% of
+  #             the term for a plausible step profile and selected the shuffle.
+  #   freeroll  roll/pitch split off yaw in track_angular_velocity (std_xy 0.8):
+  #             the lateral weight transfer was priced as a tracking failure.
+  #   steplen   com_step_progress, paid per debounced touchdown, squared, on
+  #             CoM displacement and step period, both walked by a curriculum.
+  #
+  # Measured against the lift baseline: step length 2.9 -> 5.5 cm, step period
+  # 0.148 -> 0.29 s, peak foot height 1.8 -> 3.1 mm, lateral sway +36%.
+  #
+  # The previous occupant of this slot, rhps1_velocity_lift_it2100.onnx, is the
+  # one with real-robot time behind it and is still in policy/ -- put the path
+  # back to revert.
   #
   # 126 dims, NOT 246: this is policy 0's observation format, so utils.cpp now
   # lists index 1 with case 0. Verified against the run: obs [1,126],
@@ -95,17 +111,21 @@ policy_path: [
   # prints them at %.3f, so 0.002625 reads as 0.003 -- a display artifact, not a
   # disagreement).
   #
-  # NOT a real-robot candidate. The run was at iteration 2100 of 15000 when this
-  # was exported, and velocity_damper -- the curriculum that ramps in the mc_rtc
-  # KinematicsConstraint damper, i.e. the deployment plant -- only starts at
-  # iteration 7500 and is full at 12750. This policy has never seen it. It is
-  # for mc_mujoco, to catch gross failures early.
+  # NOT a real-robot candidate, and less of one than its predecessor was.
+  # velocity_damper -- the curriculum that ramps in the mc_rtc
+  # KinematicsConstraint damper, i.e. the deployment plant -- reads 0.0663 at
+  # iteration 7849: it starts at 7500 and is full at 12750, so this policy has
+  # barely begun to see it. Torque clipping is also up, 10% -> 15.4% of
+  # joint-samples, concentrated in the wrists (37%) rather than the legs
+  # (12.7% mean). For mc_mujoco, to find out whether the longer stride survives
+  # the QP at all.
   #
   # Re-export a later checkpoint with:
-  #   RHPS1_ABLATION=p0+rand+lift uv run python scripts/tools/export_onnx.py \
-  #     2026-08-21_11-47-31 model_<it>.pt \
-  #     ~/src/rl_controller/policy/rhps1_velocity_lift_it<it>.onnx
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_lift_it2100.onnx",
+  #   RHPS1_ABLATION=p0+rand+lift+steplen+freevel+freeroll \
+  #     uv run python scripts/tools/export_onnx.py \
+  #     2026-08-22_04-28-49 model_<it>.pt \
+  #     ~/src/rl_controller/policy/rhps1_stride_it<it>.onnx
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_stride_it7800.onnx",
   # index 2: velocity-action policy (mjlab JointVelocityAction +
   # IdealPdActuator, obs 4080 = 40x102). The ONLY entry with
   # velocity_action: true -- q_rl is a free-running integral of the commanded
