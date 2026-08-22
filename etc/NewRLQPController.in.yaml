@@ -81,7 +81,27 @@ init: NewRLQPController_Initial
 policy_path: [
   # index 0: V3 (126 dims), the conservative policy that walked on the robot.
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
-  # index 1: run 2026-08-22_04-28-49, checkpoint model_7800 (iteration 7800).
+  # index 1: run 2026-08-23_00-54-37, checkpoint model_13950 (iteration 13950).
+  # Same lineage, ~6000 iterations further on, and the one difference that
+  # matters for deployment: Curriculum/velocity_damper reads 1.0000, fully
+  # ramped. The mc_rtc KinematicsConstraint damper is in the training plant.
+  # The it7800 export it replaces had it at 0.0663 and had effectively never
+  # seen it.
+  #
+  #   step period  0.60 s   (2.9 cm / 0.148 s on the lift policy)
+  #   step length  8.0 cm
+  #   sole lift    5.2 cm p90
+  #   clipping     18.7% of joint-samples, arms 23% / legs 15.6%
+  #   flat stance  2.53 of 4 corners (policy 0: 3.05) -- the known regression
+  #   falls        5.3%
+  #
+  # Upper-body damping (the `calm` rung: upper_body_action_acc_l2 rescoped off
+  # the legs onto the real 18 upper-body joints, plus a joint-velocity penalty)
+  # is NOT in these weights -- it had 150 iterations when this was exported.
+  # The arms still move a lot.
+  #
+  # Superseded block, kept for the export recipe:
+  # index 1 was run 2026-08-22_04-28-49, checkpoint model_7800 (iteration 7800).
   # p0+rand+lift+steplen+freevel+freeroll, resumed from the lift lineage that
   # walked on the robot. On top of the foot package (min_foot_height 8 cm ->
   # 2 cm with a 60 ms liftoff ramp, foot_swing_height target 0.15 -> 0.03,
@@ -121,11 +141,11 @@ policy_path: [
   # the QP at all.
   #
   # Re-export a later checkpoint with:
-  #   RHPS1_ABLATION=p0+rand+lift+steplen+freevel+freeroll \
+  #   RHPS1_ABLATION=p0+rand+lift+steplen+freevel+freeroll+dense+calm \
   #     uv run python scripts/tools/export_onnx.py \
-  #     2026-08-22_04-28-49 model_<it>.pt \
+  #     <run> model_<it>.pt \
   #     ~/src/rl_controller/policy/rhps1_stride_it<it>.onnx
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_stride_it7800.onnx",
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_stride_it13950.onnx",
   # index 2: velocity-action policy (mjlab JointVelocityAction +
   # IdealPdActuator, obs 4080 = 40x102). The ONLY entry with
   # velocity_action: true -- q_rl is a free-running integral of the commanded
