@@ -393,6 +393,25 @@ policies:
     # PostureTask was fighting the policy's own long-stride, low-cadence
     # output, not evidence the policy is unstable.
     posture_stiffness: 1600
+
+    # Feed the PostureTask the velocity reference, from the finite difference
+    # of q_rl -- what training's PD receives directly.
+    #
+    # Without it applyPostureMode() writes refVel(0) and refAccel(0) every
+    # tick, so the task is a pure proportional regulator on position: no
+    # anticipation for a target that is moving, and a lag proportional to how
+    # fast it moves. That is a plausible reading of the symptom Leo saw --
+    # "sometimes ignores the velocity command and stays planted" -- because
+    # this lineage's whole point is a slow, long stride whose joint targets
+    # travel a long way per step. Training has no such stage: the policy's
+    # output goes straight to the PD.
+    #
+    # setPostureFeedforward() clamps v to velTargetLimit_ and a to
+    # postureAccelMax_, the same bounds the command itself already respects,
+    # so the feedforward cannot ask for something the damper forbids.
+    # Togglable live from the GUI (NewRLQPController/PostureTask) to A/B it
+    # without a rebuild.
+    posture_feedforward: true
     #
     # NO posture_filter_stiffness and NO torque_feasibility_ratio: run
     # 2026-08-17_23-05-46 has neither (_POSTURE_TASK_STIFFNESS = None,

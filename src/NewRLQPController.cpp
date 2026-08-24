@@ -741,10 +741,19 @@ void NewRLQPController::setPostureFeedforward(mc_tasks::PostureTaskPtr & pt)
   {
     const int dof = mb.jointPosInDof(robot().jointIndexByName(jointNames[i])) - off;
     if(dof < 0 || dof >= n) { continue; }
-    // Same clamps the command itself already respects: the feedforward must not
-    // ask for a velocity the damper forbids, nor an acceleration the deadbeat
-    // path caps. Finite differences of a jittery target overshoot both.
-    v(dof) = std::clamp(ffVel_(i), -velTargetLimit_, velTargetLimit_);
+    // qd* itself, not a second derivation of it. updateRawTorqueRatio() runs
+    // unconditionally every policy step and maintains exactly the signal the
+    // training PD is handed: finite difference over the POLICY step, per-joint
+    // clamp, EMA at vel_target_filter_alpha. ffVel_ re-derived the same q_rl
+    // without the EMA and with the legacy scalar clamp, so the task would have
+    // been fed a harsher velocity than the policy ever trained against -- the
+    // same three-way mismatch the comment in setSimulationTargets() records
+    // having already fixed once for mbc().alpha.
+    //
+    // The acceleration keeps its own derivation: training's PD has no
+    // acceleration term at all, so there is no qd*-equivalent to match, and
+    // refAccel here is purely mc_rtc-side feedforward.
+    v(dof) = std::clamp(qdTarget_(i), -velTargetLimit_, velTargetLimit_);
     a(dof) = std::clamp(ffAcc_(i), -postureAccelMax_, postureAccelMax_);
   }
   pt->refVel(v);
