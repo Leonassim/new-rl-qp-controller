@@ -81,27 +81,30 @@ init: NewRLQPController_Initial
 policy_path: [
   # index 0: V3 (126 dims), the conservative policy that walked on the robot.
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
-  # index 1: run 2026-08-23_00-54-37, checkpoint model_13950 (iteration 13950).
-  # Same lineage, ~6000 iterations further on, and the one difference that
-  # matters for deployment: Curriculum/velocity_damper reads 1.0000, fully
-  # ramped. The mc_rtc KinematicsConstraint damper is in the training plant.
-  # The it7800 export it replaces had it at 0.0663 and had effectively never
-  # seen it.
+  # index 1: run 2026-08-22_04-28-49, checkpoint model_7800 (iteration 7800).
+  # Reverted here after testing rhps1_stride_it13950.onnx on the robot and
+  # judging it not good enough. it13950 is where standing_single_support_rate
+  # crosses from 0.267 (this checkpoint) to 0.979 -- the robot holds itself on
+  # one leg ~98% of the time it is given no command -- and eight hours of
+  # reward changes across 2026-08-23/24 (standing_single_support weight up to
+  # -40, direction_progress given its own tighter standing kernel) never moved
+  # that rate. Full comparison and the chain of every rung in between:
+  # mjlab-rhps1/docs/gait_redirection_path.md.
   #
-  #   step period  0.60 s   (2.9 cm / 0.148 s on the lift policy)
-  #   step length  8.0 cm
-  #   sole lift    5.2 cm p90
-  #   clipping     18.7% of joint-samples, arms 23% / legs 15.6%
-  #   flat stance  2.53 of 4 corners (policy 0: 3.05) -- the known regression
-  #   falls        5.3%
+  # Chosen as the safe weekend pick on every safety metric against the two
+  # later candidates (it13950, it27300):
   #
-  # Upper-body damping (the `calm` rung: upper_body_action_acc_l2 rescoped off
-  # the legs onto the real 18 upper-body joints, plus a joint-velocity penalty)
-  # is NOT in these weights -- it had 150 iterations when this was exported.
-  # The arms still move a lot.
+  #                       standing_1leg  clipping  torque  impact_vel
+  #   it7800 (this)            0.267      0.153    0.427    0.141
+  #   it13950                  0.979      0.224    0.483    0.126
+  #   it27300                  0.985      0.198    0.454    0.142
   #
-  # Superseded block, kept for the export recipe:
-  # index 1 was run 2026-08-22_04-28-49, checkpoint model_7800 (iteration 7800).
+  # velocity_damper reads 0.0663 at export -- the deployment plant's projection
+  # was barely in the training loop. Treat as a mc_mujoco / cautious-robot
+  # candidate, not as trained-against-the-QP the way it13950 was.
+  #
+  #   step period  0.32 s   (2.9 cm / 0.148 s on the lift policy)
+  #   falls        4.4%
   # p0+rand+lift+steplen+freevel+freeroll, resumed from the lift lineage that
   # walked on the robot. On top of the foot package (min_foot_height 8 cm ->
   # 2 cm with a 60 ms liftoff ramp, foot_swing_height target 0.15 -> 0.03,
@@ -145,7 +148,7 @@ policy_path: [
   #     uv run python scripts/tools/export_onnx.py \
   #     <run> model_<it>.pt \
   #     ~/src/rl_controller/policy/rhps1_stride_it<it>.onnx
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_stride_it13950.onnx",
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_it7800_conservative.onnx",
   # index 2: velocity-action policy (mjlab JointVelocityAction +
   # IdealPdActuator, obs 4080 = 40x102). The ONLY entry with
   # velocity_action: true -- q_rl is a free-running integral of the commanded
