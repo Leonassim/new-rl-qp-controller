@@ -305,11 +305,34 @@ policies:
     joystick_deadzone: &joystick_deadzone 0.05
     vel_ramp_rate: &vel_ramp_rate 0.5
 
-    # PostureTask velocity feedforward, 2026-08-24. refVel = qd*, the signal
-    # training's PD is handed. Without it applyPostureMode() writes refVel(0)
-    # and refAccel(0) every tick, so the task is a pure proportional regulator
-    # on a target that moves a long way per policy step.
-    posture_feedforward: true
+    # PostureTask velocity feedforward: OFF by default, and it stays off.
+    #
+    # Turned on 2026-08-24 and it broke this policy in mc_mujoco within one
+    # launch -- legs flailing as soon as --pd-zero-ref-vel was dropped. This
+    # block is the configuration that walked on the hardware; nothing here
+    # changes by default, whatever is being tested elsewhere.
+    #
+    # Why it breaks. mc_rtc's PostureTask objective is
+    #   alphaD = refAccel + K*(q* - q) + D*(refVel - alpha),  D = 2*sqrt(K)
+    # With K = 40000 in mc_mujoco, D = 400. refVel(0) makes the third term
+    # -400*alpha, pure damping. Feeding it qd* turns it into +400*(qd* - alpha):
+    # during a swing with qd* at 5 rad/s and alpha lagging, that is +1200 rad/s^2
+    # of commanded acceleration where there used to be -800. The QP's alpha then
+    # goes wild, and mc_mujoco's low-level PD multiplies it again through
+    # kd*(alpha_ref - alpha) -- which is exactly why --pd-zero-ref-vel hid the
+    # whole thing. The real robot has no such term, so this never showed there.
+    #
+    # To test it, use the GUI button (NewRLQPController/PostureTask): live,
+    # reversible, and you can watch the legs change under the toggle.
+    posture_feedforward: false
+
+    # refAccel = 0 whenever the feedforward above is switched on. ffAcc_ is a
+    # SECOND difference of an unfiltered target over 5 ms -- 0.01 rad of jitter
+    # is 400 rad/s^2 -- and it is held across all five substeps, so the clamp
+    # below is a sustained command, not a spike. Training's PD has no
+    # acceleration term at all, so there is no counterpart to match: only refVel
+    # reproduces something the policy actually trained against.
+    posture_accel_max: 0
 
     # qd* exactly as run 2026-07-10_20-59-17 built it (params/env.yaml): clamp
     # the finite difference per joint, then EMA at 0.8. Both were absent here
@@ -456,6 +479,12 @@ policies:
     # Togglable live from the GUI (NewRLQPController/PostureTask) to A/B it
     # without a rebuild.
     posture_feedforward: true
+
+    # refAccel off: ffAcc_ is a second difference of an unfiltered target over
+    # 5 ms, held across every substep, and training's PD has no acceleration
+    # term to match it against. Only refVel reproduces something the policy
+    # trained on. Costed a broken policy 0 on 2026-08-24 before being noticed.
+    posture_accel_max: 0
     #
     # NO posture_filter_stiffness and NO torque_feasibility_ratio: run
     # 2026-08-17_23-05-46 has neither (_POSTURE_TASK_STIFFNESS = None,
