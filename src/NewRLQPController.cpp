@@ -133,6 +133,10 @@ double NewRLQPController::postureStiffness() const
   // Without it, the fallback is the historical 0.2/(policyDt*timeStep). That
   // formula scales with the control rate, so it yields 8000 on the robot at
   // 200 Hz and 40000 in mc_mujoco at 1 kHz -- two very different plants.
+  // Typed into the GUI: wins over everything, including applyPostureMode()'s
+  // own re-apply, which would otherwise wipe it on the next mode toggle.
+  if(postureStiffnessOverride_ > 0.0) { return postureStiffnessOverride_; }
+
   const auto & pol = config_("policies")[currentPolicyIndex];
   const double policyDt = pol("policy_step_size", 0.005);
 
@@ -222,6 +226,7 @@ void NewRLQPController::initializeRobot()
 {
   useQP_    = config_("policies")[currentPolicyIndex]("use_QP", true);
   velocityAction_ = config_("policies")[currentPolicyIndex]("velocity_action", false);
+  obsFormat_      = size_t(int(config_("policies")[currentPolicyIndex]("obs_format", int(currentPolicyIndex))));
   robotName_ = robot().name();
   jointNames = robot().refJointOrder();
   // refJointOrder may name joints this robot does not actually carry, and
@@ -1181,8 +1186,10 @@ void NewRLQPController::addGui()
         return pt ? pt->stiffness() : 0.0;
       },
       [this](double v) {
+        postureStiffnessOverride_ = v;
         auto pt = getPostureTask(robot().name());
         if(pt) pt->stiffness(v);
+        mc_rtc::log::warning("[NewRLQPController] posture stiffness K = {} (GUI override)", v);
       })
   );
 

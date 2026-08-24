@@ -571,6 +571,13 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
 
   /** @brief Index of the currently active policy (indexes into policy_path list). */
   size_t currentPolicyIndex = 0;
+  /// Observation layout, from `obs_format`. Defaults to currentPolicyIndex, so
+  /// the switch in utils.cpp keeps its historical meaning; declare it when a
+  /// slot reuses another slot's network format.
+  size_t obsFormat_ = 0;
+  /// Stiffness typed into the GUI, -1 when untouched. Wins over the yaml so
+  /// applyPostureMode() cannot silently undo it mid-experiment.
+  double postureStiffnessOverride_ = -1.0;
 
   /** @brief ONNX runtime wrapper for running policy inference. */
   std::unique_ptr<RLPolicyInterface> rlPolicy;

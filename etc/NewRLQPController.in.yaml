@@ -113,6 +113,11 @@ policy_path: [
   # velocity_action: true -- q_rl is a free-running integral of the commanded
   # velocity instead of being rebuilt from q_zero. utils.cpp case 2.
   "@RL_POLICY_INSTALL_PREFIX@/2026-08-20_18-46-29.onnx",
+  # index 3: policy 0's network again, under the deployment-fidelity test
+  # configuration (PostureTask K=1600 + velocity feedforward). Same file, so
+  # index 0 stays exactly the configuration that ran on the hardware and the
+  # comparison is a pure plant comparison -- one network, four plants.
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
 ]
 # Stays 0: the real-robot entry is the only one with hardware time behind it.
 # Back to 0 on 2026-08-21 for a real-robot session. Index 0 is the only entry
@@ -326,53 +331,8 @@ policies:
     # reversible, and you can watch the legs change under the toggle.
     posture_feedforward: false
 
-    # refAccel = 0 whenever the feedforward above is switched on. ffAcc_ is a
-    # SECOND difference of an unfiltered target over 5 ms -- 0.01 rad of jitter
-    # is 400 rad/s^2 -- and it is held across all five substeps, so the clamp
-    # below is a sustained command, not a spike. Training's PD has no
-    # acceleration term at all, so there is no counterpart to match: only refVel
-    # reproduces something the policy actually trained against.
-    posture_accel_max: 0
 
-    # qd* exactly as run 2026-07-10_20-59-17 built it (params/env.yaml): clamp
-    # the finite difference per joint, then EMA at 0.8. Both were absent here
-    # and the fallbacks are alpha 0 (no filter) and 1e9 (no clamp) -- harmless
-    # while nothing read qdTarget_ under the QP, wrong the moment the
-    # feedforward above does.
-    vel_target_filter_alpha: 0.8
-    vel_target_limit_per_joint:
-      CHEST_Y:        6
-      CHEST_P:        6
-      HEAD_Y:         4
-      HEAD_P:         4
-      L_SHOULDER_P:   6
-      L_SHOULDER_R:   6
-      L_SHOULDER_Y:   6
-      L_ELBOW_P:      6
-      L_ELBOW_Y:      6
-      L_WRIST_R:      6
-      L_WRIST_Y:      6
-      R_SHOULDER_P:   6
-      R_SHOULDER_R:   6
-      R_SHOULDER_Y:   6
-      R_ELBOW_P:      6
-      R_ELBOW_Y:      6
-      R_WRIST_R:      6
-      R_WRIST_Y:      6
-      L_CROTCH_Y:     8
-      L_CROTCH_R:     8
-      L_CROTCH_P:     8
-      L_KNEE_P:       10
-      L_ANKLE_R:      10
-      L_ANKLE_P:      10
-      R_CROTCH_Y:     8
-      R_CROTCH_R:     8
-      R_CROTCH_P:     8
-      R_KNEE_P:       10
-      R_ANKLE_R:      10
-      R_ANKLE_P:      10
-
-    action_scale:
+    action_scale: &action_scale
       CHEST_Y:      0.002
       CHEST_P:      0.002
       HEAD_Y:       0.002
@@ -616,7 +576,7 @@ policies:
       R_ANKLE_R:      45
       R_ANKLE_P:      65
 
-    vel_target_limit_per_joint:
+    vel_target_limit_per_joint: &vel_target_limit_per_joint
       CHEST_Y:        6
       CHEST_P:        6
       HEAD_Y:         4
@@ -994,6 +954,52 @@ policies:
       - R_KNEE_P
       - R_ANKLE_R
       - R_ANKLE_P
+  # index 3 : policy 0's network, deployment-fidelity test rig (2026-08-24).
+  #
+  # Purpose: bring mc_mujoco closer to what the joints actually see on the
+  # robot, and measure each step of that separately. Two axes, one network:
+  #
+  #   QP side      refVel = qd* fed to the PostureTask, as training's PD gets
+  #                it. `posture_feedforward` here; also live from the GUI
+  #                (ControlMode / Toggle posture feedforward).
+  #   servo side   qdot_ref = 0 at the low-level PD, as IOB has it on the
+  #                robot. `mc_mujoco --pd-zero-ref-vel`, launch-time only.
+  #
+  # K=1600 is NOT optional here. The PostureTask objective is
+  #   alphaD = K*(q* - q) + D*(refVel - alpha) + refAccel,  D = 2*sqrt(K)
+  # so refVel is multiplied by D. At the mc_mujoco default K=40000, D=400 and
+  # the feedforward flails the legs (2026-08-24). At 1600, D=80 -- five times
+  # gentler, and it is the value already tested on this robot.
+  #
+  # obs_format 0: same 126-dim V3 layout as index 0. Without the key the switch
+  # in utils.cpp keys off the slot number and case 3 means V5, 566 dims.
+  - use_QP: *use_QP
+    obs_format: 0
+    policy_step_size: *policy_step_size
+    physics_step_size: *physics_step_size
+    pd_gains_ratio: *pd_gains_ratio
+    max_vel_x: *max_vel_x
+    max_vel_y: *max_vel_y
+    max_yaw: *max_yaw
+    joystick_deadzone: *joystick_deadzone
+    vel_ramp_rate: *vel_ramp_rate
+    action_scale: *action_scale
+    vel_target_limit_per_joint: *vel_target_limit_per_joint
+    vel_target_filter_alpha: 0.8
+    kp: *kp
+    kd: *kd
+    q0: *q0
+    ref_joint_order: *ref_joint_order
+
+    # The two overrides that make this slot differ from index 0, and nothing
+    # else -- every other key above is an alias of index 0's, so the two blocks
+    # cannot drift apart.
+    posture_stiffness: 1600
+    posture_feedforward: true
+    # refAccel stays off: second difference of an unfiltered target, held across
+    # every substep, and training's PD has no acceleration term to match.
+    posture_accel_max: 0
+
 use_async_inference: false
 log_timing: true
 timing_log_interval: 100

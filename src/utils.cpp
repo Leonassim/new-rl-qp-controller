@@ -268,7 +268,7 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
     offset += v.size();
   };
 
-  switch (ctl.currentPolicyIndex) {
+  switch (ctl.obsFormat_) {
     case 1: // 2026-08-21 : l'index 1 porte desormais une policy 126 dims
             // (run 2026-08-21_11-47-31, paquet `lift` sur p0+rand), donc le
             // meme corps que l'index 0 et non plus les 246 dims. L'ONNX le
@@ -405,7 +405,7 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       ctl.jointAct_[0] = ctl.currentAction;
       // Advance the clock exactly once per inference, after velCmd_[0] is set
       // (the cadence depends on it) and before the block is written out.
-      if(utils::hasGaitPhase(ctl.currentPolicyIndex)) { ctl.gaitPhaseStep(); }
+      if(utils::hasGaitPhase(ctl.obsFormat_)) { ctl.gaitPhaseStep(); }
 
       const int actionDim = static_cast<int>(ctl.refJointOrderRLAction.size());
       ctl.jointPos_[0] = Eigen::VectorXd::Zero(actionDim);
@@ -429,7 +429,7 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       appendToObs(ctl.jointVel_[0]);
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointAct_[i]);
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.velCmd_[i]);
-      if(utils::hasGaitPhase(ctl.currentPolicyIndex))
+      if(utils::hasGaitPhase(ctl.obsFormat_))
       {
         for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write4(ctl.gaitPhase_[i]);
       }
@@ -438,7 +438,7 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       // previous policy step, so index 0 holds the demand of the action that has
       // just been executed -- the same alignment mjlab has, where the observation
       // reads a peak accumulated over the previous step's substeps.
-      if(utils::isV5(ctl.currentPolicyIndex))
+      if(utils::isV5(ctl.obsFormat_))
       {
         for(int i = ctl.RAW_TORQUE_HISTORY-1; i >= 0; --i) appendToObs(ctl.rawTorque_[i]);
       }
@@ -510,7 +510,7 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
     }
     default:
     {
-      mc_rtc::log::error("[NewRLQPController::utils] Unknown policy index: {}", ctl.currentPolicyIndex);
+      mc_rtc::log::error("[NewRLQPController::utils] Unknown obs_format: {}", ctl.obsFormat_);
       break;
     }
   }
@@ -526,7 +526,7 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
         "[NewRLQPController::utils] Observation size mismatch for policy index {}: wrote {} "
         "values, the network expects {}. The observation layout in this switch does not match "
         "the loaded ONNX.",
-        ctl.currentPolicyIndex, offset, obs.size());
+        ctl.obsFormat_, offset, obs.size());
   }
   return obs;
 }
