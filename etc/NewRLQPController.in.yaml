@@ -81,30 +81,29 @@ init: NewRLQPController_Initial
 policy_path: [
   # index 0: V3 (126 dims), the conservative policy that walked on the robot.
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
-  # index 1: run 2026-08-22_04-28-49, checkpoint model_7800 (iteration 7800).
-  # Reverted here after testing rhps1_stride_it13950.onnx on the robot and
-  # judging it not good enough. it13950 is where standing_single_support_rate
-  # crosses from 0.267 (this checkpoint) to 0.979 -- the robot holds itself on
-  # one leg ~98% of the time it is given no command -- and eight hours of
-  # reward changes across 2026-08-23/24 (standing_single_support weight up to
-  # -40, direction_progress given its own tighter standing kernel) never moved
-  # that rate. Full comparison and the chain of every rung in between:
-  # mjlab-rhps1/docs/gait_redirection_path.md.
+  # index 1: run 2026-08-22_19-06-06, checkpoint model_13200 (iteration 13200).
+  # Leo tested it7800 on the robot: not bad, but the feet struggle to lift and
+  # y-velocity tracking is mediocre. This checkpoint is the last one before the
+  # `dense` rung (foot-height bonus) was added, one step earlier in the same
+  # lineage as the rejected it13950 -- it inherits its better foot height
+  # without yet reaching the standing-on-one-leg regression it13950 settled
+  # into 750 iterations later.
   #
-  # Chosen as the safe weekend pick on every safety metric against the two
-  # later candidates (it13950, it27300):
+  #                       standing_1leg  sole_h_p90  clipping  torque
+  #   it7800                   0.267       0.008      0.153    0.427
+  #   it13200 (this)           0.402       0.048      0.178    0.448
+  #   it13950 (rejected)       0.979       0.056      0.224    0.483
   #
-  #                       standing_1leg  clipping  torque  impact_vel
-  #   it7800 (this)            0.267      0.153    0.427    0.141
-  #   it13950                  0.979      0.224    0.483    0.126
-  #   it27300                  0.985      0.198    0.454    0.142
+  # standing_1leg at rest is worse than it7800 -- watch it. y-velocity is still
+  # loose here (error_vel_xy 0.458): that is freevel/freeroll's cost across the
+  # whole lineage, not something specific to this checkpoint, and no candidate
+  # exported so far recovers it.
   #
-  # velocity_damper reads 0.0663 at export -- the deployment plant's projection
-  # was barely in the training loop. Treat as a mc_mujoco / cautious-robot
-  # candidate, not as trained-against-the-QP the way it13950 was.
+  # velocity_damper was still ramping at this point in training (started at
+  # iteration 7500, full at 12750) -- partially trained against the QP
+  # projection, more than it7800 but less than it13950/it27300.
   #
-  #   step period  0.32 s   (2.9 cm / 0.148 s on the lift policy)
-  #   falls        4.4%
+  #   step period  0.54 s   step length 8.5 cm   falls  2.6%
   # p0+rand+lift+steplen+freevel+freeroll, resumed from the lift lineage that
   # walked on the robot. On top of the foot package (min_foot_height 8 cm ->
   # 2 cm with a 60 ms liftoff ramp, foot_swing_height target 0.15 -> 0.03,
@@ -148,7 +147,7 @@ policy_path: [
   #     uv run python scripts/tools/export_onnx.py \
   #     <run> model_<it>.pt \
   #     ~/src/rl_controller/policy/rhps1_stride_it<it>.onnx
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_it7800_conservative.onnx",
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_it13200_footlift.onnx",
   # index 2: velocity-action policy (mjlab JointVelocityAction +
   # IdealPdActuator, obs 4080 = 40x102). The ONLY entry with
   # velocity_action: true -- q_rl is a free-running integral of the commanded
