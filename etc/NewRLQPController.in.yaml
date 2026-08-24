@@ -312,23 +312,38 @@ policies:
 
     # PostureTask velocity feedforward: OFF by default, and it stays off.
     #
-    # Turned on 2026-08-24 and it broke this policy in mc_mujoco within one
-    # launch -- legs flailing as soon as --pd-zero-ref-vel was dropped. This
-    # block is the configuration that walked on the hardware; nothing here
-    # changes by default, whatever is being tested elsewhere.
+    # Measured 2026-08-24 on two mc_mujoco logs (18-25-28, 18-27-03), K=1600
+    # both sides -- the global value in mc_rtc_superbuild.yaml AND in the
+    # mujoco overlay, so there is no 40000 anywhere and an earlier note here
+    # claiming there was is wrong.
     #
-    # Why it breaks. mc_rtc's PostureTask objective is
-    #   alphaD = refAccel + K*(q* - q) + D*(refVel - alpha),  D = 2*sqrt(K)
-    # With K = 40000 in mc_mujoco, D = 400. refVel(0) makes the third term
-    # -400*alpha, pure damping. Feeding it qd* turns it into +400*(qd* - alpha):
-    # during a swing with qd* at 5 rad/s and alpha lagging, that is +1200 rad/s^2
-    # of commanded acceleration where there used to be -800. The QP's alpha then
-    # goes wild, and mc_mujoco's low-level PD multiplies it again through
-    # kd*(alpha_ref - alpha) -- which is exactly why --pd-zero-ref-vel hid the
-    # whole thing. The real robot has no such term, so this never showed there.
+    # Neither half is unstable alone. refVel to the QP with the servo's
+    # velocity term removed (--pd-zero-ref-vel): bounded, 37 s of walking.
+    # No feedforward with the servo term present: bounded, walks. BOTH: the
+    # equilibrium is linearly unstable. Toggling the feedforward on a robot
+    # standing still at zero command, the state grows out of rounding noise by
+    # a factor ~1.38 per 5 ms tick -- 1e-4 rad/s to saturation in under 400 ms
+    # -- ending at refVel pinned to its 8 rad/s clamp, qd* at 13.2 rad/s,
+    # measured joint velocity 7.7 rad/s and 2399 N.m of commanded torque.
     #
-    # To test it, use the GUI button (NewRLQPController/PostureTask): live,
-    # reversible, and you can watch the legs change under the toggle.
+    # Why: joint velocity then enters the loop twice in series. Once inside the
+    # QP, where the PostureTask objective is
+    #   alphaD = K*(q* - q) + D*(refVel - alpha),  D = 2*sqrt(K) = 80
+    # and once in mc_mujoco's servo, kd*(alpha_ref - alpha) with kd 240-440
+    # (PDgains_sim.dat). The product of the two gains leaves the stability
+    # region. The real robot has only the first: RobotHardware sends position,
+    # IOB's PD has no velocity reference. So this is a simulation artifact, not
+    # a property of the feedforward -- but it is exactly what a default here
+    # would hand to anyone launching mc_mujoco without the flag.
+    #
+    # It also buys nothing. Same log, walking, PostureTask eval normalised by
+    # qd*: 53.5 ms of lag without the feedforward, 63.0 ms with. The lag is the
+    # task's own 1/sqrt(K) = 25 ms, and qd* cannot cancel it because the EMA at
+    # alpha 0.8 delays qd* by dt*a/(1-a) = 20 ms -- the correction arrives about
+    # as late as the error it is meant to pre-empt.
+    #
+    # To test it anyway, use the GUI button (ControlMode / Toggle posture
+    # feedforward), and only with --pd-zero-ref-vel.
     posture_feedforward: false
 
 
@@ -965,11 +980,15 @@ policies:
   #   servo side   qdot_ref = 0 at the low-level PD, as IOB has it on the
   #                robot. `mc_mujoco --pd-zero-ref-vel`, launch-time only.
   #
-  # K=1600 is NOT optional here. The PostureTask objective is
-  #   alphaD = K*(q* - q) + D*(refVel - alpha) + refAccel,  D = 2*sqrt(K)
-  # so refVel is multiplied by D. At the mc_mujoco default K=40000, D=400 and
-  # the feedforward flails the legs (2026-08-24). At 1600, D=80 -- five times
-  # gentler, and it is the value already tested on this robot.
+  # posture_stiffness 1600 is written out but changes nothing: the global value
+  # is already 1600 in both mc_rtc_superbuild.yaml and the mujoco overlay. It is
+  # here so the slot states its own plant instead of inheriting it silently.
+  #
+  # WARNING, measured: index 3 without --pd-zero-ref-vel is the unstable corner.
+  # Joint velocity closes through the QP (D = 2*sqrt(K) = 80) and through
+  # mc_mujoco's servo (kd 240-440) at once, and the equilibrium diverges at
+  # ~1.38 per tick from rounding noise, at zero command, standing still. See
+  # index 0's block for the full measurement. Run this slot WITH the flag.
   #
   # obs_format 0: same 126-dim V3 layout as index 0. Without the key the switch
   # in utils.cpp keys off the slot number and case 3 means V5, 566 dims.
