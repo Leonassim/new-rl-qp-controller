@@ -81,10 +81,10 @@ init: NewRLQPController_Initial
 policy_path: [
   # index 0: V3 (126 dims), the conservative policy that walked on the robot.
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
-  # index 1: run 2026-08-22_04-28-49, checkpoint model_7800 (iteration 7800).
-  # Back to it7800 to A/B against it13200_footlift, which Leo just tested.
-  # Same lineage, one step earlier -- before the foot-height rung (`dense`)
-  # was added. Swap the two by editing this one line; both files stay in
+  # index 1: run 2026-08-22_19-06-06, checkpoint model_13200 (iteration 13200).
+  # Swapped back in for the A/B against it7800_conservative, which Leo just
+  # tested (posture_stiffness 1600, see below -- kept for this policy too on
+  # his request). Swap the two by editing this one line; both files stay in
   # policy/ so neither test costs the other its export.
   #
   #                       standing_1leg  sole_h_p90  clipping  torque  falls
@@ -107,7 +107,7 @@ policy_path: [
   #     uv run python scripts/tools/export_onnx.py \
   #     2026-08-22_04-28-49 model_<it>.pt \
   #     ~/src/rl_controller/policy/rhps1_it<it>_conservative.onnx
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_it7800_conservative.onnx",
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_it13200_footlift.onnx",
   # index 2: velocity-action policy (mjlab JointVelocityAction +
   # IdealPdActuator, obs 4080 = 40x102). The ONLY entry with
   # velocity_action: true -- q_rl is a free-running integral of the commanded
@@ -377,10 +377,12 @@ policies:
     pd_gains_ratio: *pd_gains_ratio
     # posture_stiffness explicit at 1600, per Leo's request, to feel the
     # softer PostureTask against the "sometimes ignores the velocity command
-    # and stays planted" symptom he saw testing it7800_conservative.
+    # and stays planted" symptom he saw testing it7800_conservative. Kept at
+    # 1600 across the swap to it13200_footlift on his request too, so both
+    # halves of the A/B run under the same PostureTask setting.
     #
-    # This is exploratory, not a train/deploy match: it7800's lineage
-    # (p0+rand+lift+steplen+freevel+... this weekend) was never trained with
+    # This is exploratory, not a train/deploy match: neither checkpoint's
+    # lineage (p0+rand+lift+steplen+freevel+... this weekend) was trained with
     # FiniteDifferencePdActuator's posture filter modeled -- that is Task B of
     # docs/plans, still unimplemented -- so there is no "what the policy
     # learned" value to restore here, unlike the 2026-08-17 run this block's
