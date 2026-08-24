@@ -118,6 +118,18 @@ policy_path: [
   # index 0 stays exactly the configuration that ran on the hardware and the
   # comparison is a pure plant comparison -- one network, four plants.
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
+  # index 4: run 2026-08-25_02-20-16 model_13800. Policy 0's network family,
+  # retrained overnight against a foot-clearance term that measures the LOWEST
+  # point of the sole instead of a site at its middle.
+  #
+  #                        honest clearance   pitch cheat   clipping   falls
+  #   it13200 (tested)          0.0204          0.0173       0.178     0.026
+  #   it13800 (this)            0.0290          0.0110       0.239     0.033
+  #
+  # +42% real clearance and -36% of the tilt artefact -- the defect seen on the
+  # robot, where the foot measured high but caught its front edge. Paid for in
+  # clipping, 0.178 -> 0.239, which is the reservation on this entry.
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_it13800_soleclear.onnx",
 ]
 # Stays 0: the real-robot entry is the only one with hardware time behind it.
 # Back to 0 on 2026-08-21 for a real-robot session. Index 0 is the only entry
@@ -1045,6 +1057,32 @@ policies:
     # refAccel stays off: second difference of an unfiltered target, held across
     # every substep, and training's PD has no acceleration term to match.
     posture_accel_max: 0
+
+  # index 4 : run 2026-08-25_02-20-16 model_13800, the overnight foot-lift run.
+  #
+  # Same plant as index 0 -- hardware configuration, no feedforward, K 8000 --
+  # so selecting it against index 0 compares the two networks and nothing else.
+  # obs_format 0: policy 0's 126-dim V3 layout, unchanged by this run (every
+  # rung it carries is reward-side).
+  #
+  # runaway_disarm_vel armed: this network has never touched hardware.
+  - use_QP: *use_QP
+    obs_format: 0
+    policy_step_size: *policy_step_size
+    physics_step_size: *physics_step_size
+    pd_gains_ratio: *pd_gains_ratio
+    max_vel_x: *max_vel_x
+    max_vel_y: *max_vel_y
+    max_yaw: *max_yaw
+    joystick_deadzone: *joystick_deadzone
+    vel_ramp_rate: *vel_ramp_rate
+    action_scale: *action_scale
+    kp: *kp
+    kd: *kd
+    q0: *q0
+    ref_joint_order: *ref_joint_order
+    posture_stiffness: 8000
+    runaway_disarm_vel: 4.0
 
 use_async_inference: false
 log_timing: true
