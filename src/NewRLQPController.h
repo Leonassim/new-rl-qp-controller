@@ -615,7 +615,7 @@ private:
 
 
   /** @brief PostureTask stiffness, 0.2/(policy_step_size*timeStep). */
-  double postureStiffness();
+
 
   /** @brief Load robot parameters (gains, action scale, q0) from config. */
   void initializeRobot();

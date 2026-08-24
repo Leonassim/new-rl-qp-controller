@@ -446,6 +446,12 @@ void NewRLQPController::initializeRobot()
   impactForceThreshold_  = config_("impact_force_threshold", 30.0);
   impactForceHysteresis_ = config_("impact_force_hysteresis_ratio", 0.5);
 
+  // postureStiffness(), singular. There used to be a non-const overload
+  // returning the bare 0.2/(policyDt*timeStep) formula, and because both call
+  // sites live in non-const members it won overload resolution every time --
+  // so posture_stiffness was dead everywhere it was written: the global key in
+  // mc_rtc_superbuild.yaml and its mujoco overlay, the per-policy overrides,
+  // and the GUI input. Every measurement taken "at 1600" was taken at 8000.
   const double K = postureStiffness();
   auto pt = getPostureTask(robot().name());
   pt->stiffness(K);
@@ -456,12 +462,6 @@ double NewRLQPController::postureTaskStiffness()
 {
   auto pt = getPostureTask(robot().name());
   return pt ? pt->stiffness() : 0.0;
-}
-
-double NewRLQPController::postureStiffness()
-{
-  const double policyDt = config_("policies")[currentPolicyIndex]("policy_step_size", 0.005);
-  return 0.2 / (policyDt * timeStep);
 }
 
 void NewRLQPController::initializeRLPolicy()

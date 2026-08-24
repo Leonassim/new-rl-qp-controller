@@ -310,6 +310,15 @@ policies:
     joystick_deadzone: &joystick_deadzone 0.05
     vel_ramp_rate: &vel_ramp_rate 0.5
 
+    # 8000, not the 1600 the global key claims: 0.2/(policyDt*timeStep) with
+    # both at 0.005 is what this policy has ACTUALLY run under, in mc_mujoco
+    # and on the hardware, because a non-const postureStiffness() overload shad-
+    # owed the config-reading one and won every call. Removing that overload
+    # makes posture_stiffness live for the first time, and without this line
+    # index 0 would silently move to the global 1600 -- a plant change on the
+    # one block that must not change. Written out so the fix is a no-op here.
+    posture_stiffness: 8000
+
     # PostureTask velocity feedforward: OFF by default, and it stays off.
     #
     # Measured 2026-08-24 on two mc_mujoco logs (18-25-28, 18-27-03), K=1600
@@ -434,7 +443,11 @@ policies:
     # both -- if the stuck-foot symptom goes away, that is evidence the QP's
     # PostureTask was fighting the policy's own long-stride, low-cadence
     # output, not evidence the policy is unstable.
-    posture_stiffness: 1600
+    # 8000, not 1600: see index 0. Every measurement ever taken on this slot,
+    # including the ones logged as "1600", ran at 8000 because the config key
+    # was shadowed. Pinned to what actually ran so making the key live changes
+    # nothing; 1600 is now testable deliberately, from the GUI or from here.
+    posture_stiffness: 8000
 
     # Feed the PostureTask the velocity reference, from the finite difference
     # of q_rl -- what training's PD receives directly.
@@ -663,6 +676,7 @@ policies:
   - use_QP: true
     # Velocity-action policy (mjlab JointVelocityAction + IdealPdActuator):
     # q_rl = measured joint position + action * policy_step_size, and the
+    posture_stiffness: 8000  # as above: what this slot has always run at
     # commanded velocity is passed separately as qdTarget_. See
     # NewRLQPController::velocityAction_. torque_feasibility_ratio and
     # vel_target_filter_alpha below are position-action-only concepts and
@@ -1013,7 +1027,11 @@ policies:
     # The two overrides that make this slot differ from index 0, and nothing
     # else -- every other key above is an alias of index 0's, so the two blocks
     # cannot drift apart.
-    posture_stiffness: 1600
+    # 8000, not 1600: see index 0. Every measurement ever taken on this slot,
+    # including the ones logged as "1600", ran at 8000 because the config key
+    # was shadowed. Pinned to what actually ran so making the key live changes
+    # nothing; 1600 is now testable deliberately, from the GUI or from here.
+    posture_stiffness: 8000
     posture_feedforward: true
 
     # This slot ships with the feedforward ON, so SELECTING IT AND ARMING is
