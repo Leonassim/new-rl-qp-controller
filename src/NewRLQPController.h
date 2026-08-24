@@ -578,6 +578,9 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   /// Stiffness typed into the GUI, -1 when untouched. Wins over the yaml so
   /// applyPostureMode() cannot silently undo it mid-experiment.
   double postureStiffnessOverride_ = -1.0;
+  /// Auto-disarm above this measured joint velocity (rad/s), 0 = off. A runaway
+  /// reaches saturation in ~400 ms, faster than an operator can react.
+  double runawayDisarmVel_ = 0.0;
 
   /** @brief ONNX runtime wrapper for running policy inference. */
   std::unique_ptr<RLPolicyInterface> rlPolicy;

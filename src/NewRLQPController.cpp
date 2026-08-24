@@ -82,6 +82,26 @@ bool NewRLQPController::run()
   if(printLimits_) computeLimits();
   if(logImpactVel_) updateImpactVelocity();
 
+  // Runaway guard. The feedforward/servo instability grows ~1.38 per tick and
+  // saturates in under 400 ms, so no operator can catch it; disarm on the
+  // measured velocity, which is the quantity that actually breaks the hardware.
+  if(policyArmed_ && runawayDisarmVel_ > 0.0)
+  {
+    const auto & rr = realRobot(robots()[0].name());
+    double vmax = 0.0;
+    for(int i = 0; i < nbActuatedJoints; ++i)
+    {
+      const int k = rr.jointIndexByName(jointNames[i]);
+      if(!rr.mbc().alpha[k].empty()) { vmax = std::max(vmax, std::abs(rr.mbc().alpha[k][0])); }
+    }
+    if(vmax > runawayDisarmVel_)
+    {
+      policyArmed_ = false;
+      mc_rtc::log::error("[NewRLQPController] RUNAWAY: |alpha| {:.2f} > {:.2f} rad/s, policy DISARMED",
+                         vmax, runawayDisarmVel_);
+    }
+  }
+
   // Disarmed: never write the target. Whichever task is driving then keeps
   // whatever mc_rtc captured at reset, so the robot holds its stance under the
   // QP until the operator arms the policy from the GUI.
@@ -322,6 +342,7 @@ void NewRLQPController::initializeRobot()
   posturePassthrough_ = config_("policies")[currentPolicyIndex]("posture_passthrough", false);
   postureAccelMax_    = config_("policies")[currentPolicyIndex]("posture_accel_max", 200.0);
   postureFeedforward_ = config_("policies")[currentPolicyIndex]("posture_feedforward", false);
+  runawayDisarmVel_   = config_("policies")[currentPolicyIndex]("runaway_disarm_vel", 0.0);
 
 
   // Velocity damper, off unless the policy declares velocity_damper_di.

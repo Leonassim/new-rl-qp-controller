@@ -1015,6 +1015,15 @@ policies:
     # cannot drift apart.
     posture_stiffness: 1600
     posture_feedforward: true
+
+    # This slot ships with the feedforward ON, so SELECTING IT AND ARMING is
+    # case C, the unstable corner -- not the neutral case. Toggle it off from
+    # the GUI BEFORE arming to get the no-feedforward comparison, or just use
+    # index 0, which is what that comparison reduces to.
+    #
+    # 4 rad/s: policy 0 walking peaks near 1.5 rad/s measured, and the runaway
+    # crosses 4 well before it reaches its 8 rad/s clamp.
+    runaway_disarm_vel: 4.0
     # refAccel stays off: second difference of an unfiltered target, held across
     # every substep, and training's PD has no acceleration term to match.
     posture_accel_max: 0
