@@ -305,6 +305,50 @@ policies:
     joystick_deadzone: &joystick_deadzone 0.05
     vel_ramp_rate: &vel_ramp_rate 0.5
 
+    # PostureTask velocity feedforward, 2026-08-24. refVel = qd*, the signal
+    # training's PD is handed. Without it applyPostureMode() writes refVel(0)
+    # and refAccel(0) every tick, so the task is a pure proportional regulator
+    # on a target that moves a long way per policy step.
+    posture_feedforward: true
+
+    # qd* exactly as run 2026-07-10_20-59-17 built it (params/env.yaml): clamp
+    # the finite difference per joint, then EMA at 0.8. Both were absent here
+    # and the fallbacks are alpha 0 (no filter) and 1e9 (no clamp) -- harmless
+    # while nothing read qdTarget_ under the QP, wrong the moment the
+    # feedforward above does.
+    vel_target_filter_alpha: 0.8
+    vel_target_limit_per_joint:
+      CHEST_Y:        6
+      CHEST_P:        6
+      HEAD_Y:         4
+      HEAD_P:         4
+      L_SHOULDER_P:   6
+      L_SHOULDER_R:   6
+      L_SHOULDER_Y:   6
+      L_ELBOW_P:      6
+      L_ELBOW_Y:      6
+      L_WRIST_R:      6
+      L_WRIST_Y:      6
+      R_SHOULDER_P:   6
+      R_SHOULDER_R:   6
+      R_SHOULDER_Y:   6
+      R_ELBOW_P:      6
+      R_ELBOW_Y:      6
+      R_WRIST_R:      6
+      R_WRIST_Y:      6
+      L_CROTCH_Y:     8
+      L_CROTCH_R:     8
+      L_CROTCH_P:     8
+      L_KNEE_P:       10
+      L_ANKLE_R:      10
+      L_ANKLE_P:      10
+      R_CROTCH_Y:     8
+      R_CROTCH_R:     8
+      R_CROTCH_P:     8
+      R_KNEE_P:       10
+      R_ANKLE_R:      10
+      R_ANKLE_P:      10
+
     action_scale:
       CHEST_Y:      0.002
       CHEST_P:      0.002

@@ -1,0 +1,6 @@
+Tue Aug 18 11:47:17 2026
+WARNING: Pre-allocated visual geom buffer is full. Increase maxgeom above 0. Time = 0.0000.
+
+Tue Aug 18 11:47:17 2026
+ERROR: mjv_cameraFrame: unknown camera type
+

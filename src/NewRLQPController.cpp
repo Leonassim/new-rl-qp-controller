@@ -376,15 +376,21 @@ void NewRLQPController::initializeRobot()
   // at runtime, so a config loaded with use_QP true would reach the bypass path
   // with the projection permanently destroyed -- i.e. exactly the raw, unclamped
   // behaviour this exists to prevent, on the one path where it is valid.
+  // The per-joint qd* clamp belongs to updateRawTorqueRatio(), which runs for
+  // every policy, not to the projection. Loading it only under the projection
+  // left qdTarget_ at 1e9 -- unclamped -- on every policy without a
+  // torque_feasibility_ratio, which is invisible until something reads it. The
+  // PostureTask feedforward does.
+  if(pol.has("vel_target_limit_per_joint"))
+  {
+    std::map<std::string, double> vtl_map = pol("vel_target_limit_per_joint");
+    for(int i = 0; i < nbActuatedJoints; ++i) { updateIfExists(velTargetLimitPerJoint_[i], vtl_map, jointNames[i]); }
+  }
+
   if(torqueFeasibilityRatio_ > 0.0)
   {
     std::map<std::string, double> eff_map = config_("policies")[currentPolicyIndex]("effort_limit");
-    std::map<std::string, double> vtl_map = config_("policies")[currentPolicyIndex]("vel_target_limit_per_joint");
-    for(int i = 0; i < nbActuatedJoints; ++i)
-    {
-      effortLimit_[i] = eff_map.at(jointNames[i]);
-      updateIfExists(velTargetLimitPerJoint_[i], vtl_map, jointNames[i]);
-    }
+    for(int i = 0; i < nbActuatedJoints; ++i) { effortLimit_[i] = eff_map.at(jointNames[i]); }
     mc_rtc::log::info("[NewRLQPController] Torque-feasibility projection ARMED (ratio {}, "
                       "vel_target_filter_alpha {}) -- applied only while QP control is "
                       "bypassed; currently useQP={}",
