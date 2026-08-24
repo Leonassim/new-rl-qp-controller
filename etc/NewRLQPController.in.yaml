@@ -375,6 +375,23 @@ policies:
     policy_step_size: *policy_step_size
     physics_step_size: *physics_step_size
     pd_gains_ratio: *pd_gains_ratio
+    # posture_stiffness explicit at 1600, per Leo's request, to feel the
+    # softer PostureTask against the "sometimes ignores the velocity command
+    # and stays planted" symptom he saw testing it7800_conservative.
+    #
+    # This is exploratory, not a train/deploy match: it7800's lineage
+    # (p0+rand+lift+steplen+freevel+... this weekend) was never trained with
+    # FiniteDifferencePdActuator's posture filter modeled -- that is Task B of
+    # docs/plans, still unimplemented -- so there is no "what the policy
+    # learned" value to restore here, unlike the 2026-08-17 run this block's
+    # older comments describe. Without this override the fallback is the
+    # control-rate formula 0.2/(policyDt*timeStep): 40000 in mc_mujoco at
+    # 1 kHz, 8000 on the real robot at 200 Hz. 1600 is markedly softer than
+    # both -- if the stuck-foot symptom goes away, that is evidence the QP's
+    # PostureTask was fighting the policy's own long-stride, low-cadence
+    # output, not evidence the policy is unstable.
+    posture_stiffness: 1600
+    #
     # NO posture_filter_stiffness and NO torque_feasibility_ratio: run
     # 2026-08-17_23-05-46 has neither (_POSTURE_TASK_STIFFNESS = None,
     # _TORQUE_FEASIBILITY_RATIO = None), back to policy 0's plant. Declaring
