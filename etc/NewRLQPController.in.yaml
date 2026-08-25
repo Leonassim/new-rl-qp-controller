@@ -1084,6 +1084,25 @@ policies:
     posture_stiffness: 8000
     runaway_disarm_vel: 4.0
 
+    # The velocity damper, and the qd* it reads. NOT optional here, and leaving
+    # it out is what made this policy fall forward on the first mc_mujoco test:
+    # index 0's block was copied wholesale, and policy 0 has no damper because
+    # policy 0 trained without one. This run did -- Curriculum/velocity_damper
+    # sat at 1.0 for its whole length, params/env.yaml records di 0.4, ds 0.01,
+    # vel_percent 0.9 -- so deployment was running the network against a plant
+    # missing the stage mjlab puts between qd* and the target. Undamped, the
+    # commanded target moves faster than anything the policy ever saw, and on a
+    # forward command the QP chases a target running out ahead of the robot.
+    #
+    # applyVelocityDamper() also clamps qd*, so the two parameters that define
+    # qd* have to match training too: EMA 0.8 and the per-joint limit. Their
+    # fallbacks are 0.0 (no filter) and 1e9 (no clamp).
+    velocity_damper_di: 0.4
+    velocity_damper_ds: 0.01
+    velocity_damper_vel_percent: 0.9
+    vel_target_filter_alpha: 0.8
+    vel_target_limit_per_joint: *vel_target_limit_per_joint
+
 use_async_inference: false
 log_timing: true
 timing_log_interval: 100
