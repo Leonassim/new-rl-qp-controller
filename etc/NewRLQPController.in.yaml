@@ -518,7 +518,7 @@ policies:
     # against. Declared here rather than read from the robot module: the zone is
     # a fraction of the range, so a different range is a different plant, and a
     # silent mismatch is exactly what this file exists to prevent.
-    joint_limits:
+    joint_limits: &joint_limits
       CHEST_Y:        [ -0.52360,   0.52360]
       CHEST_P:        [ -0.52360,   1.22173]
       HEAD_Y:         [ -3.14159,   3.14159]
@@ -552,7 +552,7 @@ policies:
 
     # velocity_limits: training sets these equal to velocity_target_limit; the
     # damper clamps qd* at vel_percent * this.
-    velocity_limits:
+    velocity_limits: &velocity_limits
       CHEST_Y:        6
       CHEST_P:        6
       HEAD_Y:         4
@@ -1102,6 +1102,12 @@ policies:
     velocity_damper_vel_percent: 0.9
     vel_target_filter_alpha: 0.8
     vel_target_limit_per_joint: *vel_target_limit_per_joint
+    # Required by the damper, and their absence is a hard throw, not a default:
+    # a joint left at lo == hi would be skipped silently, i.e. one joint on a
+    # different plant from the other 29. Missing them is why switching to this
+    # index failed outright instead of misbehaving.
+    joint_limits: *joint_limits
+    velocity_limits: *velocity_limits
 
 use_async_inference: false
 log_timing: true
