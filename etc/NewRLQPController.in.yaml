@@ -335,14 +335,19 @@ policies:
     joystick_deadzone: &joystick_deadzone 0.05
     vel_ramp_rate: &vel_ramp_rate 0.5
 
-    # 8000, not the 1600 the global key claims: 0.2/(policyDt*timeStep) with
-    # both at 0.005 is what this policy has ACTUALLY run under, in mc_mujoco
-    # and on the hardware, because a non-const postureStiffness() overload shad-
-    # owed the config-reading one and won every call. Removing that overload
-    # makes posture_stiffness live for the first time, and without this line
-    # index 0 would silently move to the global 1600 -- a plant change on the
-    # one block that must not change. Written out so the fix is a no-op here.
-    posture_stiffness: 8000
+    # No posture_stiffness here on purpose: the global 1600 applies.
+    #
+    # An earlier note pinned 8000 in every block, reasoning that the shadowed
+    # overload meant 8000 was "what actually ran". Half right. The yaml path was
+    # dead, but the GUI writes pt->stiffness() straight into the task and always
+    # worked -- and Leo's hardware sessions set it there. His measurement: 40000
+    # trembled badly on the robot, 1600 was clearly better. Pinning 8000 would
+    # have overridden the value that was actually validated on hardware.
+    #
+    # The margin argument agrees: sqrt(K)*dt is 1.0 at 40000 and 0.20 at 1600,
+    # for dt = 0.005. mc_mujoco prefers 8000 by 14% of tracking lag, but it does
+    # not model the robot's communication and sensing delays, which is exactly
+    # what the margin buys. The robot's verdict wins.
 
     # PostureTask velocity feedforward: OFF by default, and it stays off.
     #
@@ -472,7 +477,6 @@ policies:
     # including the ones logged as "1600", ran at 8000 because the config key
     # was shadowed. Pinned to what actually ran so making the key live changes
     # nothing; 1600 is now testable deliberately, from the GUI or from here.
-    posture_stiffness: 8000
 
     # Feed the PostureTask the velocity reference, from the finite difference
     # of q_rl -- what training's PD receives directly.
@@ -701,7 +705,7 @@ policies:
   - use_QP: true
     # Velocity-action policy (mjlab JointVelocityAction + IdealPdActuator):
     # q_rl = measured joint position + action * policy_step_size, and the
-    posture_stiffness: 8000  # as above: what this slot has always run at
+
     # commanded velocity is passed separately as qdTarget_. See
     # NewRLQPController::velocityAction_. torque_feasibility_ratio and
     # vel_target_filter_alpha below are position-action-only concepts and
@@ -1056,7 +1060,6 @@ policies:
     # including the ones logged as "1600", ran at 8000 because the config key
     # was shadowed. Pinned to what actually ran so making the key live changes
     # nothing; 1600 is now testable deliberately, from the GUI or from here.
-    posture_stiffness: 8000
     posture_feedforward: true
 
     # This slot ships with the feedforward ON, so SELECTING IT AND ARMING is
@@ -1094,7 +1097,6 @@ policies:
     kd: *kd
     q0: *q0
     ref_joint_order: *ref_joint_order
-    posture_stiffness: 8000
     runaway_disarm_vel: 4.0
 
     # The velocity damper, and the qd* it reads. NOT optional here, and leaving
@@ -1142,7 +1144,6 @@ policies:
     kd: *kd
     q0: *q0
     ref_joint_order: *ref_joint_order
-    posture_stiffness: 8000
     runaway_disarm_vel: 4.0
     velocity_damper_di: 0.4
     velocity_damper_ds: 0.01
