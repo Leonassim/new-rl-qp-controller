@@ -126,10 +126,35 @@ policy_path: [
   #   it13200 (tested)          0.0204          0.0173       0.178     0.026
   #   it13800 (this)            0.0290          0.0110       0.239     0.033
   #
-  # +42% real clearance and -36% of the tilt artefact -- the defect seen on the
-  # robot, where the foot measured high but caught its front edge. Paid for in
-  # clipping, 0.178 -> 0.239, which is the reservation on this entry.
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_it13800_soleclear.onnx",
+  # REMPLACE le 2026-08-27. Ancienne entree : rhps1_it13800_soleclear.onnx.
+  #
+  # index 4 : run 2026-08-27_09-31-27 model_2250 -- nouvelle lignee, config
+  # policy 0 + historique 5 sur les SEPT termes + biais capteurs (encodeur
+  # 0.005 rad, vitesse articulaire derivee du meme encodeur) + mirror loss +
+  # paires de proximite du QP. Sans randomisation large : sous +/-12% de masse
+  # et CoM deplace, apprendre depuis zero produisait un martelement a 0.13 s.
+  #
+  # 510 dims, PAS 126 : obs_format 5 dans le bloc de politique. Sans ce format
+  # le switch ne trouve aucune case et l'observation reste a zero.
+  #
+  # NE PAS UTILISER pour juger quoi que ce soit. Teste en mc_mujoco le
+  # 2026-08-27 : le robot marche en ARRIERE seulement et fait de petits pas en
+  # permanence, commande nulle comprise. La chaine de deploiement a ete
+  # verifiee piece par piece a cette occasion -- ordre des sept termes, sens de
+  # l'historique, ordre articulaire, echelles d'action, posture q0, table de
+  # miroir -- et tout correspond ; c'est la politique qui est en cause, pas le
+  # format. Son entrainement mesurait error_vel_xy 0.457 et une vitesse
+  # plafonnee a 0.09 m/s quelle que soit la commande.
+  #
+  # Sa lignee (historique 5 sur les sept termes, biais capteurs, mirror loss,
+  # paires QP, empiles d'un coup) a ete abandonnee le meme jour au profit d'un
+  # retour a la config policy 0 avec un seul ecart a la fois. Elle reste ici
+  # parce que le format 510 dims a coute du travail et qu'il est verifie.
+  #
+  # Reserve supplementaire : exporte a l'iteration 2250, ou la saturation de
+  # couple des jambes valait 0.27 contre un seuil de 0.25 et une policy 0
+  # mesuree a 0.013.
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_hist5_it2250.onnx",
   # index 5: run 2026-08-25_18-30-00 model_15600. Same family, one day further:
   # the stride ladder that climbs speed by lengthening the step rather than
   # quickening it, and the upper-body motion penalty gated to standing only.
@@ -633,6 +658,42 @@ policies:
       R_ANKLE_R:      45
       R_ANKLE_P:      65
 
+    # Plat a 8.0 sur les 30 articulations : mjlab applique un scalaire
+    # velocity_target_limit = 8.0 a toutes, independamment de l'amortisseur.
+    # La table par articulation ci-dessous (6 au torse, etc.) appartient a une
+    # autre lignee et ne correspond a rien de ce qui est entraine aujourd'hui.
+    vel_target_limit_flat8: &vel_target_limit_flat8
+      CHEST_Y:          8.0
+      CHEST_P:          8.0
+      HEAD_Y:           8.0
+      HEAD_P:           8.0
+      L_SHOULDER_P:     8.0
+      L_SHOULDER_R:     8.0
+      L_SHOULDER_Y:     8.0
+      L_ELBOW_P:        8.0
+      L_ELBOW_Y:        8.0
+      L_WRIST_R:        8.0
+      L_WRIST_Y:        8.0
+      R_SHOULDER_P:     8.0
+      R_SHOULDER_R:     8.0
+      R_SHOULDER_Y:     8.0
+      R_ELBOW_P:        8.0
+      R_ELBOW_Y:        8.0
+      R_WRIST_R:        8.0
+      R_WRIST_Y:        8.0
+      L_CROTCH_Y:       8.0
+      L_CROTCH_R:       8.0
+      L_CROTCH_P:       8.0
+      L_KNEE_P:         8.0
+      L_ANKLE_R:        8.0
+      L_ANKLE_P:        8.0
+      R_CROTCH_Y:       8.0
+      R_CROTCH_R:       8.0
+      R_CROTCH_P:       8.0
+      R_KNEE_P:         8.0
+      R_ANKLE_R:        8.0
+      R_ANKLE_P:        8.0
+
     vel_target_limit_per_joint: &vel_target_limit_per_joint
       CHEST_Y:        6
       CHEST_P:        6
@@ -1078,12 +1139,15 @@ policies:
   #
   # Same plant as index 0 -- hardware configuration, no feedforward, K 8000 --
   # so selecting it against index 0 compares the two networks and nothing else.
-  # obs_format 0: policy 0's 126-dim V3 layout, unchanged by this run (every
-  # rung it carries is reward-side).
+  # obs_format 5 : 510 dims, historique 5 sur les SEPT termes. Ce n'est plus la
+  # disposition V3 a 126 dims -- l'ONNX annonce obs [1, 510] et le format a ete
+  # ajoute a utils.cpp le 2026-08-27. Les reglages d'amortisseur ci-dessous sont
+  # inchanges et restent justes : la run les porte tels quels (di 0.4, ds 0.01,
+  # vel_percent 0.9, filtre EMA 0.8).
   #
   # runaway_disarm_vel armed: this network has never touched hardware.
   - use_QP: *use_QP
-    obs_format: 0
+    obs_format: 5
     policy_step_size: *policy_step_size
     physics_step_size: *physics_step_size
     pd_gains_ratio: *pd_gains_ratio
@@ -1112,11 +1176,22 @@ policies:
     # applyVelocityDamper() also clamps qd*, so the two parameters that define
     # qd* have to match training too: EMA 0.8 and the per-joint limit. Their
     # fallbacks are 0.0 (no filter) and 1e9 (no clamp).
-    velocity_damper_di: 0.4
+    # AMORTISSEUR INACTIF, et c'est ce que l'entrainement fait. Le curriculum
+    # velocity_damper monte de 0 a 1 entre les pas 360000 et 612000, soit les
+    # iterations 15000 a 25500 ; cette lignee tourne autour de 2500, donc
+    # Curriculum/velocity_damper vaut 0.0000 et l'actionneur calcule
+    # di = progress * 0.4 = 0. Deployer di 0.4 fait tourner la politique contre
+    # un etage de bridage qu'elle n'a jamais vu -- symetrique exact de l'erreur
+    # de 2026-08-13, ou l'amortisseur MANQUAIT au deploiement.
+    velocity_damper_di: 0.0
     velocity_damper_ds: 0.01
     velocity_damper_vel_percent: 0.9
+    # Ces deux-la restent actifs a l'entrainement quoi qu'il arrive :
+    # velocity_target_filter_alpha 0.8 et velocity_target_limit 8.0 rad/s, ce
+    # dernier applique hors de l'amortisseur (finite_difference_pd_actuator.py,
+    # le clamp precede la porte velocity_damper_progress).
     vel_target_filter_alpha: 0.8
-    vel_target_limit_per_joint: *vel_target_limit_per_joint
+    vel_target_limit_per_joint: *vel_target_limit_flat8
     # Required by the damper, and their absence is a hard throw, not a default:
     # a joint left at lo == hi would be skipped silently, i.e. one joint on a
     # different plant from the other 29. Missing them is why switching to this

@@ -234,6 +234,7 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
 //   246  corps seul                      index 1, 4
 //   266  corps + gait_phase[20]          index 2   (V4)
 //   566  corps + gait_phase + raw[300]   index 3   (V5)
+//   510  hist 5 sur les SEPT termes      obs_format 5
 //
 // Enonce ici une fois, lu la ou les blocs sont ecrits. Ajouter un index a l'un
 // de ces formats demande une etiquette de case ET une entree ici ; en oublier
@@ -330,6 +331,69 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       appendToObs(ctl.jointVel_[0]);
       appendToObs(ctl.jointAct_[0]);
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.velCmd_[i]);
+      break;
+    }
+    case 5: // RHPS1 velocity policies — 510 dims, historique 5 sur les SEPT termes
+            // mjlab-rhps1 run 2026-08-27_09-31-27 (etape 0b : config policy 0 +
+            // hist5 + biais capteurs + mirror loss + paires QP, sans la
+            // randomisation large).
+            //
+            // Meme corps que V3, meme profondeur 5, mais l'historique porte sur
+            // tous les termes au lieu de deux :
+            //   base_lin_vel[15] base_ang_vel[15] projected_gravity[15]
+            //   joint_pos[150]   joint_vel[150]   actions[150] command[15]
+            // 3*15 + 3*150 + 15 = 510.
+            //
+            // Ordre : mjlab renvoie CircularBuffer.buffer, documente "index 0
+            // is oldest and index -1 is newest", puis aplatit. Les tampons ici
+            // ont l'index 0 le plus RECENT, d'ou la boucle descendante -- la
+            // meme que V3 utilise deja pour ses deux termes historises.
+            //
+            // Les cinq creneaux sont amorces a l'init (NewRLQPController.cpp,
+            // histInitialized_), donc aucun VectorXd de taille nulle ne peut
+            // desaligner le vecteur.
+    {
+      auto & rr = ctl.realRobot(ctl.robots()[0].name());
+      const std::string & baseName = rr.mb().body(0).name();
+      const Eigen::Matrix3d R_w2b = rr.bodyPosW(baseName).rotation();
+
+      for(int i = ctl.HISTORY_SIZE - 1; i > 0; --i)
+      {
+        ctl.linVel_[i]    = ctl.linVel_[i-1];
+        ctl.angVel_[i]    = ctl.angVel_[i-1];
+        ctl.projGrav_[i]  = ctl.projGrav_[i-1];
+        ctl.jointPos_[i]  = ctl.jointPos_[i-1];
+        ctl.jointVel_[i]  = ctl.jointVel_[i-1];
+        ctl.jointAct_[i]  = ctl.jointAct_[i-1];
+        ctl.velCmd_[i]    = ctl.velCmd_[i-1];
+      }
+
+      ctl.linVel_[0]   = R_w2b * rr.bodyVelW(baseName).linear();
+      ctl.angVel_[0]   = R_w2b * rr.bodyVelW(baseName).angular();
+      ctl.projGrav_[0] = R_w2b * Eigen::Vector3d(0, 0, -1);
+      ctl.velCmd_[0]   = ctl.currentVelCmd_;
+      ctl.jointAct_[0] = ctl.currentAction;
+
+      const int actionDim = static_cast<int>(ctl.refJointOrderRLAction.size());
+      ctl.jointPos_[0] = Eigen::VectorXd::Zero(actionDim);
+      ctl.jointVel_[0] = Eigen::VectorXd::Zero(actionDim);
+      for(int j = 0; j < actionDim; ++j)
+      {
+        const int mcIdx = rr.jointIndexByName(ctl.refJointOrderRLAction[j]);
+        ctl.jointPos_[0](j) = rr.mbc().q[mcIdx][0] - ctl.q_zero[ctl.actionToDofMap[j]];
+        ctl.jointVel_[0](j) = rr.mbc().alpha[mcIdx][0];
+      }
+
+      auto write3b = [&](const Eigen::Vector3d & v)
+      { obs.segment(offset, 3) = v; offset += 3; };
+
+      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3b(ctl.linVel_[i]);
+      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3b(ctl.angVel_[i]);
+      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3b(ctl.projGrav_[i]);
+      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointPos_[i]);
+      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointVel_[i]);
+      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointAct_[i]);
+      for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3b(ctl.velCmd_[i]);
       break;
     }
     // Le bloc 246 dims ci-dessous : l'index 1 l'a quitte le 2026-08-21.
