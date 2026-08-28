@@ -128,33 +128,36 @@ policy_path: [
   #
   # REMPLACE le 2026-08-27. Ancienne entree : rhps1_it13800_soleclear.onnx.
   #
-  # index 4 : run 2026-08-28_03-09-45 model_3899 -- lignee Base0 de la nuit du
-  # 27-28 aout. Config policy 0 + historique 5 sur les sept termes + mirror loss
-  # + masse/inertie et CoM des links a +/-3% + paires de self-collision aux
-  # distances exactes du QP, puis deux paliers de lever de pied : `swt` (cible
-  # de foot_swing_height 0.15 -> 0.05 m) et `fclr` (retrait de foot_clearance,
-  # qui facturait |z - 0.15| x vitesse horizontale du pied, soit une taxe sur
-  # le fait d'avancer le pied et non une mesure de clearance).
+  # index 4 : run 2026-08-28_17-53-20 model_5099 -- lignee Base0 + swt + fclr,
+  # plus com_over_stance, le terme qui paie le transfert de poids lateral.
   #
-  # 510 dims, obs_format 5. Le bloc de politique porte ses PROPRES echelles
-  # d'action, pas l'ancre partagee -- voir le commentaire la-bas.
+  # Cible calibree sur la trajectoire du BaselineWalkingController que Leo a
+  # designee (log 2026-08-27-17-47-32, genou a 82 N.m ; les deux runs suivants
+  # plafonnent a 45.0 exactement, ce sont ceux qu'il a ecretes) :
+  #   appui simple 0.765 s, clearance 6.3 cm, CoM lateral 11.4 cm,
+  #   offset CoM-pied 7.0 a 7.7 cm, hauteur CoM 0.96 m.
+  # Un transfert de 11 cm a 0.96 m est un pendule inverse de demi-periode
+  # 0.98 s ; la lignee RL tournait a 0.204 s, cinq fois plus vite, donc le
+  # transfert ne pouvait pas avoir lieu et la jambe de vol restait chargee.
+  #
+  # 510 dims, obs_format 5. Echelles d'action PROPRES, pas l'ancre partagee.
   #
   # Balayage deterministe, 1024 environnements, 11 commandes :
-  #                        policy 0    Base0   celle-ci   seuil
-  #   couples jambes         0.0101   0.0135     0.0252   0.250
-  #   couples haut du corps  0.0027   0.0000     0.0000   0.250
-  #   chutes                 0.0000   0.0000     0.0000   0.010
-  #   pieds a plat           0.0035   0.0048     0.0055   0.050
-  #   lever de pied          0.0051   0.0045     0.0057   0.030
-  #   vitesse d'impact       0.1919   0.2024     0.2097   0.160
+  #                        policy 0    ph3    celle-ci   seuil
+  #   couples jambes         0.0101  0.0252    0.0115    0.250
+  #   couples haut du corps  0.0027  0.0000    0.0000    0.250
+  #   chutes                 0.0000  0.0000    0.0000    0.010
+  #   lever de pied          0.0051  0.0057    0.0059    0.030
+  #   vitesse d'impact       0.1919  0.2097    0.1900    0.160
+  #   pieds a plat           0.0035  0.0055    0.0160    0.050
   #
-  # Meilleur lever de pied des trois, +12% sur la policy 0, et Leo confirme la
-  # difference a l'oeil sur les videos. Couples tres largement dans le budget.
+  # Meilleur impact des quatre politiques mesurees, sous la policy 0 pour la
+  # premiere fois, et couple divise par deux face a ph3. Seul recul : la
+  # platitude, 3x pire mais a un tiers du seuil.
   #
-  # RESERVE : c'est la PIRE des trois a l'impact, 9% au-dessus de la policy 0,
-  # et aucune ne passe le seuil de 0.16. C'est le prix du lever de pied.
-  # Jamais testee sur materiel.
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_swtfclr_it3899.onnx",
+  # RESERVE : l'offset CoM-pied n'est descendu qu'a 0.093 pour une cible de
+  # 0.07, donc le mecanisme n'est pas alle au bout. Jamais testee sur materiel.
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_comshift_it5099.onnx",
   # index 5: run 2026-08-25_18-30-00 model_15600. Same family, one day further:
   # the stride ladder that climbs speed by lengthening the step rather than
   # quickening it, and the upper-body motion penalty gated to standing only.
