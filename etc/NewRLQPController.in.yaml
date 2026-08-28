@@ -128,33 +128,33 @@ policy_path: [
   #
   # REMPLACE le 2026-08-27. Ancienne entree : rhps1_it13800_soleclear.onnx.
   #
-  # index 4 : run 2026-08-27_09-31-27 model_2250 -- nouvelle lignee, config
-  # policy 0 + historique 5 sur les SEPT termes + biais capteurs (encodeur
-  # 0.005 rad, vitesse articulaire derivee du meme encodeur) + mirror loss +
-  # paires de proximite du QP. Sans randomisation large : sous +/-12% de masse
-  # et CoM deplace, apprendre depuis zero produisait un martelement a 0.13 s.
+  # index 4 : run 2026-08-28_03-09-45 model_3899 -- lignee Base0 de la nuit du
+  # 27-28 aout. Config policy 0 + historique 5 sur les sept termes + mirror loss
+  # + masse/inertie et CoM des links a +/-3% + paires de self-collision aux
+  # distances exactes du QP, puis deux paliers de lever de pied : `swt` (cible
+  # de foot_swing_height 0.15 -> 0.05 m) et `fclr` (retrait de foot_clearance,
+  # qui facturait |z - 0.15| x vitesse horizontale du pied, soit une taxe sur
+  # le fait d'avancer le pied et non une mesure de clearance).
   #
-  # 510 dims, PAS 126 : obs_format 5 dans le bloc de politique. Sans ce format
-  # le switch ne trouve aucune case et l'observation reste a zero.
+  # 510 dims, obs_format 5. Le bloc de politique porte ses PROPRES echelles
+  # d'action, pas l'ancre partagee -- voir le commentaire la-bas.
   #
-  # NE PAS UTILISER pour juger quoi que ce soit. Teste en mc_mujoco le
-  # 2026-08-27 : le robot marche en ARRIERE seulement et fait de petits pas en
-  # permanence, commande nulle comprise. La chaine de deploiement a ete
-  # verifiee piece par piece a cette occasion -- ordre des sept termes, sens de
-  # l'historique, ordre articulaire, echelles d'action, posture q0, table de
-  # miroir -- et tout correspond ; c'est la politique qui est en cause, pas le
-  # format. Son entrainement mesurait error_vel_xy 0.457 et une vitesse
-  # plafonnee a 0.09 m/s quelle que soit la commande.
+  # Balayage deterministe, 1024 environnements, 11 commandes :
+  #                        policy 0    Base0   celle-ci   seuil
+  #   couples jambes         0.0101   0.0135     0.0252   0.250
+  #   couples haut du corps  0.0027   0.0000     0.0000   0.250
+  #   chutes                 0.0000   0.0000     0.0000   0.010
+  #   pieds a plat           0.0035   0.0048     0.0055   0.050
+  #   lever de pied          0.0051   0.0045     0.0057   0.030
+  #   vitesse d'impact       0.1919   0.2024     0.2097   0.160
   #
-  # Sa lignee (historique 5 sur les sept termes, biais capteurs, mirror loss,
-  # paires QP, empiles d'un coup) a ete abandonnee le meme jour au profit d'un
-  # retour a la config policy 0 avec un seul ecart a la fois. Elle reste ici
-  # parce que le format 510 dims a coute du travail et qu'il est verifie.
+  # Meilleur lever de pied des trois, +12% sur la policy 0, et Leo confirme la
+  # difference a l'oeil sur les videos. Couples tres largement dans le budget.
   #
-  # Reserve supplementaire : exporte a l'iteration 2250, ou la saturation de
-  # couple des jambes valait 0.27 contre un seuil de 0.25 et une policy 0
-  # mesuree a 0.013.
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_hist5_it2250.onnx",
+  # RESERVE : c'est la PIRE des trois a l'impact, 9% au-dessus de la policy 0,
+  # et aucune ne passe le seuil de 0.16. C'est le prix du lever de pied.
+  # Jamais testee sur materiel.
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_swtfclr_it3899.onnx",
   # index 5: run 2026-08-25_18-30-00 model_15600. Same family, one day further:
   # the stride ladder that climbs speed by lengthening the step rather than
   # quickening it, and the upper-body motion penalty gated to standing only.
@@ -1156,7 +1156,47 @@ policies:
     max_yaw: *max_yaw
     joystick_deadzone: *joystick_deadzone
     vel_ramp_rate: *vel_ramp_rate
-    action_scale: *action_scale
+    # ECHELLES PROPRES, et non l'ancre *action_scale partagee. Celle-ci porte
+    # des valeurs recalculees cote deploiement a partir de limites de couple :
+    # CROTCH_Y 0.002625 contre 0.003, KNEE_P 0.0075 contre 0.007, ANKLE_P
+    # 0.00975 contre 0.01, six articulations sur douze. Or AUCUN onnx du
+    # dossier policy/ ne porte ces valeurs, pas meme celui de la policy 0 --
+    # dont un commentaire de l'ancre invoque pourtant l'effort_limit.
+    #
+    # L'ancre est laissee intacte : la policy 0 marche sur le robot avec, et
+    # la corriger changerait l'index 0 sans mesure pour le justifier. Cet
+    # index prend les echelles que son propre reseau a apprises.
+    action_scale:
+      CHEST_Y:      0.002
+      CHEST_P:      0.002
+      HEAD_Y:       0.002
+      HEAD_P:       0.002
+      L_SHOULDER_P: 0.002
+      L_SHOULDER_R: 0.002
+      L_SHOULDER_Y: 0.002
+      L_ELBOW_P:    0.002
+      L_ELBOW_Y:    0.002
+      L_WRIST_R:    0.002
+      L_WRIST_Y:    0.002
+      R_SHOULDER_P: 0.002
+      R_SHOULDER_R: 0.002
+      R_SHOULDER_Y: 0.002
+      R_ELBOW_P:    0.002
+      R_ELBOW_Y:    0.002
+      R_WRIST_R:    0.002
+      R_WRIST_Y:    0.002
+      L_CROTCH_Y:   0.003
+      L_CROTCH_R:   0.007
+      L_CROTCH_P:   0.01
+      L_KNEE_P:     0.007
+      L_ANKLE_R:    0.007
+      L_ANKLE_P:    0.01
+      R_CROTCH_Y:   0.003
+      R_CROTCH_R:   0.007
+      R_CROTCH_P:   0.01
+      R_KNEE_P:     0.007
+      R_ANKLE_R:    0.007
+      R_ANKLE_P:    0.01
     kp: *kp
     kd: *kd
     q0: *q0
