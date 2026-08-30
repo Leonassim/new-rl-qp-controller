@@ -178,8 +178,8 @@ policy_path: [
   # branch `mujoco` of Yoshida-Lab-TUS/mc_rhp7, whose _ref_joint_order drops the
   # 14 closed-loop linear joints, giving 38 dof = 32 + floating base).
   #
-  # obs_format: 5 on this entry's block below routes it through utils.cpp's
-  # `case 5:` (same seven-term / history-40 velocity-action layout as index 2,
+  # obs_format: 6 on this entry's block below routes it through utils.cpp's
+  # `case 6:` (same seven-term / history-40 velocity-action layout as index 2,
   # already parametrized on refJointOrderRLAction.size() so 32 joints costs
   # nothing there -- 40*(3+3+3+32+32+32+3) = 4320, matching this ONNX's input
   # shape) instead of the case matching its OWN index (6, which does not
@@ -205,7 +205,7 @@ policy_path: [
 # GUI, so the default is what the controller falls back to, not what anyone
 # intends to run. It had been left at 2 by a merge.
 #
-# 6, 7, 8 = RHP7 Kaleido (obs_format: 5 on their blocks, see the comment on
+# 6, 7, 8 = RHP7 Kaleido (obs_format: 6 on their blocks, see the comment on
 # policy_path above -- NOT the same number as their own index). Doit rester
 # coherent avec MainRobot dans mc_rtc.yaml : 0-5 exigent RHPS1_MuJoCo, 6-8
 # exigent RHP7. Un index incoherent avec le robot charge leve std::out_of_range
@@ -1330,14 +1330,16 @@ policies:
   # ==========================================================================
   # index 6 : RHP7 Kaleido -- velocity-action, meme schema que l'index 2
   # (JointVelocityAction mjlab + integrale libre q_rl += action*dt, utils.cpp
-  # `case 5:`, qui partage le bloc de `case 2:`), mais SUR UN AUTRE ROBOT.
-  # Requiert MainRobot: RHP7. Route explicitement vers `case 5:` via
-  # obs_format: 5 ci-dessous, PAS via son propre numero d'index (6, qui
+  # `case 6:`, qui partage le bloc de `case 2:`), mais SUR UN AUTRE ROBOT.
+  # Requiert MainRobot: RHP7. Route explicitement vers `case 6:` via
+  # obs_format: 6 ci-dessous, PAS via son propre numero d'index (6, qui
   # n'existe pas dans le switch C++ et leverait error_and_throw) -- meme
-  # mecanisme que obs_format: 0 sur les index 3/4 plus haut. Auparavant a
-  # l'index 5 directement (numero d'index = case du switch, sans cle
-  # obs_format) ; deplace ici quand le collegue a repris les index 3/4/5 pour
-  # trois nouvelles policies RHPS1.
+  # mecanisme que obs_format: 0 sur les index 3/4 plus haut. Historique du
+  # numero : index 5 directement (numero d'index = case du switch, sans cle
+  # obs_format) -> deplace en index 6 avec obs_format: 5 (2026-08-27, quand le
+  # collegue a repris les index 3/4/5 pour trois nouvelles policies RHPS1) ->
+  # obs_format: 6 (2026-08-31, quand le collegue a reclame case 5 pour son
+  # propre nouveau format RHPS1 510 dims/hist5).
   #
   # 32 joints actionnes contre 30 pour RHPS1 :
   #   - L_WRIST_P / R_WRIST_P la ou RHPS1 a L_WRIST_R / R_WRIST_R
@@ -1366,7 +1368,7 @@ policies:
   # de la formule 0.5*effort/stiffness du depot mjlab local -- elle ne
   # reproduit pas ces valeurs, cf. commentaire sur le bloc action_scale).
   - use_QP: true
-    obs_format: 5
+    obs_format: 6
     velocity_action: true
     use_torque_task: false
     qp_accel_task: false
@@ -1693,7 +1695,7 @@ policies:
   # depuis son propre q0 d'entrainement change le comportement au moment de
   # l'armement.
   - use_QP: true
-    obs_format: 5
+    obs_format: 6
     velocity_action: true
     use_torque_task: false
     qp_accel_task: false
@@ -1756,7 +1758,7 @@ policies:
   # (module _stance en q0), fichier .onnx different -- voir le commentaire de
   # l'index 7 pour l'explication du choix de q0.
   - use_QP: true
-    obs_format: 5
+    obs_format: 6
     velocity_action: true
     use_torque_task: false
     qp_accel_task: false

@@ -533,17 +533,20 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
             // buffers (V3_DEEP_HISTORY_SIZE), not the shared HISTORY_SIZE
             // ones case 0 uses, so this doesn't disturb any other index:
             // 40 * (3+3+3+30+30+30+3) = 40 * 102 = 4080.
-    case 5: // RHP7 Kaleido -- same layout as case 2 (velocity-action, same
+    case 6: // RHP7 Kaleido -- same layout as case 2 (velocity-action, same
             // seven terms at history depth 40), on a different robot with 32
             // actuated joints instead of 30: 40*(3+3+3+32+32+32+3) = 4320.
             // Every dimension below already comes from
             // refJointOrderRLAction.size(), not a literal 30, so nothing in
             // this block changes for the extra 2 joints. Shares case 2's
             // block rather than a copy: same code path, only the config
-            // (policies[5] in the yaml) and the loaded robot differ. Index 3
-            // and 4 were NOT free -- they are the RHPS1 V5/gait-phase case
-            // above (case 1/3/4 shared body) -- picking either would have
-            // silently written that layout instead of this one.
+            // (policies[6/7/8] in the yaml, obs_format: 6) and the loaded
+            // robot differ. Was case 5 until the colleague's 2026-08-31
+            // merge claimed case 5 for a genuinely new RHPS1 510-dim/hist5
+            // format above -- moved here (6) instead, still free. Index 1,
+            // 3 and 4 were NOT free either -- they are the RHPS1 V5/gait-phase
+            // case above (case 1/3/4 shared body) -- picking any of them
+            // would have silently written that layout instead of this one.
     {
       auto & rr = ctl.realRobot(ctl.robots()[0].name());
       const std::string & baseName = rr.mb().body(0).name();
