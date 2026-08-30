@@ -74,7 +74,8 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
       return; // go-to-init: reach q_zero before the first inference
     }
     syncTime_ += ctl.timeStep;
-    if(syncTime_ >= ctl.policyStepSize)
+    const bool newInference = syncTime_ >= ctl.policyStepSize;
+    if(newInference)
     {
       ctl.currentObservation = getCurrentObservation(ctl);
       ctl.currentAction = ctl.rlPolicy->predict(ctl.currentObservation);
@@ -85,6 +86,8 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
           int i = ctl.actionToDofMap[j];
           ctl.currentActionScaled(i) = ctl.actionScale(i) * ctl.currentAction(j);
       }
+      syncTime_ -= ctl.policyStepSize;
+    }
 
       if(ctl.velocityAction_)
       {
@@ -106,12 +109,24 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
         // zero steady-state velocity error, so qdot = v falls out on its own
         // -- no lead term, no refVel, nothing to calibrate.
         //
+        // Integrated at ctl.timeStep (the QP's own tick, 5ms here), not
+        // ctl.policyStepSize (the policy's decision rate, 10ms) -- inference
+        // above still only refreshes currentActionScaled once per
+        // policyStepSize, but the held value is now integrated in
+        // policyStepSize/timeStep sub-steps instead of one single jump. Same
+        // net displacement per policy step in the unclamped regime (two 5ms
+        // steps sum to the same one 10ms step would have given), but the QP
+        // gets a target that moves at its OWN resolution rather than a
+        // staircase held flat for a tick then jumped, and the clamps below
+        // re-check against the freshly measured position at each sub-step
+        // instead of once after the full jump -- a checkpoint every QP tick.
+        //
         // The two clamps below are not optional: they are what makes the
         // free-running integral usable at all.
         auto & rr = ctl.realRobot(ctl.robots()[0].name());
         for (int j = 0; j < ctl.currentAction.size(); ++j) {
             int i = ctl.actionToDofMap[j];
-            ctl.q_rl(i) += ctl.currentActionScaled(i) * ctl.policyStepSize;
+            ctl.q_rl(i) += ctl.currentActionScaled(i) * ctl.timeStep;
 
             const int mcIdx = static_cast<int>(rr.jointIndexByName(ctl.jointNames[i]));
             const double q = rr.mbc().q[mcIdx][0];
@@ -170,7 +185,7 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
           ctl.qdTarget_(i) = std::max(-lim, std::min(lim, ctl.currentActionScaled(i)));
         }
       }
-      else
+      else if(newInference)
       {
         // position_action (policies 0-3): the target is rebuilt from q_zero
         // every step, not integrated. Kept in this branch rather than in the
@@ -219,8 +234,6 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
             }
       }
       }
-      syncTime_ -= ctl.policyStepSize;
-    }
   }
   catch(const std::exception & e)
   {
@@ -456,6 +469,17 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
             // buffers (V3_DEEP_HISTORY_SIZE), not the shared HISTORY_SIZE
             // ones case 0 uses, so this doesn't disturb any other index:
             // 40 * (3+3+3+30+30+30+3) = 40 * 102 = 4080.
+    case 5: // RHP7 Kaleido -- same layout as case 2 (velocity-action, same
+            // seven terms at history depth 40), on a different robot with 32
+            // actuated joints instead of 30: 40*(3+3+3+32+32+32+3) = 4320.
+            // Every dimension below already comes from
+            // refJointOrderRLAction.size(), not a literal 30, so nothing in
+            // this block changes for the extra 2 joints. Shares case 2's
+            // block rather than a copy: same code path, only the config
+            // (policies[5] in the yaml) and the loaded robot differ. Index 3
+            // and 4 were NOT free -- they are the RHPS1 V5/gait-phase case
+            // above (case 1/3/4 shared body) -- picking either would have
+            // silently written that layout instead of this one.
     {
       auto & rr = ctl.realRobot(ctl.robots()[0].name());
       const std::string & baseName = rr.mb().body(0).name();

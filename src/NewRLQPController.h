@@ -226,6 +226,25 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    *  evaluees dans le meme cycle. Size: nbActuatedJoints. */
   Eigen::VectorXd jointCurrentA_;
 
+  /** @brief True quand le controleur tourne sous mc_mujoco plutot que sur le
+   *  robot reel.
+   *
+   *  jointTorqueScale_ (voir plus haut) convertit le courant que publie
+   *  RobotHardware sur le VRAI robot en couple. mc_mujoco publie deja un
+   *  couple physique sur robot().jointTorques() -- lui reappliquer
+   *  jointTorqueScale_ double-convertit et gonfle le log d'un facteur egal a
+   *  ce scale (observe : L_KNEE_P sature a 45 N.m via le forcerange MuJoCo
+   *  mais torque_L_KNEE_P affichait -954.45 = -45 * 21.21).
+   *
+   *  Detecte via le datastore : mc_mujoco (MjSimImpl::makeDatastoreCalls,
+   *  mj_sim.cpp) enregistre un call "<robot>::SetPosW" pour chaque robot
+   *  qu'il simule ; RobotHardware/CB sur le vrai robot n'a pas d'equivalent.
+   *  Non mis en cache -- addLog() tourne dans le constructeur, avant que
+   *  mc_mujoco n'ait forcement deja enregistre ce call, donc verifie a
+   *  chaque appel des lambdas de log (executees bien plus tard, une fois la
+   *  sim demarree) plutot qu'une fois a la construction. */
+  bool isSimulated() const;
+
   // =========================================================================
   // Self-collision distance monitoring
   // =========================================================================
@@ -278,7 +297,7 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   // rawTorque_ has its own RAW_TORQUE_HISTORY: one array size is shared by
   // every case's declarations, so bumping it for one policy silently breaks
   // the observation size of all the others.
-  static constexpr int V3_DEEP_HISTORY_SIZE = 40;
+  static constexpr int V3_DEEP_HISTORY_SIZE = 10;
   bool histInitializedV3Deep_ = false;
   std::array<Eigen::Vector3d, V3_DEEP_HISTORY_SIZE> linVelDeep_;
   std::array<Eigen::Vector3d, V3_DEEP_HISTORY_SIZE> angVelDeep_;
@@ -460,6 +479,12 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   // the mc_tasks assert, which is an mc_rtc inconsistency worth reporting.
   bool posturePassthrough_ = false;
   double postureAccelMax_ = 200.0;
+  // Despite the name, this now guards THREE writers of refVel/refAccel --
+  // setPostureRefAccel (posturePassthrough_), setPostureFeedforward
+  // (postureFeedforward_), and setPostureRefVel (the plain default path,
+  // refVel only) -- so that whichever one ran, the disarm branch in run()
+  // and the mode switch in applyPostureMode() know there is something to
+  // zero back out.
   bool postureRefAccelWritten_ = false;
 
   // Feedforward on the 2nd-order task. Gains alone are pure feedback, so the
@@ -477,8 +502,54 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   bool ffInit_ = false;
   Eigen::VectorXd ffPrevQ_, ffVel_, ffPrevVel_, ffAcc_;
 
+  // Experimental ablation: hide the QP's own computed velocity from
+  // mc_mujoco, sending position only (alpha_ref = 0 in MjRobot::sendControl's
+  // PD). NOT a straight zero-out of robot().mbc().alpha -- the solver's own
+  // OpenLoop integration uses that same storage as its state from one tick to
+  // the next, so restoreQPVelocity()/zeroAlphaOut() shuttle the true value
+  // through alphaOutShadow_ across ticks instead. See run(). Off by default,
+  // config key qp_zero_vel_out, simulation-only for now.
+  bool qpZeroVelOut_ = false;
+  Eigen::VectorXd alphaOutShadow_;
+
+  /** @brief Put back the velocity zeroAlphaOut() hid from mc_mujoco last
+   *  tick, before the solver integrates from it again. Must run before
+   *  mc_control::fsm::Controller::run(). */
+  void restoreQPVelocity();
+
+  /** @brief Stash this tick's true QP-computed velocity into
+   *  alphaOutShadow_ and zero robot().mbc().alpha so mc_mujoco's PD sees no
+   *  velocity feedforward. Must run after
+   *  mc_control::fsm::Controller::run(). */
+  void zeroAlphaOut();
+
+  // -1 = auto (whatever stiffness() derives as 2*sqrt(K)); >= 0 = explicit
+  // override, config key posture_damping. Kept as a member, not applied once
+  // and forgotten, because stiffness() resets damping as a side effect every
+  // time it runs -- see applyPostureDampingOverride().
+  double postureDampingOverride_ = -1.0;
+
+  /** @brief Reapply postureDampingOverride_ after any pt->stiffness(...)
+   *  call, which resets damping to 2*sqrt(K) as a side effect and would
+   *  otherwise silently drop the override. No-op if postureDampingOverride_
+   *  is the -1 sentinel (auto). */
+  void applyPostureDampingOverride(mc_tasks::PostureTaskPtr & pt);
+
   /** @brief Dofs the posture function spans: nrDof minus the floating base. */
   int postureDofOffset() const;
+
+  /** @brief Write qdTarget_ as refVel, every tick, unconditionally (the plain
+   *  default path -- no posture_passthrough/posture_feedforward involved).
+   *  qdTarget_ is already the exact commanded velocity for velocity_action
+   *  policies (utils.cpp run_rl_state, no finite difference) and the
+   *  EMA-filtered finite difference of the target for position_action ones
+   *  (NewRLQPController::updateRawTorqueRatio). Harmless under
+   *  posturePassthrough_ (damping is zeroed there, so the Kv*(refVel-qdot)
+   *  term it feeds is inert) and overwritten by setPostureFeedforward() when
+   *  postureFeedforward_ is on (that path owns refVel with its own, richer
+   *  qd-star / qdd-star pair). Sets postureRefAccelWritten_ so the existing disarm path
+   *  zeroes it back out -- see run(). */
+  void setPostureRefVel(mc_tasks::PostureTaskPtr & pt);
 
   /** @brief refAccel = 2 (q* - q_out - dq_out T) / T^2, clamped, T floored at
    *  3 ticks -- the receding-horizon deadbeat diverges at T == dt. */
@@ -611,11 +682,6 @@ private:
 
   /** @brief Abort if no floating-base observer made it into the pipeline. */
   void checkFloatingBaseObserver();
-
-
-
-  /** @brief PostureTask stiffness, 0.2/(policy_step_size*timeStep). */
-
 
   /** @brief Load robot parameters (gains, action scale, q0) from config. */
   void initializeRobot();

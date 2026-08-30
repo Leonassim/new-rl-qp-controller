@@ -76,8 +76,49 @@ NewRLQPController::NewRLQPController(mc_rbdyn::RobotModulePtr rm, double dt, con
   mc_rtc::log::success("NewRLQPController init done");
 }
 
+void NewRLQPController::restoreQPVelocity()
+{
+  // Undo the previous tick's zeroAlphaOut(). The solver's own OpenLoop
+  // integration (TVMQPSolver::runOpenLoop -> updateRobot -> rbd::integration,
+  // RBDyn/NumericalIntegration.cpp:358-370) reads robot().mbc().alpha as ITS
+  // OWN integration state, not a separate copy: jointIntegration() advances q
+  // using the alpha found there, then alpha += alphaD*step updates it in
+  // place, both before the next solve even starts. Leaving it zeroed after
+  // zeroAlphaOut() would make the QP forget its own commanded velocity every
+  // tick -- not just hide it from mc_mujoco -- so this MUST run before
+  // mc_control::fsm::Controller::run(), never after.
+  for(int i = 0; i < nbActuatedJoints; ++i)
+  {
+    const int jIdx = robot().jointIndexByName(jointNames[i]);
+    if(!robot().mbc().alpha[jIdx].empty()) { robot().mbc().alpha[jIdx][0] = alphaOutShadow_(i); }
+  }
+}
+
+void NewRLQPController::zeroAlphaOut()
+{
+  // Stash the QP's true just-solved velocity (restoreQPVelocity() puts it
+  // back next tick, before the solve), then zero what actually reaches
+  // mc_mujoco: MjRobot::updateControl() (mc_mujoco/src/mj_sim.cpp:778) reads
+  // controller->robots().robot(name) DIRECTLY, not outputRobots() -- unlike
+  // grippers, there is no separate output copy to zero on for this, so this
+  // has to touch the same robot() the solver itself uses. alpha_ref then
+  // reaches MjRobot::sendControl()'s PD (mj_sim.cpp:30-36) as zero, i.e. pure
+  // position tracking with no velocity feedforward from the QP.
+  for(int i = 0; i < nbActuatedJoints; ++i)
+  {
+    const int jIdx = robot().jointIndexByName(jointNames[i]);
+    if(robot().mbc().alpha[jIdx].empty()) { continue; }
+    alphaOutShadow_(i) = robot().mbc().alpha[jIdx][0];
+    robot().mbc().alpha[jIdx][0] = 0.0;
+  }
+}
+
 bool NewRLQPController::run()
 {
+  // Must run before anything that could trigger a solve this tick -- see
+  // restoreQPVelocity()'s own comment for why the ordering matters.
+  if(useQP_ && qpZeroVelOut_) { restoreQPVelocity(); }
+
   updateVelocityCommand();
   if(printLimits_) computeLimits();
   if(logImpactVel_) updateImpactVelocity();
@@ -112,6 +153,17 @@ bool NewRLQPController::run()
     for(int i = 0; i < nbActuatedJoints; ++i)
       q_target[jointNames[i]] = {q_rl(i)};
     pt->target(q_target);
+    // Give the QP the velocity target alongside the position target, always
+    // -- not just under posture_feedforward. qdTarget_ already holds it
+    // (exactly, for velocity_action; EMA-filtered, for position_action), and
+    // the plain path used to leave refVel untouched, relying only on
+    // "critically damped tracks a ramp with zero steady-state velocity
+    // error" (utils.cpp run_rl_state) to get qdot right -- true in steady
+    // state, but at the cost of the position lag documented on
+    // postureFeedforward_ above. Setting refVel here removes that lag without
+    // the finite-difference noise postureFeedforward_ risks: qdTarget_ is the
+    // network's own action for velocity_action, not a derivative of q_rl.
+    setPostureRefVel(pt);
     if(posturePassthrough_) { setPostureRefAccel(pt); }
     else if(postureFeedforward_)
     {
@@ -138,6 +190,11 @@ bool NewRLQPController::run()
   // Same gate on the bypass path: disarmed means no policy output reaches the
   // robot, whichever mode is configured.
   if(!useQP_ && policyArmed_) byPassQPControl();
+
+  // After the solve: robot().mbc().alpha now holds this tick's true
+  // QP-computed velocity. Stash it and zero what mc_mujoco reads -- see
+  // zeroAlphaOut()'s own comment.
+  if(useQP_ && qpZeroVelOut_) { zeroAlphaOut(); }
 
   return ret;
 }
@@ -344,6 +401,11 @@ void NewRLQPController::initializeRobot()
   postureFeedforward_ = config_("policies")[currentPolicyIndex]("posture_feedforward", false);
   runawayDisarmVel_   = config_("policies")[currentPolicyIndex]("runaway_disarm_vel", 0.0);
 
+  // Experimental: see restoreQPVelocity()/zeroAlphaOut() and run(). Off by
+  // default -- untested on hardware, simulation-only ablation for now.
+  qpZeroVelOut_  = config_("policies")[currentPolicyIndex]("qp_zero_vel_out", false);
+  alphaOutShadow_ = Eigen::VectorXd::Zero(nbActuatedJoints);
+
 
   // Velocity damper, off unless the policy declares velocity_damper_di.
   const auto & pol = config_("policies")[currentPolicyIndex];
@@ -452,10 +514,34 @@ void NewRLQPController::initializeRobot()
   // so posture_stiffness was dead everywhere it was written: the global key in
   // mc_rtc_superbuild.yaml and its mujoco overlay, the per-policy overrides,
   // and the GUI input. Every measurement taken "at 1600" was taken at 8000.
+
+  // Sentinel -1: auto, i.e. whatever stiffness() just set as a side effect
+  // (2*sqrt(K), TrajectoryTaskGeneric.cpp:227 -- critically damped). >= 0
+  // overrides it. Read here, applied below and everywhere else stiffness()
+  // is called (applyPostureMode(), the GUI slider) -- see
+  // applyPostureDampingOverride()'s own comment for why it has to be
+  // reapplied at every one of those, not just here.
+  postureDampingOverride_ = config_("policies")[currentPolicyIndex]("posture_damping", -1.0);
+
   const double K = postureStiffness();
   auto pt = getPostureTask(robot().name());
   pt->stiffness(K);
-  mc_rtc::log::info("[NewRLQPController] useQP={} PostureTask stiffness={:.0f}", useQP_, K);
+  applyPostureDampingOverride(pt);
+  mc_rtc::log::info("[NewRLQPController] useQP={} PostureTask stiffness={:.0f} damping={:.1f}", useQP_, K,
+                    pt->damping());
+}
+
+void NewRLQPController::applyPostureDampingOverride(mc_tasks::PostureTaskPtr & pt)
+{
+  // stiffness(K) resets damping to 2*sqrt(K) as a side effect every time it
+  // is called (TrajectoryTaskGeneric.cpp:227) -- initializeRobot(), the
+  // non-passthrough branch of applyPostureMode(), and the "Stiffness K" GUI
+  // slider all call it. Without reapplying the override right after each of
+  // those, moving that slider (or a reset) would silently wipe out an active
+  // posture_damping and nothing would say so -- the same class of bug as the
+  // dead posture_stiffness override found earlier, avoided here by never
+  // letting stiffness() be the last word on damping when an override is set.
+  if(pt && postureDampingOverride_ >= 0.0) { pt->damping(postureDampingOverride_); }
 }
 
 double NewRLQPController::postureTaskStiffness()
@@ -714,7 +800,28 @@ void NewRLQPController::applyPostureMode()
       postureRefAccelWritten_ = false;
     }
     pt->stiffness(postureStiffness());
+    applyPostureDampingOverride(pt);
   }
+}
+
+void NewRLQPController::setPostureRefVel(mc_tasks::PostureTaskPtr & pt)
+{
+  const auto & mb = robot().mb();
+  const int off = postureDofOffset();
+  const int n = mb.nrDof() - off;
+  Eigen::VectorXd v = Eigen::VectorXd::Zero(n);
+  for(int i = 0; i < nbActuatedJoints; ++i)
+  {
+    const int dof = mb.jointPosInDof(robot().jointIndexByName(jointNames[i])) - off;
+    if(dof < 0 || dof >= n) { continue; }
+    // Defense in depth, matching setPostureFeedforward's own clamp: qdTarget_
+    // is already bounded upstream (vel_target_limit_per_joint for
+    // velocity_action, applyVelocityDamper/the EMA filter for position_action),
+    // but nothing re-checks it here otherwise.
+    v(dof) = std::clamp(qdTarget_(i), -velTargetLimit_, velTargetLimit_);
+  }
+  pt->refVel(v);
+  postureRefAccelWritten_ = true;
 }
 
 void NewRLQPController::setPostureRefAccel(mc_tasks::PostureTaskPtr & pt)
@@ -1008,6 +1115,13 @@ void NewRLQPController::updateSelfCollisionDistances()
   }
 }
 
+bool NewRLQPController::isSimulated() const
+{
+  // See the doc comment on the declaration (NewRLQPController.h) for why this
+  // check exists and why it is not cached.
+  return datastore().has(robot().name() + "::SetPosW");
+}
+
 void NewRLQPController::addLog()
 {
   // Ground-truth sch distances of the module's minimalSelfCollisions pairs,
@@ -1060,6 +1174,7 @@ void NewRLQPController::addLog()
   logger().addLogEntry("NewRLQPController_RL_currentAction", [this]() { return currentAction; });
   logger().addLogEntry("NewRLQPController_RL_actionScale",   [this]() { return actionScale; });
   logger().addLogEntry("NewRLQPController_useQP",            [this]() { return useQP_; });
+  logger().addLogEntry("NewRLQPController_qpZeroVelOut",     [this]() { return qpZeroVelOut_; });
   logger().addLogEntry("NewRLQPController_velCmd",           [this]() { return currentVelCmd_; });
 
   if(logImpactVel_)
@@ -1098,14 +1213,21 @@ void NewRLQPController::addLog()
   // Le meme signal converti en N.m, la ou on sait le faire : tau = I * N * Kt.
   // Reste a 0 sur les joints absents de joint_torque_scale (paires
   // differentielles, articulations a verins).
+  //
+  // Sauf sous mc_mujoco (isSimulated(), cf. son commentaire) : le "courant"
+  // qu'il publie sur jointTorques() EST deja le couple en N.m, donc y
+  // appliquer jointTorqueScale_ double-convertirait et gonflerait le log
+  // d'un facteur ~10-20x selon le joint, sans rapport avec le couple reel
+  // applique/clampe.
   logger().addLogEntry("NewRLQPController_joint_torque_Nm", [this]() -> const Eigen::VectorXd &
   {
     const auto & cur = robot().jointTorques();
+    const bool sim = isSimulated();
     for(int i = 0; i < nbActuatedJoints; ++i)
     {
       const int k = refIdx_[i];
-      jointTorqueNm_(i) =
-          (k >= 0 && k < static_cast<int>(cur.size())) ? cur[k] * jointTorqueScale_(i) : 0.0;
+      const double s = sim ? 1.0 : jointTorqueScale_(i);
+      jointTorqueNm_(i) = (k >= 0 && k < static_cast<int>(cur.size())) ? cur[k] * s : 0.0;
     }
     return jointTorqueNm_;
   });
@@ -1124,11 +1246,15 @@ void NewRLQPController::addLog()
     });
     if(jointTorqueScale_(i) != 0.0)
     {
+      // isSimulated(): see its doc -- mc_mujoco already reports N.m here, so
+      // jointTorqueScale_ (the real robot's current->torque conversion) must
+      // not be applied a second time under mc_mujoco.
       logger().addLogEntry("torque_" + jointNames[i], [this, i]() -> double
       {
         const auto & cur = robot().jointTorques();
         const int k = refIdx_[i];
-        return (k >= 0 && k < static_cast<int>(cur.size())) ? cur[k] * jointTorqueScale_(i) : 0.0;
+        const double s = isSimulated() ? 1.0 : jointTorqueScale_(i);
+        return (k >= 0 && k < static_cast<int>(cur.size())) ? cur[k] * s : 0.0;
       });
     }
   }
@@ -1209,8 +1335,28 @@ void NewRLQPController::addGui()
       [this](double v) {
         postureStiffnessOverride_ = v;
         auto pt = getPostureTask(robot().name());
-        if(pt) pt->stiffness(v);
+        if(pt)
+        {
+          pt->stiffness(v);
+          // Without this, moving K would silently reset damping to
+          // 2*sqrt(K) and drop whatever posture_damping/the Damping slider
+          // below had set -- see applyPostureDampingOverride()'s comment.
+          applyPostureDampingOverride(pt);
+        }
         mc_rtc::log::warning("[NewRLQPController] posture stiffness K = {} (GUI override)", v);
+      }),
+    // Sentinel -1 (postureDampingOverride_) shows as whatever stiffness()
+    // last derived automatically (2*sqrt(K)); any value entered here is
+    // remembered and reapplied every time K changes, from any source.
+    mc_rtc::gui::NumberInput("Damping",
+      [this]() {
+        auto pt = getPostureTask(robot().name());
+        return pt ? pt->damping() : 0.0;
+      },
+      [this](double v) {
+        postureDampingOverride_ = v;
+        auto pt = getPostureTask(robot().name());
+        if(pt) pt->damping(v);
       })
   );
 
@@ -1234,6 +1380,17 @@ void NewRLQPController::addGui()
              : postureFeedforward_ ? "2nd-order task + feedforward"
                                    : "2nd-order task"; }),
     mc_rtc::gui::Label("QP Control",               [this]() { return useQP_ ? "Enforced" : "Bypassed"; }),
+    // Experimental: see qpZeroVelOut_'s doc comment in the header. Turning it
+    // off restores the true velocity immediately rather than waiting for the
+    // next tick's (now-skipped) restoreQPVelocity() call, so the QP's state
+    // never sits on a stale zero longer than the tick that is already in flight.
+    mc_rtc::gui::Button("Toggle QP zero-vel-out", [this]() {
+      qpZeroVelOut_ = !qpZeroVelOut_;
+      if(!qpZeroVelOut_) { restoreQPVelocity(); }
+      mc_rtc::log::warning("[NewRLQPController] QP velocity output to mc_mujoco: {}",
+                           qpZeroVelOut_ ? "ZEROED (position only)" : "restored (position + velocity)");
+    }),
+    mc_rtc::gui::Label("QP vel-out", [this]() { return qpZeroVelOut_ ? "zeroed" : "normal"; }),
     mc_rtc::gui::Button("Toggle print limits",     [this]() { printLimits_ = !printLimits_; }),
     mc_rtc::gui::Label("Print joint limits",       [this]() { return printLimits_ ? "Enabled" : "Disabled"; })
   );
