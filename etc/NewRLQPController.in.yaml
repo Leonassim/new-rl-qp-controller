@@ -112,7 +112,8 @@ policy_path: [
   # IdealPdActuator, obs 4080 = 40x102). The ONLY entry with
   # velocity_action: true -- q_rl is a free-running integral of the commanded
   # velocity instead of being rebuilt from q_zero. utils.cpp case 2.
-  "@RL_POLICY_INSTALL_PREFIX@/2026-08-20_18-46-29.onnx",
+  #"@RL_POLICY_INSTALL_PREFIX@/2026-08-22_23-30-58.onnx",
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_low_impact.onnx",
   # index 3: policy 0's network again, under the deployment-fidelity test
   # configuration (PostureTask K=1600 + velocity feedforward). Same file, so
   # index 0 stays exactly the configuration that ran on the hardware and the
@@ -143,13 +144,46 @@ policy_path: [
   # cheat down a third. Reservations: it lands harder (0.195 against policy 0's
   # 0.158) and falls more often in training. Untested on hardware.
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_it15600_stride.onnx",
+  # index 6: RHP7 Kaleido, velocity-action like index 2 but a DIFFERENT ROBOT --
+  # 32 actuated joints instead of 30 (_WRIST_P where RHPS1 has _WRIST_R, plus
+  # L_HAND/R_HAND actuated). Runs only with MainRobot: RHP7 (module rhp7.so,
+  # branch `mujoco` of Yoshida-Lab-TUS/mc_rhp7, whose _ref_joint_order drops the
+  # 14 closed-loop linear joints, giving 38 dof = 32 + floating base).
+  #
+  # obs_format: 5 on this entry's block below routes it through utils.cpp's
+  # `case 5:` (same seven-term / history-40 velocity-action layout as index 2,
+  # already parametrized on refJointOrderRLAction.size() so 32 joints costs
+  # nothing there -- 40*(3+3+3+32+32+32+3) = 4320, matching this ONNX's input
+  # shape) instead of the case matching its OWN index (6, which does not
+  # exist in the switch and would error_and_throw). Same trick the three
+  # RHPS1 entries above use with obs_format: 0 to reach case 0 regardless of
+  # slot number -- index number and obs_format/C++ case are independent.
+  #
+  # Switching to this index while RHPS1 is loaded throws std::out_of_range in
+  # initializeRobot(): the kp/kd/q0 maps below are keyed on RHP7 joint names and
+  # are read with .at() against the CURRENTLY loaded robot's refJointOrder.
+  # Robot choice is fixed at mc_rtc startup by MainRobot -- this is a restart,
+  # not a runtime toggle.
+  "@RL_POLICY_INSTALL_PREFIX@/rhp7_velocity.onnx",
+  # index 7, 8: rhp7test / rhp7test2 -- meme reseau/plant que l'index 6, seul
+  # q0 change (le _stance du module robot au lieu du q0 d'entrainement). Voir
+  # le commentaire sur leurs blocs dans policies: plus bas.
+  "@RL_POLICY_INSTALL_PREFIX@/rhp7test.onnx",
+  "@RL_POLICY_INSTALL_PREFIX@/rhp7test2.onnx",
 ]
 # Stays 0: the real-robot entry is the only one with hardware time behind it.
 # Back to 0 on 2026-08-21 for a real-robot session. Index 0 is the only entry
 # with hardware time behind it; whatever is being tested gets selected from the
 # GUI, so the default is what the controller falls back to, not what anyone
 # intends to run. It had been left at 2 by a merge.
-default_policy_index: 0
+#
+# 6, 7, 8 = RHP7 Kaleido (obs_format: 5 on their blocks, see the comment on
+# policy_path above -- NOT the same number as their own index). Doit rester
+# coherent avec MainRobot dans mc_rtc.yaml : 0-5 exigent RHPS1_MuJoCo, 6-8
+# exigent RHP7. Un index incoherent avec le robot charge leve std::out_of_range
+# dans initializeRobot() (les maps kp/kd/q0 sont lues avec .at() sur le
+# refJointOrder du robot courant).
+default_policy_index: 7
 
 # N*Kt per joint, to convert what the robot measures into N.m.
 #
@@ -623,13 +657,13 @@ policies:
       L_CROTCH_Y:     35
       L_CROTCH_R:     100
       L_CROTCH_P:     140
-      L_KNEE_P:       70
+      L_KNEE_P:       45
       L_ANKLE_R:      45
       L_ANKLE_P:      65
       R_CROTCH_Y:     35
       R_CROTCH_R:     100
       R_CROTCH_P:     140
-      R_KNEE_P:       70
+      R_KNEE_P:       45
       R_ANKLE_R:      45
       R_ANKLE_P:      65
 
@@ -715,6 +749,28 @@ policies:
     #
     # --- QP-mode tuning (no effect while use_QP is false) ---
     #
+    # posture_stiffness: the QP TASK's K (postureStiffness(), NOT the plant PD
+    # this whole file's kp/kd maps or PDgains_sim.dat feed). Without this key
+    # it falls back to 0.2/(policy_step_size*timeStep) = 0.2/(0.01*0.005) =
+    # 4000 here -- a lag of 1/sqrt(K) = 15.8 ms, NOT what training saw.
+    # Training modelled this exact filter (FiniteDifferencePdActuator's
+    # posture_task_stiffness) at K=1600 -> 25 ms lag: set here to match the
+    # plant the policy actually learned on, rather than leave it a function of
+    # the control rate. Was silently dead until now: initializeRobot() and
+    # applyPostureMode() called postureStiffness(), and a second, non-const
+    # overload of that name (removed) shadowed the one that reads this key --
+    # the override compiled, logged nothing wrong, and was never applied.
+    posture_stiffness: 1600
+    #
+    # posture_damping: overrides the QP TASK's Kv (stiffness(K) otherwise sets
+    # it automatically to 2*sqrt(K), critically damped) --
+    # NewRLQPController::applyPostureDampingOverride(). NOT what the 800 rad/s
+    # experiment below is about -- that one is the PLANT's damper, mc_mujoco's
+    # own local PD on (q_ref, alpha_ref) (MjRobot::PD, mj_sim.cpp:30-36), read
+    # from PDgains_sim.dat, a file this yaml has no key for at all. Left unset
+    # (auto) here; the mechanism stays available (GUI: PostureTask > Damping)
+    # for whenever the TASK's own damping is actually the thing to test.
+    # posture_damping: 800
     # use_torque_task: drive the QP with a TorqueJointTask instead of the
     # PostureTask. The PostureTask route stacks two regulators -- the task,
     # then mc_mujoco's own joint PD on the (q, qdot) the QP produced -- where
@@ -811,13 +867,13 @@ policies:
       L_CROTCH_Y:     35
       L_CROTCH_R:     100
       L_CROTCH_P:     140
-      L_KNEE_P:       70
+      L_KNEE_P:       45
       L_ANKLE_R:      45
       L_ANKLE_P:      65
       R_CROTCH_Y:     35
       R_CROTCH_R:     100
       R_CROTCH_P:     140
-      R_KNEE_P:       70
+      R_KNEE_P:       45
       R_ANKLE_R:      45
       R_ANKLE_P:      65
 
@@ -875,13 +931,13 @@ policies:
       L_CROTCH_Y:   0.05
       L_CROTCH_R:   0.125
       L_CROTCH_P:   0.2
-      L_KNEE_P:     0.11666666666666667
+      L_KNEE_P:     0.075 #0.11666666666666667
       L_ANKLE_R:    0.075
       L_ANKLE_P:    0.125
       R_CROTCH_Y:   0.05
       R_CROTCH_R:   0.125
       R_CROTCH_P:   0.2
-      R_KNEE_P:     0.11666666666666667
+      R_KNEE_P:     0.075 #0.11666666666666667
       R_ANKLE_R:    0.075
       R_ANKLE_P:    0.125
 
@@ -1153,6 +1209,489 @@ policies:
     joint_limits: *joint_limits
     velocity_limits: *velocity_limits
 
+  # ==========================================================================
+  # index 6 : RHP7 Kaleido -- velocity-action, meme schema que l'index 2
+  # (JointVelocityAction mjlab + integrale libre q_rl += action*dt, utils.cpp
+  # `case 5:`, qui partage le bloc de `case 2:`), mais SUR UN AUTRE ROBOT.
+  # Requiert MainRobot: RHP7. Route explicitement vers `case 5:` via
+  # obs_format: 5 ci-dessous, PAS via son propre numero d'index (6, qui
+  # n'existe pas dans le switch C++ et leverait error_and_throw) -- meme
+  # mecanisme que obs_format: 0 sur les index 3/4 plus haut. Auparavant a
+  # l'index 5 directement (numero d'index = case du switch, sans cle
+  # obs_format) ; deplace ici quand le collegue a repris les index 3/4/5 pour
+  # trois nouvelles policies RHPS1.
+  #
+  # 32 joints actionnes contre 30 pour RHPS1 :
+  #   - L_WRIST_P / R_WRIST_P la ou RHPS1 a L_WRIST_R / R_WRIST_R
+  #   - L_HAND / R_HAND sont actionnes (RHPS1 les filtre)
+  # Verifie a l'execution : le smoke test du module annonce "RHP7 has 38 dof"
+  # = 32 + 6 (base flottante).
+  #
+  # kp/kd ci-dessous ont d'abord ete recopies de RHPS1 en attendant un reglage
+  # RHP7 propre -- puis confirmes CORRECTS par l'auteur du run : ce sont
+  # exactement les stiffness/damping des IdealPdActuatorCfg d'entrainement
+  # (RHP7_ACTUATOR_*), qui se trouvent coincider avec ceux de RHPS1. Le
+  # commentaire "recopie de RHPS1" reste sur le bloc kp/kd plus bas pour
+  # tracer l'origine, mais ce ne sont plus des valeurs provisoires.
+  #
+  # ATTENTION : le depot mjlab local (/home/leroyhi/mjlab, rhp7_constants.py)
+  # contient une AUTRE config d'actionneurs (raideur uniforme 157.91, efforts
+  # asymetriques gauche/droite sur le bras) -- celle-ci n'est PAS celle qui a
+  # entraine ce run. Ne pas s'y referer pour RHP7.
+  #
+  # effort_limit provient des RHP7_ACTUATOR_* reels (fournis par l'auteur, cf.
+  # le bloc plus bas) -- donc maxTargetDev_ = effort_limit/kp (l'anti-windup de
+  # utils.cpp) et rawTorqueRatio (= |tau|/effort_limit) sont maintenant tous
+  # les deux calcules contre le plant reel d'entrainement.
+  #
+  # action_scale = RHP7_ACTION_SCALE du run (fourni par l'auteur, PAS derive
+  # de la formule 0.5*effort/stiffness du depot mjlab local -- elle ne
+  # reproduit pas ces valeurs, cf. commentaire sur le bloc action_scale).
+  - use_QP: true
+    obs_format: 5
+    velocity_action: true
+    use_torque_task: false
+    qp_accel_task: false
+    joint_armature: 1.0
+    # 10 ms confirme par l'auteur du run. NE PAS le rederiver depuis la
+    # decimation du depot mjlab local : celui-ci laisse la valeur de base 8
+    # (8*0.0025 = 0.02), alors que le run 2026-08-23_21-06-44 a bien tourne a
+    # 0.01, comme RHPS1 (decimation 4).
+    policy_step_size: 0.01   # 100 Hz (10 ms)
+    physics_step_size: 0.0025  # mc_mujoco a 400 Hz (2.5 ms)
+    pd_gains_ratio: 1.0
+    # Le curriculum d'entrainement va jusqu'a +/-1.0 sur vx et sur le yaw
+    # (env_cfgs.py: lin_vel_x et ang_vel_z = (-1.0, 1.0)). Volontairement bride
+    # ici pour les premiers runs -- a relever une fois le comportement valide.
+    max_vel_x: 0.3
+    max_vel_y: 0.2
+    max_yaw: 0.45
+    joystick_deadzone: 0.05
+    vel_ramp_rate: 0.5
+
+    # NE PAS mettre a 0 : effort_limit et vel_target_limit_per_joint ne sont
+    # charges que sous `if(torqueFeasibilityRatio_ > 0.0)`
+    # (NewRLQPController.cpp:379-392). Sur le chemin velocity_action la
+    # projection elle-meme ne s'applique pas, mais les deux clamps qu'ils
+    # alimentent -- anti-windup et plafond de qdTarget -- si. A 0, ils
+    # disparaissent en silence (maxTargetDev_ = 0, velTargetLimitPerJoint_ = 1e9).
+    torque_feasibility_ratio: 1.0
+    vel_target_filter_alpha: 0.8
+
+    # effort_limit reels des RHP7_ACTUATOR_* d'entrainement (fournis par
+    # l'auteur du run). Remplace un premier jet copie de RHPS1 -- PAS de
+    # RHPS1_reel en commentaire ici, ce sont deja les valeurs reelles RHP7.
+    # Symetrique gauche/droite partout (contrairement au rhp7_constants.py du
+    # depot mjlab local, qui a R_ELBOW_* a 35 quand L_ELBOW_* est a 25 : cette
+    # asymetrie ne vient pas du run qui a produit l'ONNX charge ici).
+    effort_limit: &rhp7_effort_limit
+      CHEST_Y:        70
+      CHEST_P:        70
+      HEAD_Y:         5
+      HEAD_P:         5
+      L_SHOULDER_P:   35
+      L_SHOULDER_R:   35
+      L_SHOULDER_Y:   35
+      L_ELBOW_P:      25
+      L_ELBOW_Y:      25
+      L_WRIST_P:      15
+      L_WRIST_Y:      15
+      L_HAND:         3
+      R_SHOULDER_P:   35
+      R_SHOULDER_R:   35
+      R_SHOULDER_Y:   35
+      R_ELBOW_P:      25
+      R_ELBOW_Y:      25
+      R_WRIST_P:      15
+      R_WRIST_Y:      15
+      R_HAND:         3
+      L_CROTCH_Y:     40
+      L_CROTCH_R:     125
+      L_CROTCH_P:     125
+      L_KNEE_P:       175
+      L_ANKLE_R:      100
+      L_ANKLE_P:      100
+      R_CROTCH_Y:     40
+      R_CROTCH_R:     125
+      R_CROTCH_P:     125
+      R_KNEE_P:       175
+      R_ANKLE_R:      100
+      R_ANKLE_P:      100
+
+    vel_target_limit_per_joint: &rhp7_vel_target_limit_per_joint
+      CHEST_Y:        6
+      CHEST_P:        6
+      HEAD_Y:         4
+      HEAD_P:         4
+      L_SHOULDER_P:   6
+      L_SHOULDER_R:   6
+      L_SHOULDER_Y:   6
+      L_ELBOW_P:      6
+      L_ELBOW_Y:      6
+      L_WRIST_P:      6
+      L_WRIST_Y:      6
+      L_HAND:         6
+      R_SHOULDER_P:   6
+      R_SHOULDER_R:   6
+      R_SHOULDER_Y:   6
+      R_ELBOW_P:      6
+      R_ELBOW_Y:      6
+      R_WRIST_P:      6
+      R_WRIST_Y:      6
+      R_HAND:         6
+      L_CROTCH_Y:     8
+      L_CROTCH_R:     8
+      L_CROTCH_P:     8
+      L_KNEE_P:       10
+      L_ANKLE_R:      10
+      L_ANKLE_P:      10
+      R_CROTCH_Y:     8
+      R_CROTCH_R:     8
+      R_CROTCH_P:     8
+      R_KNEE_P:       10
+      R_ANKLE_R:      10
+      R_ANKLE_P:      10
+
+    # RHP7_ACTION_SCALE du run d'entrainement, en precision pleine (fourni par
+    # l'auteur). Recoupe avec les metadonnees `action_scale` de l'ONNX (run
+    # 2026-08-23_21-06-44), qui les arrondissent a 3 decimales : les 32 entrees
+    # concordent.
+    #
+    # NE PAS rederiver depuis rhp7_constants.py : la formule 0.5*effort/STIFFNESS
+    # du depot mjlab local donnerait 0.633 au genou contre 0.292 ici. Le run a
+    # tourne avec une autre config d'actionneurs.
+    #
+    # L_HAND / R_HAND a 27.27 n'est pas une faute de frappe : c'est ~300x
+    # l'echelle des autres joints. En velocity_action q_rl += action*scale*dt,
+    # donc une action unitaire demande 0.27 rad par pas sur la main. utils.cpp
+    # clampe ensuite sur les butees du joint, et les mains sont volontairement
+    # molles ici (kp 1 / kd 0.1), donc c'est contenu -- mais attends-toi a les
+    # voir coller a leur limite. Signe que la main etait quasi libre pendant
+    # l'entrainement (aucune recompense dessus).
+    action_scale: &rhp7_action_scale
+      CHEST_Y:      0.07954545454545454
+      CHEST_P:      0.07954545454545454
+      HEAD_Y:       0.07142857142857142
+      HEAD_P:       0.07142857142857142
+      L_SHOULDER_P: 0.08974358974358974
+      L_SHOULDER_R: 0.09210526315789473
+      L_SHOULDER_Y: 0.09210526315789473
+      L_ELBOW_P:    0.06578947368421052
+      L_ELBOW_Y:    0.06578947368421052
+      L_WRIST_P:    0.039473684210526314
+      L_WRIST_Y:    0.039473684210526314
+      L_HAND:       27.272727272727273
+      R_SHOULDER_P: 0.08974358974358974
+      R_SHOULDER_R: 0.09210526315789473
+      R_SHOULDER_Y: 0.09210526315789473
+      R_ELBOW_P:    0.06578947368421052
+      R_ELBOW_Y:    0.06578947368421052
+      R_WRIST_P:    0.039473684210526314
+      R_WRIST_Y:    0.039473684210526314
+      R_HAND:       27.272727272727273
+      L_CROTCH_Y:   0.06666666666666667
+      L_CROTCH_R:   0.20833333333333334
+      L_CROTCH_P:   0.20833333333333334
+      L_KNEE_P:     0.2916666666666667
+      L_ANKLE_R:    0.25
+      L_ANKLE_P:    0.25
+      R_CROTCH_Y:   0.06666666666666667
+      R_CROTCH_R:   0.20833333333333334
+      R_CROTCH_P:   0.20833333333333334
+      R_KNEE_P:     0.2916666666666667
+      R_ANKLE_R:    0.25
+      R_ANKLE_P:    0.25
+
+    # Confirmes reels par l'auteur du run (cf. en-tete du bloc) -- coincident
+    # avec les valeurs RHPS1 par lesquelles ce fichier est passe en premier
+    # jet. Mains a kp 1 / kd 0.1 : volontairement molles, la politique les
+    # bouge a peine et elles ne portent aucune charge.
+    kp: &rhp7_kp
+      L_CROTCH_Y:   20000.0
+      L_CROTCH_R:   20000.0
+      L_CROTCH_P:   20000.0
+      L_KNEE_P:     20000.0
+      L_ANKLE_R:    10000.0
+      L_ANKLE_P:    10000.0
+      CHEST_Y:      44000.0
+      CHEST_P:      44000.0
+      R_CROTCH_Y:   20000.0
+      R_CROTCH_R:   20000.0
+      R_CROTCH_P:   20000.0
+      R_KNEE_P:     20000.0
+      R_ANKLE_R:    10000.0
+      R_ANKLE_P:    10000.0
+      HEAD_Y:       2000.0
+      HEAD_P:       2000.0
+      L_SHOULDER_P: 15000.0
+      L_SHOULDER_R: 14000.0
+      L_SHOULDER_Y: 14000.0
+      L_ELBOW_P:    14000.0
+      L_ELBOW_Y:    14000.0
+      L_WRIST_P:    14000.0   # valeur RHPS1 de L_WRIST_R
+      L_WRIST_Y:    14000.0
+      L_HAND:       1.0
+      R_SHOULDER_P: 15000.0
+      R_SHOULDER_R: 14000.0
+      R_SHOULDER_Y: 14000.0
+      R_ELBOW_P:    14000.0
+      R_ELBOW_Y:    14000.0
+      R_WRIST_P:    14000.0   # valeur RHPS1 de R_WRIST_R
+      R_WRIST_Y:    14000.0
+      R_HAND:       1.0
+    kd: &rhp7_kd
+      L_CROTCH_Y:   400.0
+      L_CROTCH_R:   400.0
+      L_CROTCH_P:   400.0
+      L_KNEE_P:     400.0
+      L_ANKLE_R:    300.0
+      L_ANKLE_P:    300.0
+      CHEST_Y:      440.0
+      CHEST_P:      440.0
+      R_CROTCH_Y:   400.0
+      R_CROTCH_R:   400.0
+      R_CROTCH_P:   400.0
+      R_KNEE_P:     400.0
+      R_ANKLE_R:    300.0
+      R_ANKLE_P:    300.0
+      HEAD_Y:       50.0
+      HEAD_P:       50.0
+      L_SHOULDER_P: 240.0
+      L_SHOULDER_R: 240.0
+      L_SHOULDER_Y: 240.0
+      L_ELBOW_P:    240.0
+      L_ELBOW_Y:    240.0
+      L_WRIST_P:    240.0     # valeur RHPS1 de L_WRIST_R
+      L_WRIST_Y:    240.0
+      L_HAND:       0.1
+      R_SHOULDER_P: 240.0
+      R_SHOULDER_R: 240.0
+      R_SHOULDER_Y: 240.0
+      R_ELBOW_P:    240.0
+      R_ELBOW_Y:    240.0
+      R_WRIST_P:    240.0     # valeur RHPS1 de R_WRIST_R
+      R_WRIST_Y:    240.0
+      R_HAND:       0.1
+
+    # KNEES_BENT_KEYFRAME du run d'entrainement (fourni par l'auteur), en
+    # precision pleine. Recoupe valeur par valeur avec les metadonnees
+    # `default_joint_pos` de l'ONNX (run 2026-08-23_21-06-44), qui les arrondit
+    # a 3 decimales -- les 12 entrees non nulles concordent.
+    #
+    # VOLONTAIREMENT PAS recopie de RHPS1, contrairement a kp/kd/effort_limit :
+    # q0 n'est pas un reglage, il DEFINIT L'OBSERVATION. utils.cpp case 2
+    # alimente le reseau avec
+    #   jointPosDeep_[0](j) = q_mesure - q_zero(j)
+    # c'est-a-dire le joint_pos_rel de mjlab. Une erreur sur q0 est un biais
+    # constant sur l'entree du reseau, pas un simple decalage de posture.
+    # L'ecart aux valeurs RHPS1 etait majeur : ELBOW_P -80 deg contre -30 deg,
+    # soit 0.87 rad de biais permanent.
+    #
+    # A noter : cette pose met CROTCH_R et ANKLE_R exactement a 0, la ou RHPS1
+    # les ouvre a +/-0.029 / -+0.031.
+    q0:
+      CHEST_Y:      0.0         # 0 deg
+      CHEST_P:      0.0         # 0 deg
+      HEAD_Y:       0.0         # absent du keyframe -> defaut 0, confirme par l'ONNX
+      HEAD_P:       0.0         # idem
+      L_SHOULDER_P: 0.523599    # 30 deg
+      L_SHOULDER_R: 0.174533    # 10 deg
+      L_SHOULDER_Y: -0.087266   # -5 deg
+      L_ELBOW_P:    -1.396263   # -80 deg
+      L_ELBOW_Y:    0.0
+      L_WRIST_P:    0.0
+      L_WRIST_Y:    0.0
+      L_HAND:       0.0
+      R_SHOULDER_P: 0.523599    # 30 deg
+      R_SHOULDER_R: -0.174533   # -10 deg
+      R_SHOULDER_Y: 0.087266    # 5 deg
+      R_ELBOW_P:    -1.396263   # -80 deg
+      R_ELBOW_Y:    0.0
+      R_WRIST_P:    0.0
+      R_WRIST_Y:    0.0
+      R_HAND:       0.0
+      L_CROTCH_Y:   0.0         # 0 deg
+      L_CROTCH_R:   0.0         # 0 deg
+      L_CROTCH_P:   -0.296706   # -17 deg
+      L_KNEE_P:     0.628319    # 36 deg
+      L_ANKLE_R:    0.0         # 0 deg
+      L_ANKLE_P:    -0.331613   # -19 deg
+      R_CROTCH_Y:   0.0
+      R_CROTCH_R:   0.0
+      R_CROTCH_P:   -0.296706   # -17 deg
+      R_KNEE_P:     0.628319    # 36 deg
+      R_ANKLE_R:    0.0
+      R_ANKLE_P:    -0.331613   # -19 deg
+
+    # Ordre des joints ATTENDU PAR LE RESEAU (pas celui du robot). Repris de
+    # l'ordre des actionneurs de RHP7_ARTICULATION (rhp7_constants.py), qui suit
+    # le meme motif que l'ONNX RHPS1 verifie : chest, head, bras G, bras D,
+    # jambe G, jambe D. A confirmer contre `joint_names` de l'ONNX -- une
+    # permutation ici est silencieuse et enverrait chaque commande au mauvais
+    # joint.
+    ref_joint_order: &rhp7_ref_joint_order
+      - CHEST_Y
+      - CHEST_P
+      - HEAD_Y
+      - HEAD_P
+      - L_SHOULDER_P
+      - L_SHOULDER_R
+      - L_SHOULDER_Y
+      - L_ELBOW_P
+      - L_ELBOW_Y
+      - L_WRIST_P
+      - L_WRIST_Y
+      - L_HAND
+      - R_SHOULDER_P
+      - R_SHOULDER_R
+      - R_SHOULDER_Y
+      - R_ELBOW_P
+      - R_ELBOW_Y
+      - R_WRIST_P
+      - R_WRIST_Y
+      - R_HAND
+      - L_CROTCH_Y
+      - L_CROTCH_R
+      - L_CROTCH_P
+      - L_KNEE_P
+      - L_ANKLE_R
+      - L_ANKLE_P
+      - R_CROTCH_Y
+      - R_CROTCH_R
+      - R_CROTCH_P
+      - R_KNEE_P
+      - R_ANKLE_R
+      - R_ANKLE_P
+
+  # index 7 : RHP7 Kaleido, rhp7test -- IDENTIQUE a l'index 6 (meme reseau, meme
+  # plant) sauf q0 : au lieu du q0 du run d'entrainement (bras a 30/-80 deg),
+  # utilise le _stance du module robot mc_rhp7 (rhp7.cpp:48-79) -- la pose ou
+  # le robot se tient AVANT l'armement (cf. reset(), qui ne pousse jamais q_rl
+  # a la PostureTask avant policyArmed_==true). Jambes/chest/tete identiques
+  # dans les deux (coincidence : le run d'entrainement et le _stance du module
+  # partagent CROTCH_P -17 deg, KNEE_P 36 deg, ANKLE_P -19 deg) ; seuls les
+  # bras different (SHOULDER_P 15 au lieu de 30, ELBOW_P -30 au lieu de -80).
+  # But : tester si demarrer le reseau depuis la pose de repos plutot que
+  # depuis son propre q0 d'entrainement change le comportement au moment de
+  # l'armement.
+  - use_QP: true
+    obs_format: 5
+    velocity_action: true
+    use_torque_task: false
+    qp_accel_task: false
+    joint_armature: 1.0
+    policy_step_size: 0.01   # 100 Hz (10 ms)
+    physics_step_size: 0.0025  # mc_mujoco a 400 Hz (2.5 ms)
+    pd_gains_ratio: 1.0
+    max_vel_x: 0.3
+    max_vel_y: 0.2
+    max_yaw: 0.45
+    joystick_deadzone: 0.05
+    vel_ramp_rate: 0.5
+    torque_feasibility_ratio: 1.0
+    vel_target_filter_alpha: 0.8
+    effort_limit: *rhp7_effort_limit
+    vel_target_limit_per_joint: *rhp7_vel_target_limit_per_joint
+    action_scale: *rhp7_action_scale
+    kp: *rhp7_kp
+    kd: *rhp7_kd
+
+    # _stance du module mc_rhp7 (rhp7.cpp:48-79), converti en radians -- PAS
+    # le q0 du run d'entrainement (voir le bloc de l'index 6 pour celui-la et
+    # pourquoi q0 definit l'observation, pas juste une posture).
+    q0:
+      CHEST_Y:      0.0         # 0 deg
+      CHEST_P:      0.0         # 0 deg
+      HEAD_Y:       0.0         # 0 deg
+      HEAD_P:       0.0         # 0 deg
+      L_SHOULDER_P: 0.261799    # 15 deg
+      L_SHOULDER_R: 0.087266    # 5 deg
+      L_SHOULDER_Y: -0.087266   # -5 deg
+      L_ELBOW_P:    -0.523599   # -30 deg
+      L_ELBOW_Y:    0.0
+      L_WRIST_P:    0.0
+      L_WRIST_Y:    0.0
+      L_HAND:       0.0
+      R_SHOULDER_P: 0.261799    # 15 deg
+      R_SHOULDER_R: -0.087266   # -5 deg
+      R_SHOULDER_Y: 0.087266    # 5 deg
+      R_ELBOW_P:    -0.523599   # -30 deg
+      R_ELBOW_Y:    0.0
+      R_WRIST_P:    0.0
+      R_WRIST_Y:    0.0
+      R_HAND:       0.0
+      L_CROTCH_Y:   0.0         # 0 deg
+      L_CROTCH_R:   0.0         # 0 deg
+      L_CROTCH_P:   -0.296706   # -17 deg
+      L_KNEE_P:     0.628319    # 36 deg
+      L_ANKLE_R:    0.0         # 0 deg
+      L_ANKLE_P:    -0.331613   # -19 deg
+      R_CROTCH_Y:   0.0
+      R_CROTCH_R:   0.0
+      R_CROTCH_P:   -0.296706   # -17 deg
+      R_KNEE_P:     0.628319    # 36 deg
+      R_ANKLE_R:    0.0
+      R_ANKLE_P:    -0.331613   # -19 deg
+    ref_joint_order: *rhp7_ref_joint_order
+
+  # index 8 : RHP7 Kaleido, rhp7test2 -- meme reseau/config que l'index 7
+  # (module _stance en q0), fichier .onnx different -- voir le commentaire de
+  # l'index 7 pour l'explication du choix de q0.
+  - use_QP: true
+    obs_format: 5
+    velocity_action: true
+    use_torque_task: false
+    qp_accel_task: false
+    joint_armature: 1.0
+    policy_step_size: 0.01   # 100 Hz (10 ms)
+    physics_step_size: 0.0025  # mc_mujoco a 400 Hz (2.5 ms)
+    pd_gains_ratio: 1.0
+    max_vel_x: 0.3
+    max_vel_y: 0.2
+    max_yaw: 0.45
+    joystick_deadzone: 0.05
+    vel_ramp_rate: 0.5
+    torque_feasibility_ratio: 1.0
+    vel_target_filter_alpha: 0.8
+    effort_limit: *rhp7_effort_limit
+    vel_target_limit_per_joint: *rhp7_vel_target_limit_per_joint
+    action_scale: *rhp7_action_scale
+    kp: *rhp7_kp
+    kd: *rhp7_kd
+    q0:
+      CHEST_Y:      0.0         # 0 deg
+      CHEST_P:      0.0         # 0 deg
+      HEAD_Y:       0.0         # 0 deg
+      HEAD_P:       0.0         # 0 deg
+      L_SHOULDER_P: 0.261799    # 15 deg
+      L_SHOULDER_R: 0.087266    # 5 deg
+      L_SHOULDER_Y: -0.087266   # -5 deg
+      L_ELBOW_P:    -0.523599   # -30 deg
+      L_ELBOW_Y:    0.0
+      L_WRIST_P:    0.0
+      L_WRIST_Y:    0.0
+      L_HAND:       0.0
+      R_SHOULDER_P: 0.261799    # 15 deg
+      R_SHOULDER_R: -0.087266   # -5 deg
+      R_SHOULDER_Y: 0.087266    # 5 deg
+      R_ELBOW_P:    -0.523599   # -30 deg
+      R_ELBOW_Y:    0.0
+      R_WRIST_P:    0.0
+      R_WRIST_Y:    0.0
+      R_HAND:       0.0
+      L_CROTCH_Y:   0.0         # 0 deg
+      L_CROTCH_R:   0.0         # 0 deg
+      L_CROTCH_P:   -0.296706   # -17 deg
+      L_KNEE_P:     0.628319    # 36 deg
+      L_ANKLE_R:    0.0         # 0 deg
+      L_ANKLE_P:    -0.331613   # -19 deg
+      R_CROTCH_Y:   0.0
+      R_CROTCH_R:   0.0
+      R_CROTCH_P:   -0.296706   # -17 deg
+      R_KNEE_P:     0.628319    # 36 deg
+      R_ANKLE_R:    0.0
+      R_ANKLE_P:    -0.331613   # -19 deg
+    ref_joint_order: *rhp7_ref_joint_order
 use_async_inference: false
 log_timing: true
 timing_log_interval: 100
