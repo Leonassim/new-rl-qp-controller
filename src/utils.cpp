@@ -248,6 +248,7 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
 //   266  corps + gait_phase[20]          index 2   (V4)
 //   566  corps + gait_phase + raw[300]   index 3   (V5)
 //   510  hist 5 sur les SEPT termes      obs_format 5
+//   530  510 + gait_phase[4 x 5]         obs_format 7
 //
 // Enonce ici une fois, lu la ou les blocs sont ecrits. Ajouter un index a l'un
 // de ces formats demande une etiquette de case ET une entree ici ; en oublier
@@ -261,7 +262,10 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
 bool utils::hasGaitPhase(int policyIndex)
 {
   // 2 was the V4 entry; it is the velocity-action policy now, which has none.
-  return policyIndex == 3;
+  // 6 est le format 530 dims : le format 5 plus l'horloge en queue.
+  // 6 est le RHP7 Kaleido (velocity-action, pas d'horloge).
+  // 7 est le format 530 dims du RHPS1 : le format 5 plus l'horloge en queue.
+  return policyIndex == 3 || policyIndex == 7;
 }
 
 bool utils::isV5(int policyIndex)
@@ -346,6 +350,13 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.velCmd_[i]);
       break;
     }
+    case 7: // 530 dims = le format 5 plus l'horloge de demarche (4 x 5 dims).
+            // La politique DOIT voir la phase, sinon elle subit la penalite de
+            // gait_phase_tracking sans pouvoir la satisfaire. gaitPhaseStep()
+            // reproduit l'horloge : periode interpolee de 2.0 s au seuil de
+            // commande a 1.1 s a la reference 0.7, avancee de dt/periode par pas
+            // de politique, figee sous le seuil, et le bloc mis a l'echelle par
+            // une amplitude qui monte de 0 a 1 sur [0, seuil].
     case 5: // RHPS1 velocity policies — 510 dims, historique 5 sur les SEPT termes
             // mjlab-rhps1 run 2026-08-27_09-31-27 (etape 0b : config policy 0 +
             // hist5 + biais capteurs + mirror loss + paires QP, sans la
@@ -379,6 +390,9 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
         ctl.jointVel_[i]  = ctl.jointVel_[i-1];
         ctl.jointAct_[i]  = ctl.jointAct_[i-1];
         ctl.velCmd_[i]    = ctl.velCmd_[i-1];
+        // Le format 6 porte un huitieme terme, decale comme les autres. Sans
+        // cette ligne les cinq creneaux d'historique liraient la meme valeur.
+        if(ctl.obsFormat_ == 7) { ctl.gaitPhase_[i] = ctl.gaitPhase_[i-1]; }
       }
 
       ctl.linVel_[0]   = R_w2b * rr.bodyVelW(baseName).linear();
@@ -386,6 +400,10 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       ctl.projGrav_[0] = R_w2b * Eigen::Vector3d(0, 0, -1);
       ctl.velCmd_[0]   = ctl.currentVelCmd_;
       ctl.jointAct_[0] = ctl.currentAction;
+      // Avancer l'horloge exactement une fois par inference, APRES velCmd_[0]
+      // dont depend la cadence, et AVANT l'ecriture du bloc. Le format 3 fait
+      // le meme appel dans son propre bloc ; il n'est pas partage.
+      if(ctl.obsFormat_ == 7) { ctl.gaitPhaseStep(); }
 
       const int actionDim = static_cast<int>(ctl.refJointOrderRLAction.size());
       ctl.jointPos_[0] = Eigen::VectorXd::Zero(actionDim);
@@ -407,6 +425,19 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointVel_[i]);
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointAct_[i]);
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3b(ctl.velCmd_[i]);
+      if(ctl.obsFormat_ == 7)
+      {
+        // 20 dims de plus : l'horloge de demarche, 4 canaux x 5 d'historique.
+        // Ordre lu dans la metadonnee de l'ONNX et non suppose :
+        //   base_lin_vel, base_ang_vel, projected_gravity, joint_pos,
+        //   joint_vel, actions, command, gait_phase
+        // donc le bloc de phase vient EN DERNIER, offsets 510 a 529.
+        for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i)
+        {
+          obs.segment(offset, 4) = ctl.gaitPhase_[i];
+          offset += 4;
+        }
+      }
       break;
     }
     // Le bloc 246 dims ci-dessous : l'index 1 l'a quitte le 2026-08-21.
