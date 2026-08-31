@@ -240,7 +240,16 @@ policy_path: [
 # exigent RHP7. Un index incoherent avec le robot charge leve std::out_of_range
 # dans initializeRobot() (les maps kp/kd/q0 sont lues avec .at() sur le
 # refJointOrder du robot courant).
-default_policy_index: 7
+# REMIS A 0 le 2026-08-31. Le commit 3b68bcd l'avait passe a 7, soit
+# rhp7test.onnx : sur un RHPS1 -- le robot que le lanceur mc_mujoco charge via
+# mc_rtc_superbuild_mujoco.yaml -- ca leve std::out_of_range au demarrage, avant
+# meme d'atteindre la GUI. Le defaut est ce sur quoi le controleur RETOMBE, pas
+# ce que quelqu'un a l'intention de lancer : ce qu'on teste se choisit depuis la
+# GUI. 0 est la seule entree avec du temps materiel derriere elle.
+#
+# Pour travailler sur RHP7, lancer avec MainRobot: RHP7 et selectionner 6, 7 ou
+# 8 dans la GUI -- le defaut n'a pas a porter ce choix.
+default_policy_index: 0
 
 # N*Kt per joint, to convert what the robot measures into N.m.
 #
