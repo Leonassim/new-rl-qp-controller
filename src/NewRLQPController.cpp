@@ -33,7 +33,22 @@ NewRLQPController::NewRLQPController(mc_rbdyn::RobotModulePtr rm, double dt, con
                         col.sDist);
     }
   }
-  selfCollisionConstraint->setCollisionsDampers(solver(), {zeta_selfCollision_, lambda_selfCollision_});
+  // RHP7 runs on the real robot's frozen mc_rtc (superbuild pinned 2023-10-13,
+  // mc_rtc bumped by hand to 2024-05-23 and never since). setCollisionsDampers
+  // and the CBF-tuned KinematicsConstraint ctor below only exist from
+  // bastien-muraccioli/mc_rtc commit 2957e17c (2026-05-05), ~2 years too late
+  // for this robot -- see real-robot-pin-rhp7 in mc-rtc-superbuild for the
+  // compat check. Re-apply the corrected cols the old way instead: remove
+  // then re-add every pair, which is what setCollisionsDampers did internally
+  // on top of the CBF gains. Same hard `distance >= 0` constraint either way
+  // (VelocityDamper in tvm::task_dynamics) -- CBF only tunes the braking
+  // *response* (zeta_selfCollision_/lambda_selfCollision_ below go unused on
+  // this branch), it does not add the safety margin itself.
+  {
+    auto correctedCols = selfCollisionConstraint->cols;
+    selfCollisionConstraint->removeCollisions(solver(), correctedCols);
+    selfCollisionConstraint->addCollisions(solver(), correctedCols);
+  }
   // use_torque_task needs the dynamics: TorqueTask minimises the error between
   // the requested torque and the one the dynamic model produces, so without
   // dynamicsConstraint there is no relation between alphaD and tau to solve
@@ -44,20 +59,22 @@ NewRLQPController::NewRLQPController(mc_rbdyn::RobotModulePtr rm, double dt, con
   // kinematicsConstraint of its own, and the addConstraintSet below would then
   // install *that* one instead. The two are different constraints entirely:
   //
-  //                     this one (CBF)        MCController's default
-  //   constructor       5-element damper      3-element damper + timeStep
-  //   level             acceleration          velocity
-  //   gains             zeta=1.2, lambda=100  none
+  //                     this one (no CBF)     MCController's default
+  //   constructor       3-element damper      3-element damper + timeStep
+  //   level              velocity              velocity
+  //   gains             none (di/ds/offset)   none
   //   velocityPercent   0.95                  0.50
   //
-  // The CBF form is the point of this controller (see the class doc), and the
-  // velocity ceiling is the operational difference: the default caps every
-  // joint at half its maximum speed, which brakes exactly the fast lateral
-  // corrections this policy relies on -- it already runs ANKLE_R near
-  // saturation. Running the default was measured at ~1.6x the bypass roll.
+  // On mc_rtc with the CBF commit (2957e17c+, not this robot -- see above),
+  // this used the 5-element acceleration-level damper (zeta=1.2, lambda=100)
+  // instead: same hard bound, better-tuned braking, measured at ~1.6x less
+  // roll than this fallback. The velocity ceiling is still the operational
+  // win either way: the default caps every joint at half its maximum speed,
+  // which brakes exactly the fast lateral corrections this policy relies on
+  // -- it already runs ANKLE_R near saturation.
   kinematicsConstraint = mc_rtc::unique_ptr<mc_solver::KinematicsConstraint>(
-    new mc_solver::KinematicsConstraint(robots(), 0,
-      {diPercent_, dsPercent_, 0.0, zeta_jointLimit_, lambda_jointLimit_}, velPercent_));
+    new mc_solver::KinematicsConstraint(robots(), 0, dt,
+      {diPercent_, dsPercent_, 0.0}, velPercent_));
   solver().addConstraintSet(kinematicsConstraint);
 
   initializeRobot();

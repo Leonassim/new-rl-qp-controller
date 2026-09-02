@@ -757,12 +757,19 @@ private:
   double diPercent_ = 0.1; // Doesn't matter since di > ds. This variable is not used in the constraint dynamics.
 
   // --- CBF Gains ---
-  // More details are explained in the paper cf. Readme.md. 
+  // More details are explained in the paper cf. Readme.md.
   // Must be tuned depending on the robot.
+  //
+  // UNUSED on this branch: RHP7's real mc_rtc predates commit 2957e17c
+  // (2026-05-05, bastien-muraccioli/mc_rtc), which is what added CBF support
+  // to CollisionsConstraint/KinematicsConstraint. NewRLQPController.cpp's
+  // constructor falls back to the plain velocity-level damper instead. Kept
+  // here (not deleted) so re-enabling CBF is a one-line revert once the
+  // robot's mc_rtc catches up.
   double zeta_jointLimit_ = 1.2;
-  double lambda_jointLimit_ = 100.0; // Same gain for joint position limits and velocity limits. 
+  double lambda_jointLimit_ = 100.0; // Same gain for joint position limits and velocity limits.
   double zeta_selfCollision_ = 1.2;
-  double lambda_selfCollision_ = 10.0; 
+  double lambda_selfCollision_ = 10.0;
 
   // --- PD gains ---
   double pdGainsRatio_ = 1.0;
