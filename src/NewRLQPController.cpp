@@ -975,9 +975,17 @@ Eigen::VectorXd NewRLQPController::projectTorqueFeasible(const Eigen::VectorXd &
 
 void NewRLQPController::gaitPhaseStep()
 {
-  // Commanded planar speed drives both the cadence and the amplitude. Yaw is
-  // deliberately excluded: mjlab's clock keys off the linear command only.
-  const double speed = currentVelCmd_.head<2>().norm();
+  // Commanded planar speed PLUS yaw magnitude drives cadence and amplitude.
+  //
+  // Le commentaire precedent affirmait l'inverse -- "yaw is deliberately
+  // excluded: mjlab's clock keys off the linear command only" -- et c'est faux.
+  // gait_phase_tracking.__call__ calcule
+  //     total_command = norm(command[:, :2]) + abs(command[:, 2])
+  // et s'en sert pour les TROIS quantites : `active` qui autorise l'horloge a
+  // avancer, `amplitude` qui met l'observation a l'echelle, et `speed_frac` qui
+  // interpole la periode. Sur une commande de rotation pure, l'horloge du robot
+  // serait restee figee pendant que celle de l'entrainement tourne.
+  const double speed = currentVelCmd_.head<2>().norm() + std::abs(currentVelCmd_(2));
 
   // Amplitude ramps 0 -> 1 over [0, threshold]; the clock itself only advances
   // above the threshold. Below it the phase is held, but the amplitude scaling

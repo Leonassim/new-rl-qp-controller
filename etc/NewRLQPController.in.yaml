@@ -172,6 +172,35 @@ policy_path: [
   # cheat down a third. Reservations: it lands harder (0.195 against policy 0's
   # 0.158) and falls more often in training. Untested on hardware.
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_it15600_stride.onnx",
+  # index 9 : run 2026-08-31_15-11-13 model_3150 -- 530 dims, obs_format 7.
+  #
+  # Pile complete de la campagne : config policy 0 + historique 5 + mirror loss
+  # + masse/CoM a +/-3% + distances QP, puis swt, fclr, comshift, l'horloge de
+  # demarche (Siekmann), steplen x4, et swing_height_bonus_dense -- la hauteur
+  # payee PAR SECONDE DE VOL, aucune penalite d'atterrissage.
+  #
+  # Balayage deterministe, 1024 environnements, 11 commandes :
+  #                        policy 0   celle-ci   seuil
+  #   lever de pied          0.0051     0.0334   0.030   OK, une premiere
+  #   couples jambes         0.0101     0.0208   0.030   OK
+  #   couples haut du corps  0.0027     0.0000   0.030   OK
+  #   chutes                 0.0000     0.0010   0.010   OK
+  #   pieds a plat           0.0035     0.0277   0.050   OK
+  #   vitesse d'impact       0.1919     0.1793   0.160   echec du seuil, mais
+  #                                                      MIEUX que la policy 0
+  #
+  # Elle bat la policy 0 sur le lever de pied (6.5x) et sur l'impact, a couples
+  # du meme ordre. Periode 0.87 a 0.95 s selon la commande, contre 0.90 pour le
+  # BaselineWalkingController.
+  #
+  # L'HORLOGE DOIT TOURNER : sans le bloc de phase la politique subit une
+  # penalite qu'elle ne peut pas satisfaire. gaitPhaseStep() la reproduit, et
+  # son entree a ete corrigee le 2026-08-31 -- elle ne lisait que la commande
+  # lineaire alors que l'entrainement utilise |v_xy| + |wz| pour la cadence,
+  # l'amplitude ET l'interpolation de periode.
+  #
+  # Jamais testee sur materiel.
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_clock_it3150.onnx",
 ]
 # Stays 0: the real-robot entry is the only one with hardware time behind it.
 # Back to 0 on 2026-08-21 for a real-robot session. Index 0 is the only entry
@@ -1301,6 +1330,101 @@ policies:
     velocity_limits: *velocity_limits
 
   # ==========================================================================
+  # index 9 : 530 dims, obs_format 7. Meme plant que l'index 4 ; seule
+  # l'observation change, augmentee du bloc d'horloge.
+  - use_QP: *use_QP
+    obs_format: 7
+    policy_step_size: *policy_step_size
+    physics_step_size: *physics_step_size
+    pd_gains_ratio: *pd_gains_ratio
+    max_vel_x: *max_vel_x
+    max_vel_y: *max_vel_y
+    max_yaw: *max_yaw
+    joystick_deadzone: *joystick_deadzone
+    vel_ramp_rate: *vel_ramp_rate
+    # ECHELLES PROPRES, et non l'ancre *action_scale partagee. Celle-ci porte
+    # des valeurs recalculees cote deploiement a partir de limites de couple :
+    # CROTCH_Y 0.002625 contre 0.003, KNEE_P 0.0075 contre 0.007, ANKLE_P
+    # 0.00975 contre 0.01, six articulations sur douze. Or AUCUN onnx du
+    # dossier policy/ ne porte ces valeurs, pas meme celui de la policy 0 --
+    # dont un commentaire de l'ancre invoque pourtant l'effort_limit.
+    #
+    # L'ancre est laissee intacte : la policy 0 marche sur le robot avec, et
+    # la corriger changerait l'index 0 sans mesure pour le justifier. Cet
+    # index prend les echelles que son propre reseau a apprises.
+    action_scale:
+      CHEST_Y:      0.002
+      CHEST_P:      0.002
+      HEAD_Y:       0.002
+      HEAD_P:       0.002
+      L_SHOULDER_P: 0.002
+      L_SHOULDER_R: 0.002
+      L_SHOULDER_Y: 0.002
+      L_ELBOW_P:    0.002
+      L_ELBOW_Y:    0.002
+      L_WRIST_R:    0.002
+      L_WRIST_Y:    0.002
+      R_SHOULDER_P: 0.002
+      R_SHOULDER_R: 0.002
+      R_SHOULDER_Y: 0.002
+      R_ELBOW_P:    0.002
+      R_ELBOW_Y:    0.002
+      R_WRIST_R:    0.002
+      R_WRIST_Y:    0.002
+      L_CROTCH_Y:   0.003
+      L_CROTCH_R:   0.007
+      L_CROTCH_P:   0.01
+      L_KNEE_P:     0.007
+      L_ANKLE_R:    0.007
+      L_ANKLE_P:    0.01
+      R_CROTCH_Y:   0.003
+      R_CROTCH_R:   0.007
+      R_CROTCH_P:   0.01
+      R_KNEE_P:     0.007
+      R_ANKLE_R:    0.007
+      R_ANKLE_P:    0.01
+    kp: *kp
+    kd: *kd
+    q0: *q0
+    ref_joint_order: *ref_joint_order
+    runaway_disarm_vel: 4.0
+
+    # The velocity damper, and the qd* it reads. NOT optional here, and leaving
+    # it out is what made this policy fall forward on the first mc_mujoco test:
+    # index 0's block was copied wholesale, and policy 0 has no damper because
+    # policy 0 trained without one. This run did -- Curriculum/velocity_damper
+    # sat at 1.0 for its whole length, params/env.yaml records di 0.4, ds 0.01,
+    # vel_percent 0.9 -- so deployment was running the network against a plant
+    # missing the stage mjlab puts between qd* and the target. Undamped, the
+    # commanded target moves faster than anything the policy ever saw, and on a
+    # forward command the QP chases a target running out ahead of the robot.
+    #
+    # applyVelocityDamper() also clamps qd*, so the two parameters that define
+    # qd* have to match training too: EMA 0.8 and the per-joint limit. Their
+    # fallbacks are 0.0 (no filter) and 1e9 (no clamp).
+    # AMORTISSEUR INACTIF, et c'est ce que l'entrainement fait. Le curriculum
+    # velocity_damper monte de 0 a 1 entre les pas 360000 et 612000, soit les
+    # iterations 15000 a 25500 ; cette lignee tourne autour de 2500, donc
+    # Curriculum/velocity_damper vaut 0.0000 et l'actionneur calcule
+    # di = progress * 0.4 = 0. Deployer di 0.4 fait tourner la politique contre
+    # un etage de bridage qu'elle n'a jamais vu -- symetrique exact de l'erreur
+    # de 2026-08-13, ou l'amortisseur MANQUAIT au deploiement.
+    velocity_damper_di: 0.0
+    velocity_damper_ds: 0.01
+    velocity_damper_vel_percent: 0.9
+    # Ces deux-la restent actifs a l'entrainement quoi qu'il arrive :
+    # velocity_target_filter_alpha 0.8 et velocity_target_limit 8.0 rad/s, ce
+    # dernier applique hors de l'amortisseur (finite_difference_pd_actuator.py,
+    # le clamp precede la porte velocity_damper_progress).
+    vel_target_filter_alpha: 0.8
+    vel_target_limit_per_joint: *vel_target_limit_flat8
+    # Required by the damper, and their absence is a hard throw, not a default:
+    # a joint left at lo == hi would be skipped silently, i.e. one joint on a
+    # different plant from the other 29. Missing them is why switching to this
+    # index failed outright instead of misbehaving.
+    joint_limits: *joint_limits
+    velocity_limits: *velocity_limits
+
 use_async_inference: false
 log_timing: true
 timing_log_interval: 100
