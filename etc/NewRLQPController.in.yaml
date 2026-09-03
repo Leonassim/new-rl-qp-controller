@@ -102,9 +102,10 @@ policy_path: [
   # commentaire de `case 6:` dans utils.cpp annonce encore 40 -> 4320 ; c'est
   # le commentaire qui est faux, pas le code.
   #
-  # C'est aussi pourquoi rhp7_velocity.onnx n'est plus reference ici : il
-  # declare une entree de 4320 et ferait lever "Observation size mismatch" a
-  # la premiere inference. Il reste dans policy/ pour l'historique.
+  # C'est aussi pourquoi rhp7_velocity.onnx a ete retire de policy/ le
+  # 2026-09-03 : il declarait une entree de 4320 et aurait leve "Observation
+  # size mismatch" a la premiere inference. Recuperable dans l'historique git
+  # si un jour V3_DEEP_HISTORY_SIZE repasse a 40.
   #
   # Le numero est garde tel quel plutot que remis a 0 pour rester lisible face
   # a l'historique et aux commentaires de la branche RHPS1 : index et
