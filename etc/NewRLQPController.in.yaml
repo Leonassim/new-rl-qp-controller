@@ -60,24 +60,25 @@ transitions:
 init: NewRLQPController_Initial
 
 # Every policy is BUNDLED: the files live in policy/ and CMake installs the whole
-# directory to @RL_POLICY_INSTALL_PREFIX@. No absolute path to anyone's home, so
-# a clone + build on the robot PC has the policies without needing mjlab-rhps1
-# checked out anywhere. Adding one is: drop the .onnx in policy/, add a line here
-# and a matching policies[] block.
+# directory to @RL_POLICY_INSTALL_PREFIX@ (file(GLOB ... policy/*.onnx)). No
+# absolute path to anyone's home, so a clone + build on the robot PC has the
+# policies without needing the training repo checked out anywhere. Adding one
+# is: drop the .onnx in policy/, add a line here and a matching policies[]
+# block.
 #
 # For a local experiment you can still point an entry at a training log's ONNX,
-# e.g. /home/<user>/mjlab-rhps1/logs/rsl_rl/rhps1_velocity/<run>/<run>.onnx --
-# but do not commit that, it breaks every other machine.
+# e.g. /home/<user>/<training-repo>/logs/rsl_rl/<run>/<run>.onnx -- but do not
+# commit that, it breaks every other machine.
 #
-# ONLY INDEX 0 HAS EVER RUN ON HARDWARE (2026-08-06). Index 1 is
-# simulation-validated at best; it uses an observation channel whose C++
-# implementation has never been exercised on the robot. Arm from the GUI, keep a
-# hand on the stop.
+# policy/ ne contient QUE des .onnx RHP7 sur cette branche. Les 25 fichiers
+# RHPS1 (rhps1_*.onnx, les runs nommes par date, et les deux placeholders
+# vides) ont ete retires le 2026-09-03 : le glob de CMake les installait tous
+# sur le robot RHP7, soit 58 Mo de poids mort. Ils restent sur la branche
+# real-robot-safe, qui est leur place, et dans l'historique git.
 #
-# Indices 2-4 (abl7/V4, abl15/V5, the wide-randomization posture-filter run)
-# were removed 2026-08-17 -- none beat index 1, and the wide-randomization one
-# had regressed on its own metrics. Full record in git history, commit 5d0fcf5
-# and earlier.
+# AUCUNE de ces trois policies n'a tourne sur le robot RHP7 reel. L'index 0
+# (night2) est valide en simulation. Armer depuis la GUI, garder une main sur
+# l'arret d'urgence.
 policy_path: [
   # Branche `rhp7` : ce fichier ne porte QUE les policies RHP7 Kaleido. Les
   # entrees RHPS1 vivent sur `real-robot-safe` et ont ete retirees ici le
