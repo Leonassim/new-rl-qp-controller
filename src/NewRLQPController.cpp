@@ -20,34 +20,38 @@ NewRLQPController::NewRLQPController(mc_rbdyn::RobotModulePtr rm, double dt, con
   // so the QP acts as a pure safety net. One module value is corrected: the
   // thigh pair's iDist (0.06) exceeds the thighs' *standing* sch distance
   // (0.028), so its damper braked permanently and killed lateral stepping.
-  // 0.025 turns it back into a protection (sDist stays 0.01). Edited in the
-  // stored `cols` because setCollisionsDampers re-creates every pair from it.
-  for(auto & col : selfCollisionConstraint->cols)
+  // 0.025 turns it back into a protection (sDist stays 0.01).
+  //
+  // The correction MUST go through MCController::remove/addCollisions, which
+  // act on `collision_constraints_` -- the constraint built from the yaml's
+  // `collisions:` block and, crucially, the only one `MCController` ever
+  // passes to `solver().addConstraintSet()` (MCController.cpp:296-308).
+  // The `selfCollisionConstraint` member is built at MCController.cpp:202-203
+  // and then never added to any solver, so editing its `cols` (what this code
+  // used to do) changed a vector nothing reads: the pairs actually in the QP
+  // are copies held in the loaded constraint's own CollisionData. Verified in
+  // both mc_rtc 655c7174 and 542a884, so this was silently a no-op on
+  // real-robot-safe too, where setCollisionsDampers had the same target.
+  // Calling removeCollisions on the unused constraint additionally segfaults
+  // here: it dereferences gui_, which is only set by addToSolverImpl.
+  //
+  // remove-then-add because __createCollId returns -1 for a pair already
+  // present and __addCollision then returns silently -- an add alone cannot
+  // override iDist.
+  const auto & rName = robot().name();
+  for(const auto & col : selfCollisionConstraint->cols)
   {
     const bool thighPair = (col.body1 == "L_CROTCH_P_LINK" && col.body2 == "R_CROTCH_P_LINK")
                            || (col.body1 == "R_CROTCH_P_LINK" && col.body2 == "L_CROTCH_P_LINK");
     if(thighPair)
     {
-      col.iDist = 0.025;
-      mc_rtc::log::info("[NewRLQPController] Thigh self-collision iDist corrected to {} (sDist {})", col.iDist,
-                        col.sDist);
+      auto corrected = col;
+      corrected.iDist = 0.025;
+      removeCollisions(rName, rName, {corrected});
+      addCollisions(rName, rName, {corrected});
+      mc_rtc::log::info("[NewRLQPController] Thigh self-collision iDist corrected to {} (sDist {})", corrected.iDist,
+                        corrected.sDist);
     }
-  }
-  // RHP7 runs on the real robot's frozen mc_rtc (superbuild pinned 2023-10-13,
-  // mc_rtc bumped by hand to 2024-05-23 and never since). setCollisionsDampers
-  // and the CBF-tuned KinematicsConstraint ctor below only exist from
-  // bastien-muraccioli/mc_rtc commit 2957e17c (2026-05-05), ~2 years too late
-  // for this robot -- see real-robot-pin-rhp7 in mc-rtc-superbuild for the
-  // compat check. Re-apply the corrected cols the old way instead: remove
-  // then re-add every pair, which is what setCollisionsDampers did internally
-  // on top of the CBF gains. Same hard `distance >= 0` constraint either way
-  // (VelocityDamper in tvm::task_dynamics) -- CBF only tunes the braking
-  // *response* (zeta_selfCollision_/lambda_selfCollision_ below go unused on
-  // this branch), it does not add the safety margin itself.
-  {
-    auto correctedCols = selfCollisionConstraint->cols;
-    selfCollisionConstraint->removeCollisions(solver(), correctedCols);
-    selfCollisionConstraint->addCollisions(solver(), correctedCols);
   }
   // use_torque_task needs the dynamics: TorqueTask minimises the error between
   // the requested torque and the one the dynamic model produces, so without
