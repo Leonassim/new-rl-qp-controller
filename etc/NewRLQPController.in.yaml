@@ -49,10 +49,10 @@ ObserverPipelines:
         contactsDetection: Surfaces
         surfacesForContactDetection: [RightFootCenter, LeftFootCenter]
     # Ground-truth fallback (mc_mujoco perfect pose), for comparison:
-    # - type: BodySensor
-    #   update: true
-    #   gui: true
-    #   bodySensor: FloatingBase
+    - type: BodySensor
+      update: false
+      gui: true
+      bodySensor: FloatingBase
 
 states: {}
 transitions:
@@ -93,64 +93,47 @@ policy_path: [
   # de RHPS1 (_WRIST_P la ou RHPS1 a _WRIST_R, plus L_HAND/R_HAND actionnes).
   #
   # obs_format: 6 sur les blocs ci-dessous route vers le `case 6:` de
-  # utils.cpp (sept termes, historique 40, deja parametre sur
-  # refJointOrderRLAction.size() -- 40*(3+3+3+32+32+32+3) = 4320, la forme
-  # d'entree de cet ONNX). Le numero est garde tel quel plutot que remis a 0
-  # pour rester lisible face a l'historique et aux commentaires de la branche
-  # RHPS1 : index et obs_format/case C++ sont independants de toute facon.
-  "@RL_POLICY_INSTALL_PREFIX@/rhp7_velocity.onnx",
+  # utils.cpp (sept termes, parametre sur refJointOrderRLAction.size()).
+  # La longueur d'historique effective est V3_DEEP_HISTORY_SIZE = 10
+  # (NewRLQPController.h), pas 40 : 10*(3+3+3+32+32+32+3) = 1080, ce qui est
+  # bien la forme d'entree des trois ONNX ci-dessous (verifie au chargement :
+  # "ONNX policy loaded successfully (input: 1080, output: 32)"). Le
+  # commentaire de `case 6:` dans utils.cpp annonce encore 40 -> 4320 ; c'est
+  # le commentaire qui est faux, pas le code.
+  #
+  # C'est aussi pourquoi rhp7_velocity.onnx n'est plus reference ici : il
+  # declare une entree de 4320 et ferait lever "Observation size mismatch" a
+  # la premiere inference. Il reste dans policy/ pour l'historique.
+  #
+  # Le numero est garde tel quel plutot que remis a 0 pour rester lisible face
+  # a l'historique et aux commentaires de la branche RHPS1 : index et
+  # obs_format/case C++ sont independants de toute facon.
+  "@RL_POLICY_INSTALL_PREFIX@/night2.onnx",
   # index 1, 2: rhp7flat / rhp7test2 -- meme reseau/plant que l'index 0, seul
   # q0 change (le _stance du module robot au lieu du q0 d'entrainement). Voir
   # le commentaire sur leurs blocs dans policies: plus bas.
-  #
-  # ATTENTION : rhp7flat.onnx et rhp7test2.onnx n'existent pas encore dans
-  # policy/. Le chargement est paresseux (NewRLQPController.cpp ne construit
-  # que policyPaths_[currentPolicyIndex]), donc ces entrees sont inertes tant
-  # qu'on ne les selectionne pas -- mais les selectionner echouera.
   "@RL_POLICY_INSTALL_PREFIX@/rhp7flat.onnx",
   "@RL_POLICY_INSTALL_PREFIX@/rhp7test2.onnx",
 ]
-# 0 = rhp7_velocity, la seule entree dont le .onnx existe. Les index 1 et 2
-# n'ont pas encore leur fichier, donc le defaut ne peut pas etre autre chose :
-# c'est ce sur quoi le controleur retombe, pas ce que quelqu'un a l'intention
-# de lancer -- ce qui est teste se selectionne depuis la GUI.
+# 0 = night2. Les trois .onnx sont desormais bundles dans policy/ et installes
+# par le glob de CMakeLists.txt, donc un clone + build sur le PC du robot les
+# a tous les trois -- les index 1 et 2 sont selectionnables depuis la GUI.
 #
 # Exige MainRobot: RHP7 dans mc_rtc.yaml. Un index incoherent avec le robot
 # charge leve std::out_of_range dans initializeRobot() (les maps kp/kd/q0 sont
 # lues avec .at() sur le refJointOrder du robot courant).
 default_policy_index: 0
 
-# N*Kt per joint, to convert what the robot measures into N.m.
-#
-# What RobotHardware publishes on `tau` is NOT a torque on RHPS1: the VRML
-# sets gearRatio=1 and torqueConst=1 for all 62 joints, so the value is really
-# ratedCurrent * 0x6077/1000, a CURRENT in amps. The controller logs both:
-# NewRLQPController_joint_current (A, raw) and NewRLQPController_joint_torque
-# (N.m, = current * the value below).
-#
-# Source: scripts/ppc/joint_torque_limits_rotate.csv, synced 2026-08-21 with
-# Leonassim/RHPS1_gains. The Kt before that sync were wrong -- 0.0582/0.101/0.047
-# against nameplate 0.116/0.424/0.246 -- so every torque this table produced was
-# understated by 2.0x, 4.2x or 5.2x depending on the joint. Do not hand-edit:
-# mc-rtc-superbuild/scripts/ppc/apply_kt.py writes all four files that carry
-# these constants together.
-#
-# Deliberately limited to the six single-motor joints. Chest now has a Kt
-# (0.246) but stays out anyway: its two drives are ChestYPL = P+Y and
-# ChestYPR = P-Y, and the IOB sums the current over a joint's drives with no
-# sign, which is the common mode. That sum is right for CHEST_P and wrong for
-# CHEST_Y, and one scale cannot be both. The other differential pairs (shoulder
-# R/Y, elbow P/Y, wrist P/Y, head) still have no sourced Kt, and the piston
-# joints (crotch P/R, ankle P/R) have a variable lever arm needing
-# CylinderToAngle. Joints absent here stay at 0 in the log rather than being
-# converted with a made-up factor.
-joint_torque_scale:
-  L_CROTCH_Y:    18.455   # 159.091 * 0.116
-  R_CROTCH_Y:    18.455   # 159.091 * 0.116
-  L_KNEE_P:     89.040   # 210 * 0.424
-  R_KNEE_P:     89.040   # 210 * 0.424
-  L_SHOULDER_P:  49.200   # 200 * 0.246
-  R_SHOULDER_P:  49.200   # 200 * 0.246
+# RHPS1 had a joint_torque_scale table here (N*Kt per joint, to work around
+# RobotHardware publishing a raw current on `tau` instead of a torque on that
+# robot's VRML). Removed on this RHP7 branch: this is a RHPS1-specific
+# hardware quirk/Kt sourcing, not established for RHP7. The key is read via
+# config_.has("joint_torque_scale") in NewRLQPController.cpp -- purely
+# optional, only feeds the diagnostic NewRLQPController_joint_torque log
+# entry, nothing in the QP or the RL inference depends on it. Without it,
+# joint_torque simply stays at 0 for all joints (same as it already was for
+# every joint not listed in RHPS1's table) and joint_current keeps logging
+# normally.
 
 policies:
   # index 0 : RHP7 Kaleido -- velocity-action (JointVelocityAction mjlab +
@@ -325,7 +308,7 @@ policies:
       L_ELBOW_Y:    0.06578947368421052
       L_WRIST_P:    0.039473684210526314
       L_WRIST_Y:    0.039473684210526314
-      L_HAND:       27.272727272727273
+      L_HAND:       0.2
       R_SHOULDER_P: 0.08974358974358974
       R_SHOULDER_R: 0.09210526315789473
       R_SHOULDER_Y: 0.09210526315789473
@@ -333,7 +316,7 @@ policies:
       R_ELBOW_Y:    0.06578947368421052
       R_WRIST_P:    0.039473684210526314
       R_WRIST_Y:    0.039473684210526314
-      R_HAND:       27.272727272727273
+      R_HAND:       0.2
       L_CROTCH_Y:   0.06666666666666667
       L_CROTCH_R:   0.20833333333333334
       L_CROTCH_P:   0.20833333333333334
@@ -439,18 +422,18 @@ policies:
       CHEST_P:      0.0         # 0 deg
       HEAD_Y:       0.0         # absent du keyframe -> defaut 0, confirme par l'ONNX
       HEAD_P:       0.0         # idem
-      L_SHOULDER_P: 0.523599    # 30 deg
-      L_SHOULDER_R: 0.174533    # 10 deg
+      L_SHOULDER_P: 0.261799    # 15 deg
+      L_SHOULDER_R: 0.087266    # 5 deg
       L_SHOULDER_Y: -0.087266   # -5 deg
-      L_ELBOW_P:    -1.396263   # -80 deg
+      L_ELBOW_P:    -0.523599   # -30 deg
       L_ELBOW_Y:    0.0
       L_WRIST_P:    0.0
       L_WRIST_Y:    0.0
       L_HAND:       0.0
-      R_SHOULDER_P: 0.523599    # 30 deg
-      R_SHOULDER_R: -0.174533   # -10 deg
+      R_SHOULDER_P: 0.261799    # 15 deg
+      R_SHOULDER_R: -0.087266   # -5 deg
       R_SHOULDER_Y: 0.087266    # 5 deg
-      R_ELBOW_P:    -1.396263   # -80 deg
+      R_ELBOW_P:    -0.523599   # -30 deg
       R_ELBOW_Y:    0.0
       R_WRIST_P:    0.0
       R_WRIST_Y:    0.0
