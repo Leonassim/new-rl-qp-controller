@@ -105,20 +105,6 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    *  control rate -- see the note in the implementation. */
   double postureStiffness() const;
 
-  /** @brief Whether the projected target drives the command, or only the
-   *  observation.
-   *
-   *  The projection encodes a torque, not a pose: its correctness is the
-   *  identity "clamping tau and projecting q* onto tau's preimage are the same
-   *  operation", which holds only for the PD it was derived from. Measured in
-   *  mc_mujoco, the projected ankle-roll target sits 26 window widths from the
-   *  measurement (the v_term shift, by design) -- fine for a PD that turns it
-   *  into exactly effort_limit, absurd for a PostureTask at K=40000, which reads
-   *  it as a ~4700 rad/s^2 demand. So under the QP the command keeps the
-   *  filtered physical target and the QP's own torque bounds do the clamping;
-   *  the observation still reads the projected target, as training does. */
-  bool projectionFeedsCommand() const { return !useQP_; }
-
   /** @brief Load another policy index at runtime, from the GUI.
    *
    *  Refuses while ARMED: every per-policy plant parameter changes underneath
@@ -262,41 +248,32 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   /** @brief Full observation vector fed to the policy at each inference step. */
   Eigen::VectorXd currentObservation;
 
-  // Observation history buffers.
-  // Index 0 = most recent, index HISTORY_SIZE-1 = oldest.
-  // Stacked oldest-first into the observation vector to match mjlab ordering.
-  // Shared by policy indices 0/1/2/3 (V3/V4/V5), all trained with a 5-step
-  // history. Do NOT bump this for a policy that wants a different depth --
-  // it is a compile-time array size shared by every case in the switch, so
-  // changing it silently breaks every other case's observation size (see
-  // the dedicated V3-deep-history buffers below for how a case with its own
-  // depth is meant to be added instead).
-  static constexpr int HISTORY_SIZE = 5;
-  bool histInitialized_ = false;
-  std::array<Eigen::Vector3d, HISTORY_SIZE> linVel_;
-  std::array<Eigen::Vector3d, HISTORY_SIZE> angVel_;
-  std::array<Eigen::Vector3d, HISTORY_SIZE> projGrav_;
-  std::array<Eigen::VectorXd, HISTORY_SIZE> jointPos_;
-  std::array<Eigen::VectorXd, HISTORY_SIZE> jointVel_;
-  std::array<Eigen::VectorXd, HISTORY_SIZE> jointAct_;
-  std::array<Eigen::Vector3d, HISTORY_SIZE> velCmd_;
-  // V4 only: [sin(2pi*phi_L), cos(2pi*phi_L), sin(2pi*phi_R), cos(2pi*phi_R)]
-  // scaled by the clock amplitude. See gaitPhaseStep().
-  std::array<Eigen::Vector4d, HISTORY_SIZE> gaitPhase_;
+  // RHPS1 policy indices 0-3 (V3/V4/V5) used to share a depth-5 history here
+  // (HISTORY_SIZE, linVel_/angVel_/projGrav_/jointPos_/jointVel_/jointAct_/
+  // velCmd_/gaitPhase_/histInitialized_, plus the "V4 only" gait-phase clock
+  // below it). Removed 2026-09-04: those cases no longer exist in the
+  // switch on this branch, and every one of those buffers was write-only
+  // (filled at reset(), never read by anything) once they went. See git
+  // history if RHPS1-branch parity is ever needed again.
+  //
+  // updateRawTorqueRatio()/rawTorqueRatio_/rawTorque_/RAW_TORQUE_HISTORY
+  // (the V5-only raw-torque channel, depth 10) lived here too, along with
+  // applyPostureFilter()/applyVelocityDamper()/projectTorqueFeasible()/
+  // projectionFeedsCommand() elsewhere in this file. All position_action-only
+  // (utils.cpp's `else if(newInference)` branch, removed alongside them):
+  // RHP7 will only ever run velocity_action. See git history to bring any
+  // of it back if that ever changes.
 
-  // V5 only: |tau_raw| / effort_limit per joint, history 10 (deeper than the
-  // other blocks, which is why it does not share HISTORY_SIZE). See
-  // updateRawTorqueRatio().
-  static constexpr int RAW_TORQUE_HISTORY = 10;
-  std::array<Eigen::VectorXd, RAW_TORQUE_HISTORY> rawTorque_;
-
-  // Policy index 4 only (hippolyte's run, obs = 4080 = 40 * 102): history 40
-  // on every term (base_lin_vel, base_ang_vel, projected_gravity, joint_pos,
-  // joint_vel, actions, command), unlike V3/V4/V5's depth-5 history. Kept in
-  // its own buffers rather than resizing HISTORY_SIZE, for the same reason
-  // rawTorque_ has its own RAW_TORQUE_HISTORY: one array size is shared by
-  // every case's declarations, so bumping it for one policy silently breaks
-  // the observation size of all the others.
+  // Deep observation history for velocity_action policies (case 6 on this
+  // branch, RHP7 Kaleido). V3_DEEP_HISTORY_SIZE = 10 -> with the 7 terms
+  // `case 6:` stacks (base_lin_vel, base_ang_vel, projected_gravity,
+  // joint_pos, joint_vel, actions, command) over 32 actuated joints, that is
+  // 10*(3+3+3+32+32+32+3) = 1080, matching every RHP7 ONNX's declared input
+  // ("ONNX policy loaded successfully (input: 1080, ...)" at load time).
+  // Originally added for an RHPS1 policy (index 4, "hippolyte's run") at
+  // history 40 (obs 4080) -- kept in its own buffers rather than sharing an
+  // array size with any other case's declarations, so bumping it for one
+  // policy cannot silently break the observation size of another.
   static constexpr int V3_DEEP_HISTORY_SIZE = 10;
   bool histInitializedV3Deep_ = false;
   std::array<Eigen::Vector3d, V3_DEEP_HISTORY_SIZE> linVelDeep_;
@@ -309,29 +286,14 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
 
   Eigen::Vector3d currentVelCmd_ = Eigen::Vector3d::Zero();
 
-  // =========================================================================
-  // Gait phase clock (V4 observation only)
-  // =========================================================================
-  //
-  // mjlab drives the gait with an open-loop clock and feeds its phase to the
-  // policy, so this has to reproduce that clock exactly or the network sees a
-  // channel it never trained against. Mirrors mdp.rewards.gait_phase_tracking:
-  // phase advances by dt/period each policy step and wraps into [0, 1); the
-  // right foot is the left shifted by 0.5; the clock FREEZES while the
-  // commanded speed is below gaitCommandThreshold_; the period interpolates
-  // linearly from gaitPeriodSlow_ at that threshold to gaitPeriodFast_ at
-  // gaitCommandRef_; and the block is scaled by an amplitude ramping 0 -> 1
-  // over [0, gaitCommandThreshold_], so it goes flat at zero command instead of
-  // freezing on whatever encoding the clock happened to stop on. A frozen but
-  // nonzero encoding is indistinguishable from an active gait to the network.
-  double gaitPhase_value_ = 0.0;
-  double gaitPeriodSlow_ = 2.0;
-  double gaitPeriodFast_ = 1.1;
-  double gaitCommandThreshold_ = 0.1;
-  double gaitCommandRef_ = 0.7;
-
-  /** @brief Advance the gait clock one policy step and refresh gaitPhase_[0]. */
-  void gaitPhaseStep();
+  // A gait-phase clock (open-loop, mirroring mjlab's mdp.rewards.gait_phase_
+  // tracking) used to live here: gaitPhaseStep(), gaitPhase_value_,
+  // gaitPeriodSlow_/Fast_, gaitCommandThreshold_, gaitCommandRef_, feeding a
+  // gaitPhase_[HISTORY_SIZE] buffer. Removed 2026-09-04 along with the
+  // depth-5 history buffers above: it fed the "V4 observation only" RHPS1
+  // policy, gaitPhaseStep() was declared and defined but never called once
+  // that case left the switch, and none of the doubles above had any other
+  // reader either. See git history to bring it back.
 
   /**
    * @brief Config key: velocity_action (default false).
@@ -339,12 +301,15 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    * Selects which mjlab action/actuator contract this policy was trained
    * against -- they are NOT interchangeable:
    *
-   * - false (default, policies 0-3): position action (mjlab
-   *   FiniteDifferencePdActuator). q_rl = q_zero + currentActionScaled is
-   *   recomputed fresh every policy step; updateRawTorqueRatio()/
-   *   projectTorqueFeasible() reconstruct the velocity feedforward by
-   *   finite-differencing consecutive q_rl targets, exactly as the training
-   *   actuator does.
+   * - false (default, RHPS1 policies 0-3): position action (mjlab
+   *   FiniteDifferencePdActuator). q_rl = q_zero + currentActionScaled,
+   *   recomputed fresh every policy step, with the velocity feedforward
+   *   reconstructed by finite-differencing consecutive q_rl targets exactly
+   *   as the training actuator does. NOT IMPLEMENTED on this branch: RHP7
+   *   only ever trains velocity_action, and the position_action code
+   *   (updateRawTorqueRatio(), projectTorqueFeasible(), and the rest of
+   *   utils.cpp's `else if(newInference)` branch) was removed 2026-09-04.
+   *   See git history if a future RHP7 policy needs it back.
    * - true (policy 4, "hippolyte's velocity policy"): velocity action
    *   (mjlab JointVelocityAction + IdealPdActuator). q_rl = measured joint
    *   position + currentActionScaled * policyStepSize -- the actuator's own
@@ -419,46 +384,16 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    */
   Eigen::VectorXd maxTargetDev_;
   Eigen::VectorXd qdTarget_;    ///< Filtered velocity target (qd*).
-  Eigen::VectorXd qTargetPrev_; ///< Previous *raw* position target, for the finite difference.
-  bool projInitialized_ = false; ///< False until the first target seeds qTargetPrev_.
-  Eigen::VectorXd rawTorqueRatio_; ///< |tau_raw| / effort_limit, current step.
 
-  // Upstream PostureTask filter, `posture_filter_stiffness` per policy.
-  //
-  // Training puts the QP's PostureTask BEFORE the finite difference and the
-  // projection (finite_difference_pd_actuator.py:308) -- the mc_rtc PostureTask
-  // is downstream of both, so that ordering only exists here if we integrate it
-  // ourselves. Without it qd* is the finite difference of the RAW target, which
-  // for this policy jumps ~20 action units a step, saturates
-  // vel_target_limit_per_joint and shoves the projection window ~0.3 rad off the
-  // measurement -- the runaway described on qTargetPrev_ below, reached from the
-  // other side. 0 disables it: index 0 trained with no filter at all.
-  double postureFilterK_ = 0.0;
-  Eigen::VectorXd postureQ_;  ///< Filter state, position.
-  Eigen::VectorXd postureQd_; ///< Filter state, velocity.
-  bool postureFilterInit_ = false;
-
-  /** @brief Second-order posture filter, semi-implicit, `n` substeps of
-   *  policyStepSize/n. Returns qCmd unchanged when the policy declares no
-   *  posture_filter_stiffness. */
-  Eigen::VectorXd applyPostureFilter(const Eigen::VectorXd & qCmd);
-
-  // Velocity damper, `velocity_damper_di` per policy. mjlab runs it between the
-  // qd* estimate and the torque projection (finite_difference_pd_actuator.py:377)
-  // and it is NOT optional for the observation: _executed_position_target is
-  // allocated unconditionally, so executed_action reads the POST-damper target
-  // even when the projection is off. Under the QP mc_rtc's KinematicsConstraint
-  // covers the command side, but nothing covered the observation, and the bypass
-  // path had no damper at all.
-  //
-  // joint_limits must be mjlab's mj_model.jnt_range, not mc_rtc's -- the damper's
-  // zone is a fraction of the range, so a different range is a different plant.
-  // Declared in the yaml rather than read from the robot so the two cannot drift
-  // apart silently.
-  double damperDi_ = 0.0;
-  double damperDs_ = 0.0;
-  double damperVelPercent_ = 0.9;
-  Eigen::VectorXd jointLower_, jointUpper_, velLimit_;
+  // The upstream PostureTask filter (postureFilterK_/postureQ_/postureQd_/
+  // postureFilterInit_/applyPostureFilter()), the velocity damper (damperDi_/
+  // Ds_/VelPercent_/jointLower_/jointUpper_/velLimit_/applyVelocityDamper()),
+  // the torque-feasibility projection (projectTorqueFeasible()/
+  // projectionFeedsCommand()), and the raw-torque channel that fed it
+  // (updateRawTorqueRatio()/qTargetPrev_/projInitialized_/rawTorqueRatio_)
+  // used to live here. All position_action-only, removed 2026-09-04: RHP7
+  // will only ever run velocity_action. See git history to bring any of it
+  // back if that ever changes.
 
   /** @brief Apply the posture task gains for the current policy. */
   void applyPostureMode();
@@ -541,14 +476,13 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   /** @brief Write qdTarget_ as refVel, every tick, unconditionally (the plain
    *  default path -- no posture_passthrough/posture_feedforward involved).
    *  qdTarget_ is already the exact commanded velocity for velocity_action
-   *  policies (utils.cpp run_rl_state, no finite difference) and the
-   *  EMA-filtered finite difference of the target for position_action ones
-   *  (NewRLQPController::updateRawTorqueRatio). Harmless under
-   *  posturePassthrough_ (damping is zeroed there, so the Kv*(refVel-qdot)
-   *  term it feeds is inert) and overwritten by setPostureFeedforward() when
-   *  postureFeedforward_ is on (that path owns refVel with its own, richer
-   *  qd-star / qdd-star pair). Sets postureRefAccelWritten_ so the existing disarm path
-   *  zeroes it back out -- see run(). */
+   *  policies (utils.cpp run_rl_state, no finite difference -- the only
+   *  contract RHP7 runs). Harmless under posturePassthrough_ (damping is
+   *  zeroed there, so the Kv*(refVel-qdot) term it feeds is inert) and
+   *  overwritten by setPostureFeedforward() when postureFeedforward_ is on
+   *  (that path owns refVel with its own, richer qd-star / qdd-star pair).
+   *  Sets postureRefAccelWritten_ so the existing disarm path zeroes it back
+   *  out -- see run(). */
   void setPostureRefVel(mc_tasks::PostureTaskPtr & pt);
 
   /** @brief refAccel = 2 (q* - q_out - dq_out T) / T^2, clamped, T floored at
@@ -562,41 +496,6 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
 
   /** @brief Write the feedforward as refVel and refAccel, gains kept. */
   void setPostureFeedforward(mc_tasks::PostureTaskPtr & pt);
-
-  /** @brief Clamp qd* to vel_percent * velocity_limits and project the target
-   *  into the joint-limit safe region, as mjlab's _apply_velocity_damper does.
-   *  No-op when the policy declares no velocity_damper_di. */
-  Eigen::VectorXd applyVelocityDamper(const Eigen::VectorXd & qTarget);
-
-  /**
-   * @brief Advance qd*, compute the raw-torque ratio and push it into rawTorque_.
-   *
-   * Must run once per inference, on the RAW target, BEFORE projectTorqueFeasible
-   * and regardless of use_QP -- the V5 network was trained with this channel and
-   * will read garbage without it. Splitting it out of the projection is also what
-   * keeps qTargetPrev_ fresh across a QP interlude: the projection used to be the
-   * only writer, so it had to drop its seed on the way out.
-   *
-   * The ratio is the pre-clamp demand of the training PD:
-   *   ratio_i = |kp_i (q*_i - q_i) + kd_i (qd*_i - qdot_i)| / effort_limit_i
-   * evaluated on the raw target, which is what mjlab's actuator peak-holds over
-   * the substeps between two policy steps.
-   *
-   * KNOWN APPROXIMATION: abl15 trained with decimation 2 (sim 0.0025 s, policy
-   * 0.005 s), so its channel is the max over TWO substeps; this is a single
-   * evaluation at the policy boundary. A max over two samples is >= either one,
-   * so the controller feeds a slightly LOW ratio -- conservative in the sense
-   * that it never invents demand, but it is not bit-exact. On the real robot
-   * mc_rtc's dt equals the policy step, so there is no second sample to take.
-   */
-  void updateRawTorqueRatio(const Eigen::VectorXd & qTarget);
-
-  /**
-   * @brief Project @p qTarget onto the torque-feasible interval.
-   * @return the projected target; unchanged when the projection is disabled.
-   * @pre updateRawTorqueRatio() ran this step: qd* is read, not recomputed.
-   */
-  Eigen::VectorXd projectTorqueFeasible(const Eigen::VectorXd & qTarget);
 
   // =========================================================================
   // Policy / timing

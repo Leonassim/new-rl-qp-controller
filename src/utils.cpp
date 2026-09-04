@@ -185,55 +185,14 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
           ctl.qdTarget_(i) = std::max(-lim, std::min(lim, ctl.currentActionScaled(i)));
         }
       }
-      else if(newInference)
-      {
-        // position_action (policies 0-3): the target is rebuilt from q_zero
-        // every step, not integrated. Kept in this branch rather than in the
-        // loop above because velocity_action integrates instead.
-        for (int j = 0; j < ctl.currentAction.size(); ++j) {
-            int i = ctl.actionToDofMap[j];
-            ctl.q_rl(i) = ctl.currentActionScaled(i) + ctl.q_zero(i);
-        }
-        // The QP's PostureTask, reproduced upstream of the finite difference and
-        // the projection because that is where training puts it
-        // (finite_difference_pd_actuator.py:308) and the mc_rtc PostureTask is
-        // downstream of both. No-op unless the policy declares
-        // posture_filter_stiffness.
-        ctl.q_rl = ctl.applyPostureFilter(ctl.q_rl);
-        // Order matters: the raw-torque channel is measured on the target BEFORE
-        // the projection (measuring it after makes every joint report exactly the
-        // ratio the projection enforces -- the projection measuring itself), and it
-        // must run in both QP and bypass because the V5 network reads it either way.
-        ctl.updateRawTorqueRatio(ctl.q_rl);
-        // Velocity damper, between the qd* estimate and the projection, as
-        // finite_difference_pd_actuator.py:377 has it. It also clamps qd*, so it
-        // must run before the projection reads it. No-op unless the policy block
-        // sets velocity_damper_di.
-        ctl.q_rl = ctl.applyVelocityDamper(ctl.q_rl);
-        // Project onto the torque-feasible set, exactly as the training actuator
-        // does. No-op unless the policy block sets torque_feasibility_ratio.
-        const Eigen::VectorXd qProjected = ctl.projectTorqueFeasible(ctl.q_rl);
-        // The projected target drives the command only on the bypass path, where
-        // the plant really is the PD the projection was derived from. Under the QP
-        // it would hand the PostureTask a torque encoding as if it were a pose --
-        // see NewRLQPController::projectionFeedsCommand().
-        if(ctl.projectionFeedsCommand()) { ctl.q_rl = qProjected; }
-        // Feed back the action as EXECUTED, not as requested: the V4 observation's
-        // actions block is executed_action. Beyond the feasible window many raw
-        // actions map to one execution, and a policy that only ever sees what it
-        // asked for cannot tell them apart -- which is the whole reason the
-        // training observation switched away from last_action. Always the projected
-        // target, whatever drives the command: that is the signal training feeds.
-        for (int j = 0; j < ctl.currentAction.size(); ++j) {
-            int i = ctl.actionToDofMap[j];
-            const double scale = ctl.actionScale(i);
-            if(std::abs(scale) > 1e-12)
-            {
-              ctl.currentActionScaled(i) = qProjected(i) - ctl.q_zero(i);
-              ctl.currentAction(j) = ctl.currentActionScaled(i) / scale;
-            }
-      }
-      }
+      // position_action (RHPS1 policies 0-3: target rebuilt from q_zero every
+      // step, upstream posture filter, raw-torque channel, velocity damper,
+      // torque-feasibility projection) removed 2026-09-04: this branch is
+      // RHP7-only and velocity_action is its only action contract. See git
+      // history to bring position_action back for a future RHP7 policy --
+      // applyPostureFilter()/applyVelocityDamper()/projectTorqueFeasible()/
+      // projectionFeedsCommand()/updateRawTorqueRatio() and their state were
+      // removed alongside it, since this was their only caller.
   }
   catch(const std::exception & e)
   {
