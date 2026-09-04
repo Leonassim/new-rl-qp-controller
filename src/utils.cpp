@@ -242,12 +242,16 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
   };
 
   switch (ctl.obsFormat_) {
-    case 6: // RHP7 Kaleido, velocity-action -- le SEUL format de cette branche.
-            // Sept termes (base_lin_vel, base_ang_vel, projected_gravity,
-            // joint_pos, joint_vel, actions, command) a l'historique 40, sur
-            // 32 joints actionnes : 40*(3+3+3+32+32+32+3) = 4320, la forme
-            // d'entree des ONNX RHP7. Toutes les dimensions viennent de
-            // refJointOrderRLAction.size(), jamais d'un 30 litteral.
+    case 6: // RHP7 Kaleido, velocity-action, avec MCWaiko. Sept termes
+            // (base_lin_vel, base_ang_vel, projected_gravity, joint_pos,
+            // joint_vel, actions, command) a l'historique V3_DEEP_HISTORY_SIZE
+            // = 10, sur 32 joints actionnes : 10*(3+3+3+32+32+32+3) = 1080, la
+            // forme d'entree des ONNX RHP7 qui utilisent ce format (verifie au
+            // chargement : "ONNX policy loaded successfully (input: 1080,
+            // ...)"). Toutes les dimensions viennent de
+            // refJointOrderRLAction.size(), jamais d'un 30 litteral. Le
+            // commentaire annoncait encore "historique 40 -> 4320" jusqu'au
+            // 2026-09-04 ; c'etait le commentaire qui etait faux, pas le code.
             //
             // Les cas RHPS1 (0/1/3/4/5, et le 2 qui partageait ce corps) ont
             // ete retires le 2026-09-01 avec la separation des deux robots par
@@ -304,6 +308,97 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       { obs.segment(offset, 3) = v; offset += 3; };
 
       for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) write3(ctl.linVelDeep_[i]);
+      for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) write3(ctl.angVelDeep_[i]);
+      for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) write3(ctl.projGravDeep_[i]);
+      for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointPosDeep_[i]);
+      for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointVelDeep_[i]);
+      for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointActDeep_[i]);
+      for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) write3(ctl.velCmdDeep_[i]);
+      break;
+    }
+    case 0: // RHP7 Kaleido, velocity-action, SANS MCWaiko (branche rhp7novel).
+            // Six termes au lieu des sept de case 6 -- base_lin_vel retire
+            // entierement (entraine critic-only, cf. asymmetric actor-critic:
+            // le critic le voit a l'entrainement, l'actor deploye ne l'a
+            // jamais reçu, donc rien a reconstruire ici). Meme historique
+            // V3_DEEP_HISTORY_SIZE = 10 : 10*(3+3+32+32+32+3) = 1050, forme
+            // d'entree attendue des ONNX de cette branche.
+            //
+            // But de ce format : zero dependance a un observateur de pose
+            // (MCWaiko ou autre). base_ang_vel et projected_gravity viennent
+            // tous les deux directement du capteur IMU brut ("Accelerometer"
+            // dans le yaml), qui reste peuple par l'interface (mc_mujoco ou
+            // le driver materiel) que la pipeline d'observateurs tourne ou
+            // non -- voir RobotData, partage entre robot()/realRobot(), et
+            // MCGlobalController::setSensorAngularVelocities. C'est ce qui
+            // permet a cette branche de se passer de MCWaiko, et donc des
+            // forks ArnaudDmt de state-observation/mc_state_observation :
+            // le vieux superbuild du robot reel (upstream jrl-umi3218, sans
+            // WAIKO) suffit.
+    {
+      auto & rr = ctl.realRobot(ctl.robots()[0].name());
+      const auto & imu = rr.bodySensor("Accelerometer");
+
+      // Shift history buffers: drop oldest (index V3_DEEP_HISTORY_SIZE-1), push at index 0
+      for(int i = ctl.V3_DEEP_HISTORY_SIZE - 1; i > 0; --i)
+      {
+        ctl.angVelDeep_[i]   = ctl.angVelDeep_[i-1];
+        ctl.projGravDeep_[i] = ctl.projGravDeep_[i-1];
+        ctl.jointPosDeep_[i] = ctl.jointPosDeep_[i-1];
+        ctl.jointVelDeep_[i] = ctl.jointVelDeep_[i-1];
+        ctl.jointActDeep_[i] = ctl.jointActDeep_[i-1];
+        ctl.velCmdDeep_[i]   = ctl.velCmdDeep_[i-1];
+      }
+
+      // Raw gyro reading, already expressed in the IMU's (body-fixed) frame
+      // -- no R_w2b rotation needed, unlike case 6's bodyVelW().angular().
+      // Physically equivalent to mjlab's root_ang_vel_b.
+      ctl.angVelDeep_[0] = imu.angularVelocity();
+
+      // Gravity direction in the body frame, approximated from the raw
+      // accelerometer instead of an estimated orientation quaternion. Valid
+      // because quat_apply_inverse(root_link_quat_w, (0,0,-1)) is affected
+      // only by tilt (roll/pitch), never yaw -- a pure yaw rotation of a
+      // vector aligned with the rotation axis leaves it unchanged -- and
+      // tilt is exactly what an accelerometer measures at (quasi-)constant
+      // velocity: it reads the specific force opposing gravity, i.e.
+      // approximately +g in the body's local "up" direction when upright,
+      // the negative of the (0,0,-1) world gravity vector rotated into that
+      // same frame. Hence the minus sign below.
+      //
+      // UNVERIFIED SIGN/SCALE: check against NewRLQPController_projectedGravity
+      // (or equivalent log entry once added) with the robot standing still --
+      // it should read close to (0, 0, -1). Flip the sign here if it does
+      // not. Degrades under large linear acceleration (accelerometer no
+      // longer reads pure specific force); acceptable at walking speeds per
+      // the training-time domain randomization, to be confirmed once a
+      // policy trained this way exists.
+      const Eigen::Vector3d acc = imu.linearAcceleration();
+      ctl.projGravDeep_[0] = acc.norm() > 1e-6 ? -acc.normalized() : Eigen::Vector3d(0, 0, -1);
+
+      ctl.velCmdDeep_[0] = ctl.currentVelCmd_;
+
+      // jointActDeep_[0] = raw NN output from the previous step (before scaling)
+      ctl.jointActDeep_[0] = ctl.currentAction;
+
+      const int actionDim = static_cast<int>(ctl.refJointOrderRLAction.size());
+      ctl.jointPosDeep_[0] = Eigen::VectorXd::Zero(actionDim);
+      ctl.jointVelDeep_[0] = Eigen::VectorXd::Zero(actionDim);
+      for(int j = 0; j < actionDim; ++j)
+      {
+        const int mcIdx = rr.jointIndexByName(ctl.refJointOrderRLAction[j]);
+        // mjlab's joint_pos_rel observation term: joint_pos - default_joint_pos.
+        ctl.jointPosDeep_[0](j) = rr.mbc().q[mcIdx][0] - ctl.q_zero[ctl.actionToDofMap[j]];
+        ctl.jointVelDeep_[0](j) = rr.mbc().alpha[mcIdx][0];
+      }
+
+      // Build observation: every term stacked as history, oldest first
+      // (index V3_DEEP_HISTORY_SIZE-1 -> 0). Same term ORDER as case 6 minus
+      // base_lin_vel -- keep it that way unless the training-side observation
+      // builder changed the order too, not just dropped a term.
+      auto write3 = [&](const Eigen::Vector3d & v)
+      { obs.segment(offset, 3) = v; offset += 3; };
+
       for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) write3(ctl.angVelDeep_[i]);
       for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) write3(ctl.projGravDeep_[i]);
       for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointPosDeep_[i]);

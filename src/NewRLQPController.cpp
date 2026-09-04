@@ -303,6 +303,22 @@ void NewRLQPController::checkFloatingBaseObserver()
 
   mc_rtc::log::info("[NewRLQPController] observer pipeline: [{}]", mc_rtc::io::to_string(found));
 
+  // obs_format 0 (rhp7novel) does not apply here: base_ang_vel and
+  // projected_gravity come straight from the raw IMU BodySensor
+  // (angularVelocity()/linearAcceleration()), which the interface layer
+  // (mc_mujoco or the hardware driver) populates unconditionally, regardless
+  // of ObserverPipelines -- see utils.cpp's `case 0:` and
+  // initializeRLObservation(). No pose/velocity estimator is read at all for
+  // that format, so requiring one here would reject a deliberately
+  // estimator-free config.
+  if(obsFormat_ == 0)
+  {
+    mc_rtc::log::info(
+        "[NewRLQPController] obs_format 0: base_ang_vel/projected_gravity read directly from the "
+        "\"Accelerometer\" BodySensor, no floating-base observer required.");
+    return;
+  }
+
   const bool hasFloatingBase =
       std::any_of(found.begin(), found.end(),
                   [](const std::string & n) { return n == "MCWaiko" || n == "BodySensor" || n == "KinematicInertial"; });
@@ -534,9 +550,26 @@ void NewRLQPController::initializeRLObservation()
   const std::string & baseName = rr.mb().body(0).name();
   const Eigen::Matrix3d R_w2b = rr.bodyPosW(baseName).rotation();
 
+  // obs_format 0 (rhp7novel, no MCWaiko): av/pg come straight from the raw
+  // IMU instead of the pose-estimator-dependent bodyVelW()/R_w2b -- mirrors
+  // utils.cpp's `case 0:`, see the comment there for the accelerometer sign
+  // convention. linVelDeep_ is still seeded below regardless of obsFormat_:
+  // harmless for obs_format 0 (case 0 never reads it into the observation),
+  // needed for case 6.
+  Eigen::Vector3d av, pg;
+  if(obsFormat_ == 0)
+  {
+    const auto & imu = rr.bodySensor("Accelerometer");
+    av = imu.angularVelocity();
+    const Eigen::Vector3d acc = imu.linearAcceleration();
+    pg = acc.norm() > 1e-6 ? -acc.normalized() : Eigen::Vector3d(0, 0, -1);
+  }
+  else
+  {
+    av = R_w2b * rr.bodyVelW(baseName).angular();
+    pg = R_w2b * Eigen::Vector3d(0, 0, -1);
+  }
   const Eigen::Vector3d lv = R_w2b * rr.bodyVelW(baseName).linear();
-  const Eigen::Vector3d av = R_w2b * rr.bodyVelW(baseName).angular();
-  const Eigen::Vector3d pg = R_w2b * Eigen::Vector3d(0, 0, -1);
 
   const int actionDim = rlPolicy->getActionSize();
   Eigen::VectorXd jp = Eigen::VectorXd::Zero(actionDim);
@@ -549,9 +582,9 @@ void NewRLQPController::initializeRLObservation()
   }
   const Eigen::VectorXd ja = Eigen::VectorXd::Zero(actionDim);
 
-  // Deep history for velocity_action (case 6, RHP7 -- see V3_DEEP_HISTORY_SIZE in the
-  // header): seeded with the current state so the first observation has no
-  // spurious jump.
+  // Deep history for velocity_action (case 6 and case 0, RHP7 -- see
+  // V3_DEEP_HISTORY_SIZE in the header): seeded with the current state so
+  // the first observation has no spurious jump.
   for(int i = 0; i < V3_DEEP_HISTORY_SIZE; ++i)
   {
     linVelDeep_[i]   = lv;

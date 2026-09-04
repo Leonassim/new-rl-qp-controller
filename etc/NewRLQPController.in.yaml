@@ -28,6 +28,21 @@ collisions:
 - type: collision
   useMinimal: true
 
+# rhp7novel n'a PAS d'observateur MCWaiko, deliberement -- c'est tout le
+# point de cette branche. obs_format: 0 (utils.cpp `case 0:`,
+# NewRLQPController::initializeRLObservation()) lit base_ang_vel et
+# projected_gravity directement sur le capteur brut "Accelerometer"
+# (BodySensor::angularVelocity()/linearAcceleration()), peuple sans
+# condition par l'interface (mc_mujoco ou le driver materiel), donc sans
+# avoir besoin d'un observateur de pose du tout : RobotData (donc
+# bodySensors) est partage entre robot()/realRobot(). Consequence directe :
+# cette branche n'a plus besoin des forks ArnaudDmt de
+# state-observation/mc_state_observation -- le superbuild d'origine du
+# robot reel (upstream jrl-umi3218, sans WAIKO) suffit.
+#
+# checkFloatingBaseObserver() (NewRLQPController.cpp) court-circuite son
+# exigence normale d'un observateur MCWaiko/BodySensor/KinematicInertial
+# quand obsFormat_ == 0 -- ne pas s'etonner de son absence au demarrage.
 ObserverPipelines:
 - name: Pipeline
   observers:
@@ -37,22 +52,6 @@ ObserverPipelines:
       # deactivates MCControl mid-run. mc_mujoco does publish them, so this
       # only ever showed up on hardware. Finite differences work on both.
       velocity: encoderFiniteDifferences
-    # WAIKO estimator: IMU + legged odometry (no QP contacts needed).
-    # imuSensor must be the real IMU (Accelerometer, gyro+accelero at the imu
-    # site) -- FloatingBase is the mc_mujoco ground-truth pose sensor.
-    # filterGains/leggedOdometry come from the installed default MCWaiko.yaml.
-    - type: MCWaiko
-      update: true
-      gui: true
-      imuSensor: Accelerometer
-      contacts:
-        contactsDetection: Surfaces
-        surfacesForContactDetection: [RightFootCenter, LeftFootCenter]
-    # Ground-truth fallback (mc_mujoco perfect pose), for comparison:
-    - type: BodySensor
-      update: false
-      gui: true
-      bodySensor: FloatingBase
 
 states: {}
 transitions:
@@ -70,60 +69,27 @@ init: NewRLQPController_Initial
 # e.g. /home/<user>/<training-repo>/logs/rsl_rl/<run>/<run>.onnx -- but do not
 # commit that, it breaks every other machine.
 #
-# policy/ ne contient QUE des .onnx RHP7 sur cette branche. Les 25 fichiers
-# RHPS1 (rhps1_*.onnx, les runs nommes par date, et les deux placeholders
-# vides) ont ete retires le 2026-09-03 : le glob de CMake les installait tous
-# sur le robot RHP7, soit 58 Mo de poids mort. Ils restent sur la branche
-# real-robot-safe, qui est leur place, et dans l'historique git.
-#
-# AUCUNE de ces trois policies n'a tourne sur le robot RHP7 reel. L'index 0
-# (night2) est valide en simulation. Armer depuis la GUI, garder une main sur
-# l'arret d'urgence.
+# policy/ ne contient QUE des .onnx RHP7 sur cette branche (heritee de
+# `rhp7`, memes principes). novel.onnx n'a PAS tourne sur le robot RHP7 reel
+# -- valide en simulation seulement pour l'instant. Armer depuis la GUI,
+# garder une main sur l'arret d'urgence.
 policy_path: [
-  # Branche `rhp7` : ce fichier ne porte QUE les policies RHP7 Kaleido. Les
-  # entrees RHPS1 vivent sur `real-robot-safe` et ont ete retirees ici le
-  # 2026-09-01 -- les deux robots ne peuvent de toute facon pas coexister a
-  # l'execution (MainRobot est fige au demarrage de mc_rtc, et les maps
-  # kp/kd/q0 sont lues en .at() contre le refJointOrder du robot charge, donc
-  # un index de l'autre robot leve std::out_of_range dans initializeRobot()).
-  # Exige MainRobot: RHP7 dans mc_rtc.yaml (module rhp7.so, branche `mujoco`
-  # de Yoshida-Lab-TUS/mc_rhp7, dont le _ref_joint_order laisse tomber les 14
-  # joints lineaires en boucle fermee : 38 dof = 32 + base flottante).
+  # Branche `rhp7novel` : forkee de `rhp7` le 2026-09-04 pour tester des
+  # policies RHP7 Kaleido entrainees SANS base_lin_vel dans l'observation de
+  # l'actor (garde critic-only a l'entrainement) et avec base_ang_vel/
+  # projected_gravity lus directement sur le capteur IMU brut plutot que sur
+  # un estimateur -- voir ObserverPipelines (MCWaiko retire) et utils.cpp
+  # `case 0:`. Les policies obs_format: 6 heritees de `rhp7` (4.onnx,
+  # rhp7flat.onnx, rhp7test2.onnx) ne fonctionnent plus sur cette branche
+  # (checkFloatingBaseObserver() leve une erreur pour elles, faute de
+  # MCWaiko) -- retirees d'ici, restent sur `rhp7` et dans l'historique git.
   #
-  # index 0: RHP7 Kaleido, velocity-action. 32 joints actionnes au lieu des 30
-  # de RHPS1 (_WRIST_P la ou RHPS1 a _WRIST_R, plus L_HAND/R_HAND actionnes).
-  #
-  # obs_format: 6 sur les blocs ci-dessous route vers le `case 6:` de
-  # utils.cpp (sept termes, parametre sur refJointOrderRLAction.size()).
-  # La longueur d'historique effective est V3_DEEP_HISTORY_SIZE = 10
-  # (NewRLQPController.h), pas 40 : 10*(3+3+3+32+32+32+3) = 1080, ce qui est
-  # bien la forme d'entree des trois ONNX ci-dessous (verifie au chargement :
-  # "ONNX policy loaded successfully (input: 1080, output: 32)"). Le
-  # commentaire de `case 6:` dans utils.cpp annonce encore 40 -> 4320 ; c'est
-  # le commentaire qui est faux, pas le code.
-  #
-  # C'est aussi pourquoi rhp7_velocity.onnx a ete retire de policy/ le
-  # 2026-09-03 : il declarait une entree de 4320 et aurait leve "Observation
-  # size mismatch" a la premiere inference. Recuperable dans l'historique git
-  # si un jour V3_DEEP_HISTORY_SIZE repasse a 40.
-  #
-  # Le numero est garde tel quel plutot que remis a 0 pour rester lisible face
-  # a l'historique et aux commentaires de la branche RHPS1 : index et
-  # obs_format/case C++ sont independants de toute facon.
-  "@RL_POLICY_INSTALL_PREFIX@/4.onnx",
-  # index 1, 2: rhp7flat / rhp7test2 -- meme reseau/plant que l'index 0, seul
-  # q0 change (le _stance du module robot au lieu du q0 d'entrainement). Voir
-  # le commentaire sur leurs blocs dans policies: plus bas.
-  "@RL_POLICY_INSTALL_PREFIX@/rhp7flat.onnx",
-  "@RL_POLICY_INSTALL_PREFIX@/rhp7test2.onnx",
+  # index 0: novel.onnx. Six termes (base_ang_vel, projected_gravity,
+  # joint_pos, joint_vel, actions, command) a l'historique 10 :
+  # 10*(3+3+32+32+32+3) = 1050, verifie au chargement : "ONNX policy loaded
+  # successfully (input: 1050, output: 32)".
+  "@RL_POLICY_INSTALL_PREFIX@/novel.onnx",
 ]
-# 0 = night2. Les trois .onnx sont desormais bundles dans policy/ et installes
-# par le glob de CMakeLists.txt, donc un clone + build sur le PC du robot les
-# a tous les trois -- les index 1 et 2 sont selectionnables depuis la GUI.
-#
-# Exige MainRobot: RHP7 dans mc_rtc.yaml. Un index incoherent avec le robot
-# charge leve std::out_of_range dans initializeRobot() (les maps kp/kd/q0 sont
-# lues avec .at() sur le refJointOrder du robot courant).
 default_policy_index: 0
 
 # RHPS1 had a joint_torque_scale table here (N*Kt per joint, to work around
@@ -138,47 +104,24 @@ default_policy_index: 0
 # normally.
 
 policies:
-  # index 0 : RHP7 Kaleido -- velocity-action (JointVelocityAction mjlab +
-  # integrale libre q_rl += action*dt, utils.cpp `case 6:`). Requiert
-  # MainRobot: RHP7. Route explicitement vers `case 6:` via obs_format: 6
-  # ci-dessous, PAS via son propre numero d'index -- le numero de case a ete
-  # garde a 6 en passant de real-robot-safe a cette branche, pour que les
-  # commentaires et l'historique des deux branches restent lisibles ensemble.
-  # Index et obs_format/case C++ sont independants. Historique du
-  # numero de case : index 5 directement (numero d'index = case du switch, sans
-  # cle obs_format) -> index 6 de real-robot-safe avec obs_format: 5 (2026-08-27,
-  # quand le collegue a repris les index 3/4/5 pour trois nouvelles policies
-  # RHPS1) -> obs_format: 6 (2026-08-31, quand le collegue a reclame case 5 pour
-  # son propre nouveau format RHPS1 510 dims/hist5) -> index 0 de cette branche
-  # (2026-09-01, separation des deux robots par branche), case inchangee.
-  # 32 joints actionnes contre 30 pour RHPS1 :
-  #   - L_WRIST_P / R_WRIST_P la ou RHPS1 a L_WRIST_R / R_WRIST_R
-  #   - L_HAND / R_HAND sont actionnes (RHPS1 les filtre)
-  # Verifie a l'execution : le smoke test du module annonce "RHP7 has 38 dof"
-  # = 32 + 6 (base flottante).
+  # index 0 : RHP7 Kaleido -- novel.onnx, velocity-action (JointVelocityAction
+  # mjlab + integrale libre q_rl += action*dt), obs_format: 0 -> utils.cpp
+  # `case 0:` (pas de base_lin_vel, base_ang_vel/projected_gravity depuis le
+  # capteur IMU brut "Accelerometer", pas d'observateur de pose requis --
+  # voir ObserverPipelines). Requiert MainRobot: RHP7.
   #
-  # kp/kd ci-dessous ont d'abord ete recopies de RHPS1 en attendant un reglage
-  # RHP7 propre -- puis confirmes CORRECTS par l'auteur du run : ce sont
-  # exactement les stiffness/damping des IdealPdActuatorCfg d'entrainement
-  # (RHP7_ACTUATOR_*), qui se trouvent coincider avec ceux de RHPS1. Le
-  # commentaire "recopie de RHPS1" reste sur le bloc kp/kd plus bas pour
-  # tracer l'origine, mais ce ne sont plus des valeurs provisoires.
+  # kp/kd/effort_limit/action_scale/vel_target_limit_per_joint ci-dessous
+  # sont repris tels quels de l'index 0 de la branche `rhp7` (meme plant
+  # physique RHP7_ACTUATOR_*, meme robot simule -- seule l'observation de
+  # l'actor a change entre les deux runs). q0 confirme identique par
+  # l'utilisateur (2026-09-04) : meme pose bras bas que le run precedent.
   #
   # ATTENTION : le depot mjlab local (/home/leroyhi/mjlab, rhp7_constants.py)
   # contient une AUTRE config d'actionneurs (raideur uniforme 157.91, efforts
   # asymetriques gauche/droite sur le bras) -- celle-ci n'est PAS celle qui a
   # entraine ce run. Ne pas s'y referer pour RHP7.
-  #
-  # effort_limit provient des RHP7_ACTUATOR_* reels (fournis par l'auteur, cf.
-  # le bloc plus bas) -- donc maxTargetDev_ = effort_limit/kp (l'anti-windup de
-  # utils.cpp) et rawTorqueRatio (= |tau|/effort_limit) sont maintenant tous
-  # les deux calcules contre le plant reel d'entrainement.
-  #
-  # action_scale = RHP7_ACTION_SCALE du run (fourni par l'auteur, PAS derive
-  # de la formule 0.5*effort/stiffness du depot mjlab local -- elle ne
-  # reproduit pas ces valeurs, cf. commentaire sur le bloc action_scale).
   - use_QP: true
-    obs_format: 6
+    obs_format: 0
     velocity_action: true
     use_torque_task: false
     qp_accel_task: false
@@ -492,136 +435,6 @@ policies:
       - R_KNEE_P
       - R_ANKLE_R
       - R_ANKLE_P
-
-  # index 1 : RHP7 Kaleido, rhp7flat -- IDENTIQUE a l'index 0 (meme reseau, meme
-  # plant) sauf q0 : au lieu du q0 du run d'entrainement (bras a 30/-80 deg),
-  # utilise le _stance du module robot mc_rhp7 (rhp7.cpp:48-79) -- la pose ou
-  # le robot se tient AVANT l'armement (cf. reset(), qui ne pousse jamais q_rl
-  # a la PostureTask avant policyArmed_==true). Jambes/chest/tete identiques
-  # dans les deux (coincidence : le run d'entrainement et le _stance du module
-  # partagent CROTCH_P -17 deg, KNEE_P 36 deg, ANKLE_P -19 deg) ; seuls les
-  # bras different (SHOULDER_P 15 au lieu de 30, ELBOW_P -30 au lieu de -80).
-  # But : tester si demarrer le reseau depuis la pose de repos plutot que
-  # depuis son propre q0 d'entrainement change le comportement au moment de
-  # l'armement.
-  - use_QP: true
-    obs_format: 6
-    velocity_action: true
-    use_torque_task: false
-    qp_accel_task: false
-    joint_armature: 1.0
-    policy_step_size: 0.01   # 100 Hz (10 ms)
-    physics_step_size: 0.0025  # mc_mujoco a 400 Hz (2.5 ms)
-    pd_gains_ratio: 1.0
-    max_vel_x: 0.3
-    max_vel_y: 0.2
-    max_yaw: 0.45
-    joystick_deadzone: 0.05
-    vel_ramp_rate: 0.5
-    torque_feasibility_ratio: 1.0
-    vel_target_filter_alpha: 0.8
-    effort_limit: *rhp7_effort_limit
-    vel_target_limit_per_joint: *rhp7_vel_target_limit_per_joint
-    action_scale: *rhp7_action_scale
-    kp: *rhp7_kp
-    kd: *rhp7_kd
-
-    # _stance du module mc_rhp7 (rhp7.cpp:48-79), converti en radians -- PAS
-    # le q0 du run d'entrainement (voir le bloc de l'index 0 pour celui-la et
-    # pourquoi q0 definit l'observation, pas juste une posture).
-    q0:
-      CHEST_Y:      0.0         # 0 deg
-      CHEST_P:      0.0         # 0 deg
-      HEAD_Y:       0.0         # 0 deg
-      HEAD_P:       0.0         # 0 deg
-      L_SHOULDER_P: 0.261799    # 15 deg
-      L_SHOULDER_R: 0.087266    # 5 deg
-      L_SHOULDER_Y: -0.087266   # -5 deg
-      L_ELBOW_P:    -0.523599   # -30 deg
-      L_ELBOW_Y:    0.0
-      L_WRIST_P:    0.0
-      L_WRIST_Y:    0.0
-      L_HAND:       0.0
-      R_SHOULDER_P: 0.261799    # 15 deg
-      R_SHOULDER_R: -0.087266   # -5 deg
-      R_SHOULDER_Y: 0.087266    # 5 deg
-      R_ELBOW_P:    -0.523599   # -30 deg
-      R_ELBOW_Y:    0.0
-      R_WRIST_P:    0.0
-      R_WRIST_Y:    0.0
-      R_HAND:       0.0
-      L_CROTCH_Y:   0.0         # 0 deg
-      L_CROTCH_R:   0.0         # 0 deg
-      L_CROTCH_P:   -0.296706   # -17 deg
-      L_KNEE_P:     0.628319    # 36 deg
-      L_ANKLE_R:    0.0         # 0 deg
-      L_ANKLE_P:    -0.331613   # -19 deg
-      R_CROTCH_Y:   0.0
-      R_CROTCH_R:   0.0
-      R_CROTCH_P:   -0.296706   # -17 deg
-      R_KNEE_P:     0.628319    # 36 deg
-      R_ANKLE_R:    0.0
-      R_ANKLE_P:    -0.331613   # -19 deg
-    ref_joint_order: *rhp7_ref_joint_order
-
-  # index 2 : RHP7 Kaleido, rhp7test2 -- meme reseau/config que l'index 1
-  # (module _stance en q0), fichier .onnx different -- voir le commentaire de
-  # l'index 1 pour l'explication du choix de q0.
-  - use_QP: true
-    obs_format: 6
-    velocity_action: true
-    use_torque_task: false
-    qp_accel_task: false
-    joint_armature: 1.0
-    policy_step_size: 0.01   # 100 Hz (10 ms)
-    physics_step_size: 0.0025  # mc_mujoco a 400 Hz (2.5 ms)
-    pd_gains_ratio: 1.0
-    max_vel_x: 0.3
-    max_vel_y: 0.2
-    max_yaw: 0.45
-    joystick_deadzone: 0.05
-    vel_ramp_rate: 0.5
-    torque_feasibility_ratio: 1.0
-    vel_target_filter_alpha: 0.8
-    effort_limit: *rhp7_effort_limit
-    vel_target_limit_per_joint: *rhp7_vel_target_limit_per_joint
-    action_scale: *rhp7_action_scale
-    kp: *rhp7_kp
-    kd: *rhp7_kd
-    q0:
-      CHEST_Y:      0.0         # 0 deg
-      CHEST_P:      0.0         # 0 deg
-      HEAD_Y:       0.0         # 0 deg
-      HEAD_P:       0.0         # 0 deg
-      L_SHOULDER_P: 0.261799    # 15 deg
-      L_SHOULDER_R: 0.087266    # 5 deg
-      L_SHOULDER_Y: -0.087266   # -5 deg
-      L_ELBOW_P:    -0.523599   # -30 deg
-      L_ELBOW_Y:    0.0
-      L_WRIST_P:    0.0
-      L_WRIST_Y:    0.0
-      L_HAND:       0.0
-      R_SHOULDER_P: 0.261799    # 15 deg
-      R_SHOULDER_R: -0.087266   # -5 deg
-      R_SHOULDER_Y: 0.087266    # 5 deg
-      R_ELBOW_P:    -0.523599   # -30 deg
-      R_ELBOW_Y:    0.0
-      R_WRIST_P:    0.0
-      R_WRIST_Y:    0.0
-      R_HAND:       0.0
-      L_CROTCH_Y:   0.0         # 0 deg
-      L_CROTCH_R:   0.0         # 0 deg
-      L_CROTCH_P:   -0.296706   # -17 deg
-      L_KNEE_P:     0.628319    # 36 deg
-      L_ANKLE_R:    0.0         # 0 deg
-      L_ANKLE_P:    -0.331613   # -19 deg
-      R_CROTCH_Y:   0.0
-      R_CROTCH_R:   0.0
-      R_CROTCH_P:   -0.296706   # -17 deg
-      R_KNEE_P:     0.628319    # 36 deg
-      R_ANKLE_R:    0.0
-      R_ANKLE_P:    -0.331613   # -19 deg
-    ref_joint_order: *rhp7_ref_joint_order
 use_async_inference: false
 log_timing: true
 timing_log_interval: 100
