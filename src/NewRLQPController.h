@@ -133,6 +133,22 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    */
   std::vector<std::string> jointNames;
 
+  // Indices (into jointNames/nbActuatedJoints space) of L_HAND/R_HAND, -1 if
+  // the robot has none. RHP7 registers them as mc_rbdyn::Gripper ("l_gripper"
+  // /"r_gripper", rhp7.cpp), which unconditionally overwrites robot.mbc().q
+  // for these two joints every tick with its own internal target
+  // (generic_gripper.cpp: `robot.mbc().q[...] = {_q[i]};`, no guard) --
+  // whatever the RL/QP computes for them is silently discarded, and the
+  // ever-growing mismatch between our evolving q_rl and the Gripper's own
+  // (unrelated, frozen-since-init) target is exactly what trips its safety
+  // (see git history, 2026-09-06/07: "Gripper safety triggered on L_HAND").
+  // Rather than fight that second control path, utils.cpp forces the RL
+  // action to zero for these two indices every step, so both pos target and
+  // vel target hold flat at q_zero/zero regardless of what the network
+  // outputs.
+  int lHandIdx_ = -1;
+  int rHandIdx_ = -1;
+
   // =========================================================================
   // RL action
   // =========================================================================

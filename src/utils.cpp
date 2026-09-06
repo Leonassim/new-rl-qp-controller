@@ -86,6 +86,15 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
           int i = ctl.actionToDofMap[j];
           ctl.currentActionScaled(i) = ctl.actionScale(i) * ctl.currentAction(j);
       }
+      // L_HAND/R_HAND: forced to zero regardless of the network's output --
+      // see NewRLQPController.h's comment on lHandIdx_/rHandIdx_. Both pos
+      // target (q_rl's free-running integral, below) and vel target
+      // (qdTarget_, from currentActionScaled) end up flat at q_zero/zero for
+      // these two, whatever the policy asked for. currentAction/
+      // jointActDeep_ (the observation's "actions" term) are NOT touched --
+      // the observation still reflects what the network actually output.
+      if(ctl.lHandIdx_ >= 0) ctl.currentActionScaled(ctl.lHandIdx_) = 0.0;
+      if(ctl.rHandIdx_ >= 0) ctl.currentActionScaled(ctl.rHandIdx_) = 0.0;
       syncTime_ -= ctl.policyStepSize;
     }
 

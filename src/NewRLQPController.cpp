@@ -338,6 +338,14 @@ void NewRLQPController::initializeRobot()
   mc_rtc::log::info("[NewRLQPController] {} actuated joints retained out of {} in refJointOrder",
                     nbActuatedJoints, robot().refJointOrder().size());
 
+  lHandIdx_ = -1;
+  rHandIdx_ = -1;
+  for(int i = 0; i < nbActuatedJoints; ++i)
+  {
+    if(jointNames[i] == "L_HAND") lHandIdx_ = i;
+    else if(jointNames[i] == "R_HAND") rHandIdx_ = i;
+  }
+
   q_rl              = Eigen::VectorXd::Zero(nbActuatedJoints);
   q_rl_prev_        = Eigen::VectorXd::Zero(nbActuatedJoints);
   ffPrevQ_          = Eigen::VectorXd::Zero(nbActuatedJoints);
@@ -459,23 +467,16 @@ void NewRLQPController::initializeRobot()
   {
     if(effortLimit_(i) > 0.0 && kpBase_(i) > 1e-9) { maxTargetDev_(i) = effortLimit_(i) / kpBase_(i); }
   }
-  // Explicit per-joint override, applied on top of the formula above.
-  // Needed for L_HAND/R_HAND: effort_limit/kp = 3/1 = 3 rad for them, a
-  // window wide enough that the anti-windup never actually engages, and
-  // q_rl's free-running integral (velocity_action) was observed to drift
-  // unbounded over a run (no training reward on the hands, so nothing pulls
-  // the raw action back toward zero) until mc_rtc's OWN Gripper safety
-  // (generic_gripper.cpp, comparing commanded vs measured position)
-  // stepped in and froze the command -- see the 2026-09-06 log
-  // (mc-control-NewRLQPController-2026-09-06-23-47-30.bin) where qOut_L_HAND
-  // visibly latches at t=8s while RL_q_L_HAND keeps climbing. Kept separate
-  // from effort_limit itself, which also feeds torque-feasibility and must
-  // stay at the trained actuator's real value.
-  if(pol.has("max_target_dev_override"))
-  {
-    std::map<std::string, double> mtd_map = pol("max_target_dev_override");
-    for(int i = 0; i < nbActuatedJoints; ++i) { updateIfExists(maxTargetDev_[i], mtd_map, jointNames[i]); }
-  }
+  // A max_target_dev_override config key lived here 2026-09-06/07, an
+  // attempted fix for L_HAND/R_HAND's anti-windup window being too wide
+  // (effort_limit/kp = 3/1 = 3 rad at their deliberately soft kp=1) to
+  // contain q_rl's free-running integral before mc_rtc's own Gripper safety
+  // tripped. Removed once the real cause was found: the Gripper mechanism
+  // (rhp7.cpp's "l_gripper"/"r_gripper") unconditionally overwrites
+  // robot.mbc().q for these two joints every tick regardless of what q_rl/
+  // the QP computes (generic_gripper.cpp), so no anti-windup tuning on our
+  // side could fix it -- see lHandIdx_/rHandIdx_ in the header instead,
+  // which now zero the RL action for these two joints at the source.
 
   maxVelX_          = config_("policies")[currentPolicyIndex]("max_vel_x",         0.6);
   maxVelY_          = config_("policies")[currentPolicyIndex]("max_vel_y",         0.4);
