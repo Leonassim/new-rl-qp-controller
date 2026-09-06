@@ -190,6 +190,18 @@ policies:
     policy_step_size: 0.01   # 100 Hz (10 ms)
     physics_step_size: 0.0025  # mc_mujoco a 400 Hz (2.5 ms)
     pd_gains_ratio: 1.0
+    # DECOUVERT MANQUANT le 2026-09-04 en debuggant une chute a t=38s sur
+    # rhp7novel (meme reseau de base, obs_format different) : sans cette
+    # cle, postureStiffness() retombe sur 0.2/(policy_step_size*timeStep) =
+    # 0.2/(0.01*0.005) = 4000, un lag de 1/sqrt(4000) = 15.8 ms au lieu des
+    # 25 ms attendus. Entraine avec le filtre FiniteDifferencePdActuator a
+    # posture_task_stiffness = 1600 (confirme par l'auteur) -- meme lag
+    # requis en simulation (1/sqrt(K), independant de dt, voir le
+    # commentaire de NewRLQPController::postureStiffness()). Sans ce K
+    # explicite la QP repond plus raide/plus vite que ce que le reseau a
+    # appris a compenser : invisible pas a pas, mais un biais systematique
+    # qui semble s'accumuler sur ~20-30s avant de devenir destabilisant.
+    posture_stiffness: 1600
     # Le curriculum d'entrainement va jusqu'a +/-1.0 sur vx et sur le yaw
     # (env_cfgs.py: lin_vel_x et ang_vel_z = (-1.0, 1.0)). Volontairement bride
     # ici pour les premiers runs -- a relever une fois le comportement valide.
@@ -513,6 +525,18 @@ policies:
     policy_step_size: 0.01   # 100 Hz (10 ms)
     physics_step_size: 0.0025  # mc_mujoco a 400 Hz (2.5 ms)
     pd_gains_ratio: 1.0
+    # DECOUVERT MANQUANT le 2026-09-04 en debuggant une chute a t=38s sur
+    # rhp7novel (meme reseau de base, obs_format different) : sans cette
+    # cle, postureStiffness() retombe sur 0.2/(policy_step_size*timeStep) =
+    # 0.2/(0.01*0.005) = 4000, un lag de 1/sqrt(4000) = 15.8 ms au lieu des
+    # 25 ms attendus. Entraine avec le filtre FiniteDifferencePdActuator a
+    # posture_task_stiffness = 1600 (confirme par l'auteur) -- meme lag
+    # requis en simulation (1/sqrt(K), independant de dt, voir le
+    # commentaire de NewRLQPController::postureStiffness()). Sans ce K
+    # explicite la QP repond plus raide/plus vite que ce que le reseau a
+    # appris a compenser : invisible pas a pas, mais un biais systematique
+    # qui semble s'accumuler sur ~20-30s avant de devenir destabilisant.
+    posture_stiffness: 1600
     max_vel_x: 0.3
     max_vel_y: 0.2
     max_yaw: 0.45
@@ -576,6 +600,18 @@ policies:
     policy_step_size: 0.01   # 100 Hz (10 ms)
     physics_step_size: 0.0025  # mc_mujoco a 400 Hz (2.5 ms)
     pd_gains_ratio: 1.0
+    # DECOUVERT MANQUANT le 2026-09-04 en debuggant une chute a t=38s sur
+    # rhp7novel (meme reseau de base, obs_format different) : sans cette
+    # cle, postureStiffness() retombe sur 0.2/(policy_step_size*timeStep) =
+    # 0.2/(0.01*0.005) = 4000, un lag de 1/sqrt(4000) = 15.8 ms au lieu des
+    # 25 ms attendus. Entraine avec le filtre FiniteDifferencePdActuator a
+    # posture_task_stiffness = 1600 (confirme par l'auteur) -- meme lag
+    # requis en simulation (1/sqrt(K), independant de dt, voir le
+    # commentaire de NewRLQPController::postureStiffness()). Sans ce K
+    # explicite la QP repond plus raide/plus vite que ce que le reseau a
+    # appris a compenser : invisible pas a pas, mais un biais systematique
+    # qui semble s'accumuler sur ~20-30s avant de devenir destabilisant.
+    posture_stiffness: 1600
     max_vel_x: 0.3
     max_vel_y: 0.2
     max_yaw: 0.45
