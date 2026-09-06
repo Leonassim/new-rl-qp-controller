@@ -114,7 +114,7 @@ policy_path: [
   # index 1, 2: rhp7flat / rhp7test2 -- meme reseau/plant que l'index 0, seul
   # q0 change (le _stance du module robot au lieu du q0 d'entrainement). Voir
   # le commentaire sur leurs blocs dans policies: plus bas.
-  "@RL_POLICY_INSTALL_PREFIX@/rhp7flat.onnx",
+  "@RL_POLICY_INSTALL_PREFIX@/final3.onnx",
   "@RL_POLICY_INSTALL_PREFIX@/rhp7test2.onnx",
 ]
 # 0 = night2. Les trois .onnx sont desormais bundles dans policy/ et installes

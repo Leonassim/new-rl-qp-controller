@@ -1,0 +1,106 @@
+Notes de déploiement sur le robot réel (RHP7) -- branche rhp7
+===============================================================
+
+Ces notes documentent la procédure suivie le 2026-09-06 pour mettre à jour
+state-observation / mc_state_observation sur le superbuild du robot réel
+(commits ArnaudDmt validés compatibles avec mc_rtc@655c7174, voir
+mc-rtc-superbuild:mc_rtc.cmake sur la branche real-robot-pin-rhp7), puis
+installer ce contrôleur (rl_controller, branche rhp7) et mc_joystick_plugin.
+
+
+1. Pointer state-observation et mc_state_observation sur les commits
+   ArnaudDmt validés
+----------------------------------------------------------------------
+
+cd ~/workspace/src/state-observation
+git remote add arnauddmt https://github.com/ArnaudDmt/state-observation.git
+git fetch arnauddmt
+git checkout e97581fd051de82eb2edcf81b4ae2264b581551e
+
+cd ~/workspace/src/mc_state_observation
+git remote add arnauddmt https://github.com/ArnaudDmt/mc_state_observation.git
+git fetch arnauddmt
+git checkout 5d0c77a4b43f47203cac17e45ee994de9042da6b
+
+Vérification (doit afficher les deux SHA ci-dessus) :
+  cd ~/workspace/src/state-observation && git log -1 --oneline
+  cd ~/workspace/src/mc_state_observation && git log -1 --oneline
+
+-> e97581fd051de82eb2edcf81b4ae2264b581551e   state-observation
+-> 5d0c77a4b43f47203cac17e45ee994de9042da6b   mc_state_observation
+
+
+2. Forcer le superbuild à reprendre ces checkouts manuels (au lieu de
+   retélécharger sur les pins par défaut)
+----------------------------------------------------------------------
+
+cd ~/workspace/mc-rtc-superbuild/build
+cmake -UMC_RTC_SUPERBUILD_state-observation_GIT_REPOSITORY \
+      -UMC_RTC_SUPERBUILD_state-observation_GIT_TAG \
+      -UMC_RTC_SUPERBUILD_mc_state_observation_GIT_REPOSITORY \
+      -UMC_RTC_SUPERBUILD_mc_state_observation_GIT_TAG \
+      .
+
+
+3. Suite de tests de mc_state_observation : à désactiver
+----------------------------------------------------------------------
+
+3 de ses tests échouent sur ce checkout (Test_Attitude, Test_MCKineticsObserver
+/Test_Tilt, Test_MCValinor) -- aucun n'est MCWaiko (absent de cette suite),
+et aucun n'est une incompatibilité avec mc_rtc@655c7174 : un crash de
+destruction statique rclcpp/ROS2 sans rapport avec ce dépôt, et deux bugs de
+fixtures de test (clé de config manquante, nom d'observateur qui ne
+correspond pas). Voir mc-rtc-superbuild:mc_rtc.cmake, commit
+"mc_state_observation: SKIP_TEST", pour le détail complet et la trace gdb.
+
+Si SKIP_TEST n'est pas encore présent dans le mc_rtc.cmake utilisé sur cette
+machine, désactiver les tests à la main pour cette fois :
+
+  cmake -DBUILD_TESTING=OFF ~/workspace/build/mc_state_observation
+
+Puis reconstruire/installer :
+
+  cd ~/workspace/mc-rtc-superbuild/build
+  cmake --build . --target install --config RelWithDebInfo
+
+
+4. Installer ce contrôleur (rl_controller, branche rhp7)
+----------------------------------------------------------------------
+
+Dépôt : https://github.com/Leonassim/new-rl-qp-controller.git
+
+Ajouté dans extensions/local.cmake du superbuild :
+
+  AddProject(new-rl-qp-controller
+    GITHUB Leonassim/new-rl-qp-controller
+    GIT_TAG origin/rhp7
+    DEPENDS mc_rtc
+  )
+
+Build/install direct (sans repasser par la chaine complète du superbuild) :
+
+  cd ~/workspace/devel/rl_controller
+  cmake -S . -B build
+  cmake --install build
+  cmake --build build -j2
+
+
+5. mc_joystick_plugin
+----------------------------------------------------------------------
+
+Dans extensions/local.cmake du superbuild :
+
+  AddProject(mc_joystick_plugin
+    GITHUB antodld/mc_joystick_plugin
+    GIT_TAG origin/main
+    DEPENDS mc_rtc
+  )
+
+Ou clone manuel :
+
+  cd ~/workspace/src
+  git clone https://github.com/antodld/mc_joystick_plugin.git
+
+Si cloné à la main (pas via AddProject du superbuild), penser au :
+
+  git submodule update --init --recursive
