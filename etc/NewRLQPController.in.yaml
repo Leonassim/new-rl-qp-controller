@@ -420,11 +420,20 @@ policies:
     # limite en l'absence de recompense d'entrainement sur les mains
     # (observe le 2026-09-06 : q_rl(L_HAND) grimpe de 0 a 0.33 rad sur 24s
     # sans jamais revenir, jusqu'a ce que le garde-fou Gripper de mc_rtc
-    # lui-meme -- pas le notre -- gele la commande). 0.1 rad garde une
-    # fenetre resserree sans empecher tout mouvement de la main.
+    # lui-meme -- pas le notre -- gele la commande).
+    #
+    # 0.1 rad (premier essai) restait trop proche du seuil du Gripper de
+    # mc_rtc (RobotModule.h : DEFAULT_ACTUAL_COMMAND_DIFF_TRIGGER = 8 deg =
+    # 0.1396 rad, DEFAULT_OVER_COMMAND_LIMIT_ITER_N = 5 pas -- non
+    # configurable depuis ce yaml, c'est un defaut de mc_rtc). q_rl restait
+    # cale a un ecart PERMANENT d'environ 0.1 rad de la position mesuree
+    # (kp=1 ne rattrape jamais l'ecart), ce qui frole/depasse regulierement
+    # les 8 deg et redeclenche le Gripper en continu (observe a nouveau le
+    # 2026-09-06 : qOut_L_HAND fige des t=6s pour tout le reste d'un run de
+    # 37s). 0.05 rad (2.9 deg) donne une vraie marge sous ce seuil.
     max_target_dev_override: &rhp7_max_target_dev
-      L_HAND: 0.1
-      R_HAND: 0.1
+      L_HAND: 0.05
+      R_HAND: 0.05
 
     # KNEES_BENT_KEYFRAME du run d'entrainement (fourni par l'auteur), en
     # precision pleine. Recoupe valeur par valeur avec les metadonnees
