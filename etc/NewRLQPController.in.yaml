@@ -303,13 +303,11 @@ policies:
     # du depot mjlab local donnerait 0.633 au genou contre 0.292 ici. Le run a
     # tourne avec une autre config d'actionneurs.
     #
-    # L_HAND / R_HAND a 27.27 n'est pas une faute de frappe : c'est ~300x
-    # l'echelle des autres joints. En velocity_action q_rl += action*scale*dt,
-    # donc une action unitaire demande 0.27 rad par pas sur la main. utils.cpp
-    # clampe ensuite sur les butees du joint, et les mains sont volontairement
-    # molles ici (kp 1 / kd 0.1), donc c'est contenu -- mais attends-toi a les
-    # voir coller a leur limite. Signe que la main etait quasi libre pendant
-    # l'entrainement (aucune recompense dessus).
+    # L_HAND / R_HAND ramenes a 0.05 le 2026-09-06 (etaient a 0.2, et le
+    # commentaire precedent parlait meme de 27.27 a un moment anterieur) :
+    # meme ordre de grandeur que les autres joints du bras plutot qu'une
+    # echelle a part. Les mains restent volontairement molles par ailleurs
+    # (kp 1 / kd 0.1), sans recompense dessus a l'entrainement.
     action_scale: &rhp7_action_scale
       CHEST_Y:      0.07954545454545454
       CHEST_P:      0.07954545454545454
@@ -322,7 +320,7 @@ policies:
       L_ELBOW_Y:    0.06578947368421052
       L_WRIST_P:    0.039473684210526314
       L_WRIST_Y:    0.039473684210526314
-      L_HAND:       0.2
+      L_HAND:       0.05
       R_SHOULDER_P: 0.08974358974358974
       R_SHOULDER_R: 0.09210526315789473
       R_SHOULDER_Y: 0.09210526315789473
@@ -330,7 +328,7 @@ policies:
       R_ELBOW_Y:    0.06578947368421052
       R_WRIST_P:    0.039473684210526314
       R_WRIST_Y:    0.039473684210526314
-      R_HAND:       0.2
+      R_HAND:       0.05
       L_CROTCH_Y:   0.06666666666666667
       L_CROTCH_R:   0.20833333333333334
       L_CROTCH_P:   0.20833333333333334
