@@ -110,7 +110,7 @@ policy_path: [
   # Le numero est garde tel quel plutot que remis a 0 pour rester lisible face
   # a l'historique et aux commentaires de la branche RHPS1 : index et
   # obs_format/case C++ sont independants de toute facon.
-  "@RL_POLICY_INSTALL_PREFIX@/4.onnx",
+  "@RL_POLICY_INSTALL_PREFIX@/18.onnx",
   # index 1, 2: rhp7flat / rhp7test2 -- meme reseau/plant que l'index 0, seul
   # q0 change (le _stance du module robot au lieu du q0 d'entrainement). Voir
   # le commentaire sur leurs blocs dans policies: plus bas.
@@ -413,6 +413,19 @@ policies:
       R_WRIST_Y:    240.0
       R_HAND:       0.1
 
+    # Override explicite de maxTargetDev_ (l'anti-windup de utils.cpp,
+    # normalement effort_limit/kp) pour L_HAND/R_HAND uniquement. Avec
+    # kp=1 leur formule donne 3/1 = 3 rad -- une fenetre bien trop large
+    # pour retenir l'integrale libre de velocity_action, qui derive sans
+    # limite en l'absence de recompense d'entrainement sur les mains
+    # (observe le 2026-09-06 : q_rl(L_HAND) grimpe de 0 a 0.33 rad sur 24s
+    # sans jamais revenir, jusqu'a ce que le garde-fou Gripper de mc_rtc
+    # lui-meme -- pas le notre -- gele la commande). 0.1 rad garde une
+    # fenetre resserree sans empecher tout mouvement de la main.
+    max_target_dev_override: &rhp7_max_target_dev
+      L_HAND: 0.1
+      R_HAND: 0.1
+
     # KNEES_BENT_KEYFRAME du run d'entrainement (fourni par l'auteur), en
     # precision pleine. Recoupe valeur par valeur avec les metadonnees
     # `default_joint_pos` de l'ONNX (run 2026-08-23_21-06-44), qui les arrondit
@@ -547,6 +560,7 @@ policies:
     action_scale: *rhp7_action_scale
     kp: *rhp7_kp
     kd: *rhp7_kd
+    max_target_dev_override: *rhp7_max_target_dev
 
     # _stance du module mc_rhp7 (rhp7.cpp:48-79), converti en radians -- PAS
     # le q0 du run d'entrainement (voir le bloc de l'index 0 pour celui-la et
@@ -622,6 +636,7 @@ policies:
     action_scale: *rhp7_action_scale
     kp: *rhp7_kp
     kd: *rhp7_kd
+    max_target_dev_override: *rhp7_max_target_dev
     q0:
       CHEST_Y:      0.0         # 0 deg
       CHEST_P:      0.0         # 0 deg
