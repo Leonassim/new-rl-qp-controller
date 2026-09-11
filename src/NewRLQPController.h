@@ -356,6 +356,17 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    *   position-action-only concept) apply here.
    */
   bool velocityAction_ = false;
+  /** @brief Ecrire qdTarget_ comme refVel de la PostureTask.
+   *
+   *  Par defaut: uniquement pour les politiques velocity_action. Ce writer a
+   *  ete rendu inconditionnel le 2026-09-11 et applique a TOUTES les entrees,
+   *  alors que sa justification ne vaut que pour velocity_action -- la ou
+   *  qdTarget_ EST l'action du reseau. Pour une politique position_action c'est
+   *  une difference finie filtree, et Leo a constate que ca ne marche pas du
+   *  tout sur le robot reel.
+   *
+   *  Surchargeable par la cle posture_ref_vel du bloc de la politique. */
+  bool postureRefVel_ = false;
 
   /** @brief Is the CBF-QP layer active? (read by utils::run_rl_state) */
   bool useQP() const noexcept { return useQP_; }

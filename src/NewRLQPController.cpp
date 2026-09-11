@@ -163,7 +163,7 @@ bool NewRLQPController::run()
     // postureFeedforward_ above. Setting refVel here removes that lag without
     // the finite-difference noise postureFeedforward_ risks: qdTarget_ is the
     // network's own action for velocity_action, not a derivative of q_rl.
-    setPostureRefVel(pt);
+    if(postureRefVel_) { setPostureRefVel(pt); }
     if(posturePassthrough_) { setPostureRefAccel(pt); }
     else if(postureFeedforward_)
     {
@@ -303,6 +303,11 @@ void NewRLQPController::initializeRobot()
 {
   useQP_    = config_("policies")[currentPolicyIndex]("use_QP", true);
   velocityAction_ = config_("policies")[currentPolicyIndex]("velocity_action", false);
+  // Defaut = velocityAction_ : actif pour les politiques dont qdTarget_ est
+  // reellement la sortie du reseau, inactif pour les autres. Voir la
+  // declaration de postureRefVel_.
+  postureRefVel_ = velocityAction_;
+  config_("policies")[currentPolicyIndex]("posture_ref_vel", postureRefVel_);
   obsFormat_      = size_t(int(config_("policies")[currentPolicyIndex]("obs_format", int(currentPolicyIndex))));
   robotName_ = robot().name();
   jointNames = robot().refJointOrder();
