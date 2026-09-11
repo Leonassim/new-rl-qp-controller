@@ -469,6 +469,30 @@ void NewRLQPController::initializeRobot()
   // left qdTarget_ at 1e9 -- unclamped -- on every policy without a
   // torque_feasibility_ratio, which is invisible until something reads it. The
   // PostureTask feedforward does.
+  // Horloge de demarche, PAR POLITIQUE. Ces quatre valeurs etaient en dur
+  // (2.0 / 1.1 / 0.1 / 0.7) et aucune n'etait lue depuis la configuration,
+  // alors que le commentaire de leur declaration dit qu'elles doivent
+  // reproduire l'horloge de mjlab EXACTEMENT sous peine de presenter au reseau
+  // un canal contre lequel il n'a jamais ete entraine.
+  //
+  // C'est exactement ce qui est arrive a l'index 12, entraine a 0.9 s : le
+  // controleur faisait avancer sa phase a 2.0 s, moins de la moitie du rythme
+  // attendu, et le robot n'avancait pas du tout sur une commande avant --
+  // 0.002 m/s mesures pour 0.30 commandes.
+  //
+  // Les defauts restent 2.0 / 1.1 / 0.1 / 0.7, les valeurs des index 9, 10 et
+  // 11, qui ont bien ete entraines ainsi.
+  gaitPeriodSlow_       = pol("gait_period_slow", 2.0);
+  gaitPeriodFast_       = pol("gait_period_fast", 1.1);
+  gaitCommandThreshold_ = pol("gait_command_threshold", 0.1);
+  gaitCommandRef_       = pol("gait_command_ref", 0.7);
+  if(utils::hasGaitPhase(obsFormat_))
+  {
+    mc_rtc::log::info("[NewRLQPController] horloge de demarche : periode {} a {} s, "
+                      "seuil {} ref {}",
+                      gaitPeriodSlow_, gaitPeriodFast_, gaitCommandThreshold_, gaitCommandRef_);
+  }
+
   if(pol.has("vel_target_limit_per_joint"))
   {
     std::map<std::string, double> vtl_map = pol("vel_target_limit_per_joint");
