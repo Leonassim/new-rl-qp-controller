@@ -559,11 +559,14 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
             // velocity_action entry (see NewRLQPController::velocityAction_).
             // observation_names (ONNX metadata): base_lin_vel, base_ang_vel,
             // projected_gravity, joint_pos, joint_vel, actions, command --
-            // ALL seven terms at history depth 40 (unlike V3/V4/V5's depth 5,
-            // and V3's depth-5-on-two-terms-only). Uses its own *Deep_
-            // buffers (V3_DEEP_HISTORY_SIZE), not the shared HISTORY_SIZE
-            // ones case 0 uses, so this doesn't disturb any other index:
-            // 40 * (3+3+3+30+30+30+3) = 40 * 102 = 4080.
+            // ALL seven terms at history depth V3_DEEP_HISTORY_SIZE = 10
+            // (unlike V3/V4/V5's depth 5, and V3's depth-5-on-two-terms-only).
+            // Uses its own *Deep_ buffers, not the shared HISTORY_SIZE ones
+            // case 0 uses, so this doesn't disturb any other index:
+            // 10 * (3+3+3+30+30+30+3) = 10 * 102 = 1020, which is what
+            // rhps1_low_impact.onnx declares. Depth is the constant, never a
+            // number written here: this comment said 40/4080 and sent a reader
+            // hunting a size mismatch that does not exist.
             //
             // Un `case 6:` RHP7 Kaleido partageait ce corps (meme layout sur
             // 32 joints au lieu de 30, toutes les dimensions venant deja de
@@ -624,6 +627,49 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointVelDeep_[i]);
       for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) appendToObs(ctl.jointActDeep_[i]);
       for(int i = ctl.V3_DEEP_HISTORY_SIZE-1; i >= 0; --i) write3(ctl.velCmdDeep_[i]);
+      break;
+    }
+    case 8: // Eleve de tracking RHPS1 -- 99 dims, sans historique.
+            // mjlab run 2026-09-14_11-28-58, tache
+            // Mjlab-Tracking-Flat-RHPS1-Copy-Student : acteur a 99 dims
+            // entraine par RL sur le groupe deployable, critique privilegiee a
+            // 291 dims. observation_names (metadonnees ONNX) :
+            // base_lin_vel[3], base_ang_vel[3], joint_pos[30], joint_vel[30],
+            // actions[30], velocity_command[3] = 99.
+            //
+            // UN ECART avec tous les autres formats de ce switch : PAS de
+            // projected_gravity. L'experte tirait son orientation de
+            // motion_anchor_ori_b, que l'eleve n'a pas ; personne ne l'a
+            // remplacee. Cette politique ne percoit pas son inclinaison.
+            // Le rythme, lui, coincide : decimation 2 x timestep 0.0025 =
+            // 200 Hz, soit l'ancre *policy_step_size (0.005) telle quelle.
+            //
+            // Aucun tampon d'historique : tout se lit a l'instant courant, donc
+            // ce case ne perturbe ni les *_ ni les *Deep_ des autres index.
+    {
+      auto & rr = ctl.realRobot(ctl.robots()[0].name());
+      const std::string & baseName = rr.mb().body(0).name();
+      const Eigen::Matrix3d R_w2b = rr.bodyPosW(baseName).rotation();
+
+      auto write3 = [&](const Eigen::Vector3d & v)
+      { obs.segment(offset, 3) = v; offset += 3; };
+
+      write3(R_w2b * rr.bodyVelW(baseName).linear());
+      write3(R_w2b * rr.bodyVelW(baseName).angular());
+
+      const int actionDim = static_cast<int>(ctl.refJointOrderRLAction.size());
+      Eigen::VectorXd qRel(actionDim), qdRel(actionDim);
+      for(int j = 0; j < actionDim; ++j)
+      {
+        const int mcIdx = rr.jointIndexByName(ctl.refJointOrderRLAction[j]);
+        // joint_pos_rel / joint_vel_rel de mjlab : ecart au zero, vitesse brute.
+        qRel(j)  = rr.mbc().q[mcIdx][0] - ctl.q_zero[ctl.actionToDofMap[j]];
+        qdRel(j) = rr.mbc().alpha[mcIdx][0];
+      }
+      appendToObs(qRel);
+      appendToObs(qdRel);
+      appendToObs(ctl.currentAction);  // sortie brute du pas precedent
+      write3(ctl.currentVelCmd_);
       break;
     }
     default:

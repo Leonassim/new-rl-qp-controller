@@ -96,12 +96,18 @@ policy_path: [
   # (Curriculum/velocity_damper = 1.0 des la reprise), horloge 0.9 s, echelles
   # d'action exactes du run.
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_p6_it26850.onnx",
-  # index 2 (dernier) : politique low_impact d'Hippolyte -- mjlab
+  # index 2 : eleve de tracking (99 dims, run 2026-09-14_11-28-58 model_7000).
+  # Copie la marche du BWC. utils.cpp case 8, d'ou obs_format: 8 sur son bloc.
+  # N'observe PAS projected_gravity et n'a vu aucune randomisation : simulation
+  # seulement pour l'instant.
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_student99.onnx",
+  # index 3 (dernier) : politique low_impact d'Hippolyte -- mjlab
   # JointVelocityAction + IdealPdActuator, obs 1020 = 10x102 (historique
   # profondeur 10, V3_DEEP_HISTORY_SIZE). La SEULE entree avec
   # velocity_action: true : q_rl y est l'integrale libre de la vitesse
   # commandee au lieu d'etre reconstruite depuis q_zero. utils.cpp case 2,
-  # d'ou obs_format: 2 sur son bloc.
+  # d'ou obs_format: 2 sur son bloc. Passee du creneau 2 au 3 le 2026-09-14 ;
+  # sa cle obs_format explicite rend le deplacement sans effet pour elle.
   # Fichier copie le 2026-09-11 depuis l'install locale (jamais commite avant
   # ca : reference par nom des le 2026-08-31 sans que le .onnx suive, cf.
   # l'historique git de ce fichier). 1020 dims, coherent avec utils.cpp::case 2
@@ -623,12 +629,178 @@ policies:
     gait_period_slow: 0.9
     gait_period_fast: 0.9
 
+  # index 2 (2026-09-14) : eleve de tracking, 99 dims, run
+  # 2026-09-14_11-28-58 model_7000 sur Mjlab-Tracking-Flat-RHPS1-Copy-Student.
+  # Copie la marche du BaselineWalkingController : banc 20 s, 0 chute sur 16,
+  # cadence 0.22 vols/s/pied et fraction en l'air 0.129 (BWC : 0.279).
+  #
+  # obs_format: 8 OBLIGATOIRE -- sans la cle, le C++ prend le numero du creneau
+  # et partirait sur `case 2`, le format velocity-action a 1020 dims.
+  #
+  # AVERTISSEMENT : cette politique n'observe PAS projected_gravity, aucun
+  # format deploye jusqu'ici n'etait dans ce cas. Elle ne percoit pas son
+  # inclinaison. Entrainee SANS randomisation (phase 1) : a tester en
+  # simulation, pas sur le robot en l'etat.
+  - use_QP: *use_QP
+    obs_format: 8
+    policy_step_size: *policy_step_size
+    physics_step_size: *physics_step_size
+    pd_gains_ratio: *pd_gains_ratio
+    kp: *kp
+    kd: *kd
+    ref_joint_order: *ref_joint_order
+    max_vel_x: *max_vel_x
+    max_vel_y: *max_vel_y
+    max_yaw: *max_yaw
+    joystick_deadzone: *joystick_deadzone
+    vel_ramp_rate: *vel_ramp_rate
+    runaway_disarm_vel: 4.0
+    # Echelles du run de tracking, tirees des metadonnees de l'ONNX. Le genou
+    # vaut 0.0081 ici contre 0.0075 sur l'index 1 : ne pas recopier l'autre bloc.
+    action_scale:
+      CHEST_Y:      0.000699999975
+      CHEST_P:      0.000699999975
+      HEAD_Y:       0.000699999975
+      HEAD_P:       0.000699999975
+      L_SHOULDER_P: 0.000699999975
+      L_SHOULDER_R: 0.000699999975
+      L_SHOULDER_Y: 0.000699999975
+      L_ELBOW_P:    0.000699999975
+      L_ELBOW_Y:    0.000699999975
+      L_WRIST_R:    0.000699999975
+      L_WRIST_Y:    0.000699999975
+      R_SHOULDER_P: 0.000699999975
+      R_SHOULDER_R: 0.000699999975
+      R_SHOULDER_Y: 0.000699999975
+      R_ELBOW_P:    0.000699999975
+      R_ELBOW_Y:    0.000699999975
+      R_WRIST_R:    0.000699999975
+      R_WRIST_Y:    0.000699999975
+      L_CROTCH_Y:   0.002624999965
+      L_CROTCH_R:   0.007499999832
+      L_CROTCH_P:   0.01049999986
+      L_KNEE_P:     0.00810000021
+      L_ANKLE_R:    0.006750000175
+      L_ANKLE_P:    0.009750000201
+      R_CROTCH_Y:   0.002624999965
+      R_CROTCH_R:   0.007499999832
+      R_CROTCH_P:   0.01049999986
+      R_KNEE_P:     0.00810000021
+      R_ANKLE_R:    0.006750000175
+      R_ANKLE_P:    0.009750000201
+    vel_target_limit_per_joint:
+      CHEST_Y:          8.0
+      CHEST_P:          8.0
+      HEAD_Y:           8.0
+      HEAD_P:           8.0
+      L_SHOULDER_P:     8.0
+      L_SHOULDER_R:     8.0
+      L_SHOULDER_Y:     8.0
+      L_ELBOW_P:        8.0
+      L_ELBOW_Y:        8.0
+      L_WRIST_R:        8.0
+      L_WRIST_Y:        8.0
+      R_SHOULDER_P:     8.0
+      R_SHOULDER_R:     8.0
+      R_SHOULDER_Y:     8.0
+      R_ELBOW_P:        8.0
+      R_ELBOW_Y:        8.0
+      R_WRIST_R:        8.0
+      R_WRIST_Y:        8.0
+      L_CROTCH_Y:       8.0
+      L_CROTCH_R:       8.0
+      L_CROTCH_P:       8.0
+      L_KNEE_P:         8.0
+      L_ANKLE_R:        8.0
+      L_ANKLE_P:        8.0
+      R_CROTCH_Y:       8.0
+      R_CROTCH_R:       8.0
+      R_CROTCH_P:       8.0
+      R_KNEE_P:         8.0
+      R_ANKLE_R:        8.0
+      R_ANKLE_P:        8.0
+    # Required by the damper, and their absence is a hard throw, not a default:
+    # a joint left at lo == hi would be skipped silently, i.e. one joint on a
+    # different plant from the other 29. Missing them is why switching to this
+    # index failed outright instead of misbehaving.
+    # joint_limits : etait l'ancre *joint_limits, definie dans un bloc supprime
+    # le 2026-09-10. Recopiee ici pour que ce bloc soit autonome.
+    joint_limits:
+      CHEST_Y:        [ -0.52360,   0.52360]
+      CHEST_P:        [ -0.52360,   1.22173]
+      HEAD_Y:         [ -3.14159,   3.14159]
+      HEAD_P:         [ -0.52360,   0.52360]
+      L_SHOULDER_P:   [ -3.14159,   3.14159]
+      L_SHOULDER_R:   [ -0.69813,   1.83260]
+      L_SHOULDER_Y:   [ -3.14159,   3.14159]
+      L_ELBOW_P:      [ -2.35619,   0.00000]
+      L_ELBOW_Y:      [ -3.14159,   3.14159]
+      L_WRIST_R:      [ -0.87267,   1.57080]
+      L_WRIST_Y:      [ -1.57080,   1.57080]
+      R_SHOULDER_P:   [ -3.14159,   3.14159]
+      R_SHOULDER_R:   [ -1.83260,   0.69813]
+      R_SHOULDER_Y:   [ -3.14159,   3.14159]
+      R_ELBOW_P:      [ -2.35619,   0.00000]
+      R_ELBOW_Y:      [ -3.14159,   3.14159]
+      R_WRIST_R:      [ -1.57080,   0.87267]
+      R_WRIST_Y:      [ -1.57080,   1.57080]
+      L_CROTCH_Y:     [ -1.57080,   1.57080]
+      L_CROTCH_R:     [ -0.62832,   0.62832]
+      L_CROTCH_P:     [ -1.91986,   0.61086]
+      L_KNEE_P:       [  0.00000,   2.44346]
+      L_ANKLE_R:      [ -0.52360,   0.52360]
+      L_ANKLE_P:      [ -1.57080,   0.69813]
+      R_CROTCH_Y:     [ -1.57080,   1.57080]
+      R_CROTCH_R:     [ -0.62832,   0.62832]
+      R_CROTCH_P:     [ -1.91986,   0.61086]
+      R_KNEE_P:       [  0.00000,   2.44346]
+      R_ANKLE_R:      [ -0.52360,   0.52360]
+      R_ANKLE_P:      [ -1.57080,   0.69813]
+    # velocity_limits : etait l'ancre *velocity_limits, definie dans un bloc supprime
+    # le 2026-09-10. Recopiee ici pour que ce bloc soit autonome.
+    velocity_limits:
+      CHEST_Y:        6
+      CHEST_P:        6
+      HEAD_Y:         4
+      HEAD_P:         4
+      L_SHOULDER_P:   6
+      L_SHOULDER_R:   6
+      L_SHOULDER_Y:   6
+      L_ELBOW_P:      6
+      L_ELBOW_Y:      6
+      L_WRIST_R:      6
+      L_WRIST_Y:      6
+      R_SHOULDER_P:   6
+      R_SHOULDER_R:   6
+      R_SHOULDER_Y:   6
+      R_ELBOW_P:      6
+      R_ELBOW_Y:      6
+      R_WRIST_R:      6
+      R_WRIST_Y:      6
+      L_CROTCH_Y:     8
+      L_CROTCH_R:     8
+      L_CROTCH_P:     8
+      L_KNEE_P:       10
+      L_ANKLE_R:      10
+      L_ANKLE_P:      10
+      R_CROTCH_Y:     8
+      R_CROTCH_R:     8
+      R_CROTCH_P:     8
+      R_KNEE_P:       10
+      R_ANKLE_R:      10
+      R_ANKLE_P:      10
+    # Horloge calee sur l'entrainement : 0.9 s des DEUX cotes de
+    # l'interpolation. Les defauts du controleur sont 2.0 et 1.1, ceux des
+    # index 9 a 11 ; les laisser ici faisait avancer la phase a moins de la
+    # moitie du rythme attendu et le robot n'avancait pas -- 0.002 m/s
+    # mesures pour 0.30 commandes.
   # index 2 (dernier, 2026-09-11) : politique low_impact d'Hippolyte, deplacee
   # du creneau 1 au creneau 2 pour laisser les deux politiques de Leo (index 0
   # et 1) en tete. obs_format: 2 EXPLICITE -- sans lui le C++ prendrait le
-  # numero du creneau comme numero de `case` (NewRLQPController.cpp:306) et
-  # partirait sur `case 2` (530 dims, obs_format 7) au lieu du format
-  # velocity-action reel.
+  # numero du creneau comme numero de `case` (NewRLQPController.cpp:306).
+  # Ici les deux coincident -- creneau 2, `case 2` -- donc la cle est
+  # redondante ; on la garde pour que deplacer ce bloc d'un creneau ne casse
+  # rien silencieusement.
   - use_QP: true
     obs_format: 2
     # Velocity-action policy (mjlab JointVelocityAction + IdealPdActuator):
