@@ -174,17 +174,15 @@ bool NewRLQPController::run()
     for(int i = 0; i < nbActuatedJoints; ++i)
       q_target[jointNames[i]] = {q_rl(i)};
     pt->target(q_target);
-    // Give the QP the velocity target alongside the position target, always
-    // -- not just under posture_feedforward. qdTarget_ already holds it
-    // (exactly, for velocity_action; EMA-filtered, for position_action), and
-    // the plain path used to leave refVel untouched, relying only on
-    // "critically damped tracks a ramp with zero steady-state velocity
-    // error" (utils.cpp run_rl_state) to get qdot right -- true in steady
-    // state, but at the cost of the position lag documented on
-    // postureFeedforward_ above. Setting refVel here removes that lag without
-    // the finite-difference noise postureFeedforward_ risks: qdTarget_ is the
-    // network's own action for velocity_action, not a derivative of q_rl.
-    setPostureRefVel(pt);
+    // setPostureRefVel(pt) DISABLED (2026-09-14): stop feeding the QP a
+    // velocity reference unconditionally. Reverts to the plain path this
+    // comment used to describe as the alternative -- refVel left untouched,
+    // qdot recovered only from "critically damped tracks a ramp with zero
+    // steady-state velocity error" (utils.cpp run_rl_state). Costs back the
+    // position lag documented on postureFeedforward_ below, but removes
+    // refVel as a variable while debugging the divergence-then-fall behavior
+    // under QP (see DEPLOYMENT_NOTES.txt / this session's log analysis).
+    // setPostureRefVel(pt);
     if(posturePassthrough_) { setPostureRefAccel(pt); }
     else if(postureFeedforward_)
     {
@@ -757,7 +755,10 @@ void NewRLQPController::setPostureFeedforward(mc_tasks::PostureTaskPtr & pt)
     v(dof) = std::clamp(qdTarget_(i), -velTargetLimit_, velTargetLimit_);
     a(dof) = std::clamp(ffAcc_(i), -postureAccelMax_, postureAccelMax_);
   }
-  pt->refVel(v);
+  // refVel(v) DISABLED (2026-09-14), matching setPostureRefVel above: no path
+  // should feed the QP a velocity reference while this is being debugged,
+  // including this one, reachable from the posture_feedforward GUI toggle.
+  (void)v;
   pt->refAccel(a);
   postureRefAccelWritten_ = true;
 }

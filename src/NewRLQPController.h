@@ -290,7 +290,7 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   // history 40 (obs 4080) -- kept in its own buffers rather than sharing an
   // array size with any other case's declarations, so bumping it for one
   // policy cannot silently break the observation size of another.
-  static constexpr int V3_DEEP_HISTORY_SIZE = 10;
+  static constexpr int V3_DEEP_HISTORY_SIZE = 40;
   bool histInitializedV3Deep_ = false;
   std::array<Eigen::Vector3d, V3_DEEP_HISTORY_SIZE> linVelDeep_;
   std::array<Eigen::Vector3d, V3_DEEP_HISTORY_SIZE> angVelDeep_;

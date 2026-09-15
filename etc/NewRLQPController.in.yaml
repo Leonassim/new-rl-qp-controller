@@ -110,16 +110,22 @@ policy_path: [
   # Le numero est garde tel quel plutot que remis a 0 pour rester lisible face
   # a l'historique et aux commentaires de la branche RHPS1 : index et
   # obs_format/case C++ sont independants de toute facon.
-  "@RL_POLICY_INSTALL_PREFIX@/4.onnx",
-  # index 1, 2: rhp7flat / rhp7test2 -- meme reseau/plant que l'index 0, seul
+  "@RL_POLICY_INSTALL_PREFIX@/before_bed.onnx",
+  # index 1 : good_morning_england -- meme lignee que before_bed (memes
+  # joint_names/default_joint_pos/action_scale dans les metadonnees ONNX,
+  # verifie octet pour octet), donc meme bloc policies[] entierement reutilise
+  # (q0, kp/kd/effort_limit, action_scale) hormis le fichier.
+  "@RL_POLICY_INSTALL_PREFIX@/good_morning_england.onnx",
+  # index 2, 3: rhp7flat / rhp7test2 -- meme reseau/plant que l'index 0, seul
   # q0 change (le _stance du module robot au lieu du q0 d'entrainement). Voir
   # le commentaire sur leurs blocs dans policies: plus bas.
   "@RL_POLICY_INSTALL_PREFIX@/final3.onnx",
   "@RL_POLICY_INSTALL_PREFIX@/rhp7test2.onnx",
 ]
-# 0 = night2. Les trois .onnx sont desormais bundles dans policy/ et installes
-# par le glob de CMakeLists.txt, donc un clone + build sur le PC du robot les
-# a tous les trois -- les index 1 et 2 sont selectionnables depuis la GUI.
+# 0 = before_bed. Les quatre .onnx sont desormais bundles dans policy/ et
+# installes par le glob de CMakeLists.txt, donc un clone + build sur le PC du
+# robot les a tous les quatre -- les index 1, 2 et 3 sont selectionnables
+# depuis la GUI.
 #
 # Exige MainRobot: RHP7 dans mc_rtc.yaml. Un index incoherent avec le robot
 # charge leve std::out_of_range dans initializeRobot() (les maps kp/kd/q0 sont
@@ -303,12 +309,51 @@ policies:
     # du depot mjlab local donnerait 0.633 au genou contre 0.292 ici. Le run a
     # tourne avec une autre config d'actionneurs.
     #
-    # L_HAND / R_HAND ramenes a 0.05 le 2026-09-06 (etaient a 0.2, et le
-    # commentaire precedent parlait meme de 27.27 a un moment anterieur) :
-    # meme ordre de grandeur que les autres joints du bras plutot qu'une
-    # echelle a part. Les mains restent volontairement molles par ailleurs
-    # (kp 1 / kd 0.1), sans recompense dessus a l'entrainement.
-    action_scale: &rhp7_action_scale
+    # Propre a l'index 0 (policy 53) depuis le 2026-09-14 -- PAS l'anchor
+    # &rhp7_action_scale_legacy partage par les index 2/3 (final3/rhp7test2),
+    # qui gardent les valeurs d'avant. Mains a 27.27 (formule brute
+    # effort_limit/(stiffness*0.01+damping), sans le plafond _HAND_SCALE de
+    # rhp7_constants.py) et bras doubles par rapport a &rhp7_action_scale_legacy
+    # (ex L_SHOULDER_P 0.1795 contre 0.0897) ; chest/head/jambes inchanges.
+    action_scale: &rhp7_action_scale_current
+      CHEST_Y:      0.07954545454545454
+      CHEST_P:      0.07954545454545454
+      HEAD_Y:       0.07142857142857142
+      HEAD_P:       0.07142857142857142
+      L_SHOULDER_P: 0.1794871794871795
+      L_SHOULDER_R: 0.18421052631578946
+      L_SHOULDER_Y: 0.18421052631578946
+      L_ELBOW_P:    0.13157894736842105
+      L_ELBOW_Y:    0.13157894736842105
+      L_WRIST_P:    0.07894736842105263
+      L_WRIST_Y:    0.07894736842105263
+      L_HAND:       27.272727272727273
+      R_SHOULDER_P: 0.1794871794871795
+      R_SHOULDER_R: 0.18421052631578946
+      R_SHOULDER_Y: 0.18421052631578946
+      R_ELBOW_P:    0.13157894736842105
+      R_ELBOW_Y:    0.13157894736842105
+      R_WRIST_P:    0.07894736842105263
+      R_WRIST_Y:    0.07894736842105263
+      R_HAND:       27.272727272727273
+      L_CROTCH_Y:   0.06666666666666667
+      L_CROTCH_R:   0.20833333333333334
+      L_CROTCH_P:   0.20833333333333334
+      L_KNEE_P:     0.2916666666666667
+      L_ANKLE_R:    0.25
+      L_ANKLE_P:    0.25
+      R_CROTCH_Y:   0.06666666666666667
+      R_CROTCH_R:   0.20833333333333334
+      R_CROTCH_P:   0.20833333333333334
+      R_KNEE_P:     0.2916666666666667
+      R_ANKLE_R:    0.25
+      R_ANKLE_P:    0.25
+
+    # Valeurs d'avant le 2026-09-14 (mains ramenees a 0.05 le 2026-09-06,
+    # bras a l'echelle simple) -- gardees pour les index 2/3 (final3.onnx,
+    # rhp7test2.onnx), qui n'ont pas change de checkpoint et n'ont donc pas
+    # de raison de changer d'echelle d'action.
+    _rhp7_action_scale_legacy: &rhp7_action_scale_legacy
       CHEST_Y:      0.07954545454545454
       CHEST_P:      0.07954545454545454
       HEAD_Y:       0.07142857142857142
@@ -513,7 +558,69 @@ policies:
       - R_ANKLE_R
       - R_ANKLE_P
 
-  # index 1 : RHP7 Kaleido, rhp7flat -- IDENTIQUE a l'index 0 (meme reseau, meme
+  # index 1 : good_morning_england -- meme checkpoint/lignee que l'index 0
+  # (before_bed) : joint_names, default_joint_pos et action_scale identiques
+  # octet pour octet dans les metadonnees des deux ONNX. Bloc entierement
+  # duplique en consequence (q0, kp/kd/effort_limit/action_scale par les
+  # memes anchors), seul le fichier .onnx charge differe.
+  - use_QP: true
+    obs_format: 6
+    velocity_action: true
+    use_torque_task: false
+    qp_accel_task: false
+    joint_armature: 1.0
+    policy_step_size: 0.01   # 100 Hz (10 ms)
+    physics_step_size: 0.0025  # mc_mujoco a 400 Hz (2.5 ms)
+    pd_gains_ratio: 1.0
+    posture_stiffness: 1600
+    max_vel_x: 0.3
+    max_vel_y: 0.2
+    max_yaw: 0.45
+    joystick_deadzone: 0.05
+    vel_ramp_rate: 0.5
+    torque_feasibility_ratio: 1.0
+    vel_target_filter_alpha: 0.8
+    effort_limit: *rhp7_effort_limit
+    vel_target_limit_per_joint: *rhp7_vel_target_limit_per_joint
+    action_scale: *rhp7_action_scale_current
+    kp: *rhp7_kp
+    kd: *rhp7_kd
+    q0:
+      CHEST_Y:      0.0         # 0 deg
+      CHEST_P:      0.0         # 0 deg
+      HEAD_Y:       0.0         # absent du keyframe -> defaut 0, confirme par l'ONNX
+      HEAD_P:       0.0         # idem
+      L_SHOULDER_P: 0.261799    # 15 deg
+      L_SHOULDER_R: 0.087266    # 5 deg
+      L_SHOULDER_Y: -0.087266   # -5 deg
+      L_ELBOW_P:    -0.523599   # -30 deg
+      L_ELBOW_Y:    0.0
+      L_WRIST_P:    0.0
+      L_WRIST_Y:    0.0
+      L_HAND:       0.0
+      R_SHOULDER_P: 0.261799    # 15 deg
+      R_SHOULDER_R: -0.087266   # -5 deg
+      R_SHOULDER_Y: 0.087266    # 5 deg
+      R_ELBOW_P:    -0.523599   # -30 deg
+      R_ELBOW_Y:    0.0
+      R_WRIST_P:    0.0
+      R_WRIST_Y:    0.0
+      R_HAND:       0.0
+      L_CROTCH_Y:   0.0         # 0 deg
+      L_CROTCH_R:   0.0         # 0 deg
+      L_CROTCH_P:   -0.296706   # -17 deg
+      L_KNEE_P:     0.628319    # 36 deg
+      L_ANKLE_R:    0.0         # 0 deg
+      L_ANKLE_P:    -0.331613   # -19 deg
+      R_CROTCH_Y:   0.0
+      R_CROTCH_R:   0.0
+      R_CROTCH_P:   -0.296706   # -17 deg
+      R_KNEE_P:     0.628319    # 36 deg
+      R_ANKLE_R:    0.0
+      R_ANKLE_P:    -0.331613   # -19 deg
+    ref_joint_order: *rhp7_ref_joint_order
+
+  # index 2 : RHP7 Kaleido, rhp7flat -- IDENTIQUE a l'index 0 (meme reseau, meme
   # plant) sauf q0 : au lieu du q0 du run d'entrainement (bras a 30/-80 deg),
   # utilise le _stance du module robot mc_rhp7 (rhp7.cpp:48-79) -- la pose ou
   # le robot se tient AVANT l'armement (cf. reset(), qui ne pousse jamais q_rl
@@ -554,7 +661,7 @@ policies:
     vel_target_filter_alpha: 0.8
     effort_limit: *rhp7_effort_limit
     vel_target_limit_per_joint: *rhp7_vel_target_limit_per_joint
-    action_scale: *rhp7_action_scale
+    action_scale: *rhp7_action_scale_legacy
     kp: *rhp7_kp
     kd: *rhp7_kd
 
@@ -596,9 +703,9 @@ policies:
       R_ANKLE_P:    -0.331613   # -19 deg
     ref_joint_order: *rhp7_ref_joint_order
 
-  # index 2 : RHP7 Kaleido, rhp7test2 -- meme reseau/config que l'index 1
+  # index 3 : RHP7 Kaleido, rhp7test2 -- meme reseau/config que l'index 2
   # (module _stance en q0), fichier .onnx different -- voir le commentaire de
-  # l'index 1 pour l'explication du choix de q0.
+  # l'index 2 pour l'explication du choix de q0.
   - use_QP: true
     obs_format: 6
     velocity_action: true
@@ -629,7 +736,7 @@ policies:
     vel_target_filter_alpha: 0.8
     effort_limit: *rhp7_effort_limit
     vel_target_limit_per_joint: *rhp7_vel_target_limit_per_joint
-    action_scale: *rhp7_action_scale
+    action_scale: *rhp7_action_scale_legacy
     kp: *rhp7_kp
     kd: *rhp7_kd
     q0:
