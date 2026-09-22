@@ -309,6 +309,30 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
 
   Eigen::Vector3d currentVelCmd_ = Eigen::Vector3d::Zero();
 
+  /** @brief Command as the OBSERVATION should carry it.
+   *
+   * A direction-trained policy (index 4, the BWC copy) only ever saw -1, 0 and
+   * +1: the training command is the SIGN of the reference displacement. Feeding
+   * it the joystick's 0.3 puts it off-distribution -- measured 2026-09-18, the
+   * robot walks differently at 0.3 than at 1.0 although the two mean the same
+   * thing to it. commandAsSign_ restores what it was trained on; the QP, the
+   * runaway guard and the logs keep the real command.
+   */
+  Eigen::Vector3d obsVelCmd() const
+  {
+    if(!commandAsSign_) return currentVelCmd_;
+    Eigen::Vector3d s = Eigen::Vector3d::Zero();
+    for(int i = 0; i < 3; ++i)
+    {
+      if(std::abs(currentVelCmd_(i)) > commandSignDeadZone_)
+        s(i) = currentVelCmd_(i) > 0.0 ? 1.0 : -1.0;
+    }
+    return s;
+  }
+
+  bool commandAsSign_ = false;
+  double commandSignDeadZone_ = 0.1;
+
   // =========================================================================
   // Gait phase clock (V4 observation only)
   // =========================================================================
@@ -682,6 +706,13 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    * Public because the Initial state reads and sets it.
    */
   bool policyArmed_ = false;
+  /** @brief Banc autonome, simulation seulement : delai d'armement en secondes.
+   *  0 (defaut) desactive tout. Voir run(). */
+  double benchAutoArm_ = 0.0;
+  /** @brief Vrai seulement si le programme hote est mc_mujoco. */
+  bool benchInSimulation_ = false;
+  double benchElapsed_ = 0.0;
+  Eigen::Vector3d benchVelocity_ = Eigen::Vector3d::Zero();
 
 private:
   mc_rtc::Configuration config_;

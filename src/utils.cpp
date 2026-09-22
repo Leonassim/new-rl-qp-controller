@@ -322,7 +322,7 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       ctl.linVel_[0]   = R_w2b * rr.bodyVelW(baseName).linear();
       ctl.angVel_[0]   = R_w2b * rr.bodyVelW(baseName).angular();
       ctl.projGrav_[0] = R_w2b * Eigen::Vector3d(0, 0, -1);
-      ctl.velCmd_[0]   = ctl.currentVelCmd_;
+      ctl.velCmd_[0]   = ctl.obsVelCmd();
 
       // jointAct_[0] = raw NN output from previous step (before scaling)
       ctl.jointAct_[0] = ctl.currentAction;
@@ -398,7 +398,7 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       ctl.linVel_[0]   = R_w2b * rr.bodyVelW(baseName).linear();
       ctl.angVel_[0]   = R_w2b * rr.bodyVelW(baseName).angular();
       ctl.projGrav_[0] = R_w2b * Eigen::Vector3d(0, 0, -1);
-      ctl.velCmd_[0]   = ctl.currentVelCmd_;
+      ctl.velCmd_[0]   = ctl.obsVelCmd();
       ctl.jointAct_[0] = ctl.currentAction;
       // Avancer l'horloge exactement une fois par inference, APRES velCmd_[0]
       // dont depend la cadence, et AVANT l'ecriture du bloc. Le format 3 fait
@@ -509,7 +509,7 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       ctl.linVel_[0]   = R_w2b * rr.bodyVelW(baseName).linear();
       ctl.angVel_[0]   = R_w2b * rr.bodyVelW(baseName).angular();
       ctl.projGrav_[0] = R_w2b * Eigen::Vector3d(0, 0, -1);
-      ctl.velCmd_[0]   = ctl.currentVelCmd_;
+      ctl.velCmd_[0]   = ctl.obsVelCmd();
       ctl.jointAct_[0] = ctl.currentAction;
       // Advance the clock exactly once per inference, after velCmd_[0] is set
       // (the cadence depends on it) and before the block is written out.
@@ -598,7 +598,7 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       ctl.linVelDeep_[0]   = R_w2b * rr.bodyVelW(baseName).linear();
       ctl.angVelDeep_[0]   = R_w2b * rr.bodyVelW(baseName).angular();
       ctl.projGravDeep_[0] = R_w2b * Eigen::Vector3d(0, 0, -1);
-      ctl.velCmdDeep_[0]   = ctl.currentVelCmd_;
+      ctl.velCmdDeep_[0]   = ctl.obsVelCmd();
 
       // jointActDeep_[0] = raw NN output from the previous step (before scaling)
       ctl.jointActDeep_[0] = ctl.currentAction;
@@ -669,7 +669,7 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       appendToObs(qRel);
       appendToObs(qdRel);
       appendToObs(ctl.currentAction);  // sortie brute du pas precedent
-      write3(ctl.currentVelCmd_);
+      write3(ctl.obsVelCmd());
       break;
     }
     default:

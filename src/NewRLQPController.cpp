@@ -1,3 +1,5 @@
+#include <fstream>
+#include <sstream>
 #include "NewRLQPController.h"
 
 #include <algorithm>
@@ -14,6 +16,16 @@ NewRLQPController::NewRLQPController(mc_rbdyn::RobotModulePtr rm, double dt, con
 {
   config_ = config;
   currentPolicyIndex = size_t(config_("default_policy_index", 0));
+  // Banc autonome : l'index passe aussi par l'environnement. Une section
+  // NewRLQPController d'un recouvrement mc_rtc ne fusionne pas avec la
+  // configuration du controleur (2026-09-15) -- default_policy_index y restait
+  // a 0 et le banc mesurait la policy 0 en croyant mesurer la mienne.
+  if(const char * pi = std::getenv("RLQP_BENCH_POLICY_INDEX"))
+  {
+    currentPolicyIndex = size_t(std::max(0, std::atoi(pi)));
+    mc_rtc::log::warning("[NewRLQPController] BANC : index de policy force a {}",
+                         currentPolicyIndex);
+  }
 
   // Full module minimalSelfCollisions kept: the RL policy is trained to stay
   // out of the dampers' braking zones (proximity penalties in mjlab-rhps1),
@@ -119,7 +131,28 @@ bool NewRLQPController::run()
   // restoreQPVelocity()'s own comment for why the ordering matters.
   if(useQP_ && qpZeroVelOut_) { restoreQPVelocity(); }
 
+  // BANC AUTONOME (simulation seulement). Sans ces deux cles, rien ne change :
+  // benchAutoArm_ vaut 0 et benchVelocity_ est nul par defaut. Elles ne sont
+  // lues que depuis un recouvrement de configuration dedie au banc, et le garde
+  // ci-dessous les rend inoperantes hors de RHPS1_MuJoCo -- le module du robot
+  // reel s'appelle RHPS1, donc l'armement automatique ne peut pas s'y declencher
+  // meme si quelqu'un laissait ces cles dans un fichier.
+  if(benchAutoArm_ > 0.0 && benchInSimulation_)
+  {
+    benchElapsed_ += timeStep;
+    if(!policyArmed_ && benchElapsed_ >= benchAutoArm_)
+    {
+      policyArmed_ = true;
+      mc_rtc::log::warning("[NewRLQPController] BANC : armement automatique a {:.1f} s "
+                           "(simulation, RHPS1_MuJoCo)", benchElapsed_);
+    }
+  }
+
   updateVelocityCommand();
+  if(benchAutoArm_ > 0.0 && benchInSimulation_)
+  {
+    currentVelCmd_ = benchVelocity_;  // apres la rampe : consigne constante
+  }
   if(printLimits_) computeLimits();
   if(logImpactVel_) updateImpactVelocity();
 
@@ -303,6 +336,14 @@ void NewRLQPController::initializeRobot()
 {
   useQP_    = config_("policies")[currentPolicyIndex]("use_QP", true);
   velocityAction_ = config_("policies")[currentPolicyIndex]("velocity_action", false);
+  commandAsSign_ = config_("policies")[currentPolicyIndex]("command_as_sign", false);
+  commandSignDeadZone_ =
+    config_("policies")[currentPolicyIndex]("command_sign_deadzone", 0.1);
+  if(commandAsSign_)
+  {
+    mc_rtc::log::info("[NewRLQPController] commande envoyee au reseau en SIGNE "
+                      "(zone morte {})", commandSignDeadZone_);
+  }
   // Defaut = velocityAction_ : actif pour les politiques dont qdTarget_ est
   // reellement la sortie du reseau, inactif pour les autres. Voir la
   // declaration de postureRefVel_.
@@ -405,6 +446,38 @@ void NewRLQPController::initializeRobot()
   postureAccelMax_    = config_("policies")[currentPolicyIndex]("posture_accel_max", 200.0);
   postureFeedforward_ = config_("policies")[currentPolicyIndex]("posture_feedforward", false);
   runawayDisarmVel_   = config_("policies")[currentPolicyIndex]("runaway_disarm_vel", 0.0);
+  // Banc autonome : cles de PREMIER niveau, pas dans le bloc de la politique --
+  // le banc pilote le controleur, pas une politique particuliere.
+  // Banc autonome : par VARIABLES D'ENVIRONNEMENT, pas par la configuration.
+  // La section NewRLQPController d'un recouvrement mc_rtc ne fusionne pas avec
+  // la configuration propre du controleur (constate le 2026-09-15 : la cle
+  // arrivait toujours a 0). Une variable d'environnement ne peut pas se perdre
+  // dans une fusion, et elle est absente sur le robot par construction.
+  benchAutoArm_ = 0.0;
+  benchElapsed_ = 0.0;
+  benchVelocity_.setZero();
+  if(const char * a = std::getenv("RLQP_BENCH_AUTO_ARM"))
+  {
+    // Le nom du MODULE ne distingue pas la simulation du materiel : il vaut
+    // 'rhps1' des deux cotes (mesure le 2026-09-15). On regarde donc le
+    // PROGRAMME qui tourne. Le robot reel passe par mc_openrtm/choreonoid,
+    // jamais par mc_mujoco -- l'armement automatique y est donc impossible,
+    // quelles que soient les variables d'environnement presentes.
+    std::ifstream comm("/proc/self/comm");
+    std::string prog;
+    std::getline(comm, prog);
+    benchInSimulation_ = prog.find("mc_mujoco") != std::string::npos;
+    benchAutoArm_ = std::atof(a);
+    if(const char * v = std::getenv("RLQP_BENCH_VELOCITY"))
+    {
+      std::istringstream is(v);
+      is >> benchVelocity_.x() >> benchVelocity_.y() >> benchVelocity_.z();
+    }
+    mc_rtc::log::warning("[NewRLQPController] BANC demande : programme='{}' simulation={} "
+                         "arm={:.1f}s vel=[{:.3f} {:.3f} {:.3f}]",
+                         prog, benchInSimulation_, benchAutoArm_,
+                         benchVelocity_.x(), benchVelocity_.y(), benchVelocity_.z());
+  }
 
   // Experimental: see restoreQPVelocity()/zeroAlphaOut() and run(). Off by
   // default -- untested on hardware, simulation-only ablation for now.
@@ -621,7 +694,7 @@ void NewRLQPController::initializeRLObservation()
     jointPos_[i] = jp;
     jointVel_[i] = jv;
     jointAct_[i] = ja;
-    velCmd_[i]   = currentVelCmd_;
+    velCmd_[i]   = obsVelCmd();
     gaitPhase_[i].setZero();
   }
   gaitPhase_value_ = 0.0;
@@ -646,7 +719,7 @@ void NewRLQPController::initializeRLObservation()
     jointPosDeep_[i] = jp;
     jointVelDeep_[i] = jv;
     jointActDeep_[i] = ja;
-    velCmdDeep_[i]   = currentVelCmd_;
+    velCmdDeep_[i]   = obsVelCmd();
   }
   histInitializedV3Deep_ = true;
 }
