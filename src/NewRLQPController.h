@@ -791,13 +791,15 @@ private:
   double dsPercent_ = 0.01; // Percentage of the max joint range taking account in the joint position limit constraint.
   double diPercent_ = 0.1; // Doesn't matter since di > ds. This variable is not used in the constraint dynamics.
 
-  // --- CBF Gains ---
-  // More details are explained in the paper cf. Readme.md. 
-  // Must be tuned depending on the robot.
-  double zeta_jointLimit_ = 1.2;
-  double lambda_jointLimit_ = 100.0; // Same gain for joint position limits and velocity limits. 
-  double zeta_selfCollision_ = 1.2;
-  double lambda_selfCollision_ = 10.0; 
+  // --- CBF Gains (removed) ---
+  // The CBF damper only exists in bastien-muraccioli/mc_rtc, and the robot PC
+  // builds against upstream jrl-umi3218, so the constructor that consumed these
+  // is gone (see NewRLQPController.cpp, kinematicsConstraint). Kept as a record
+  // rather than as dead members, to restore if the fork ever becomes the
+  // deployment target again:
+  //   zeta_jointLimit = 1.2, lambda_jointLimit = 100.0  (position AND velocity limits)
+  //   zeta_selfCollision = 1.2, lambda_selfCollision = 10.0
+  // More details in the paper, cf. Readme.md. Must be tuned per robot.
 
   // --- PD gains ---
   double pdGainsRatio_ = 1.0;

@@ -21,7 +21,7 @@ NewRLQPController::NewRLQPController(mc_rbdyn::RobotModulePtr rm, double dt, con
   // thigh pair's iDist (0.06) exceeds the thighs' *standing* sch distance
   // (0.028), so its damper braked permanently and killed lateral stepping.
   // 0.025 turns it back into a protection (sDist stays 0.01). Edited in the
-  // stored `cols` because setCollisionsDampers re-creates every pair from it.
+  // stored `cols`, the only handle the module gives on these pairs.
   for(auto & col : selfCollisionConstraint->cols)
   {
     // HRP5P body names (this branch is HRP5P-only): Lleg_Link2/Rleg_Link2 are
@@ -38,7 +38,17 @@ NewRLQPController::NewRLQPController(mc_rbdyn::RobotModulePtr rm, double dt, con
                         col.sDist);
     }
   }
-  selfCollisionConstraint->setCollisionsDampers(solver(), {zeta_selfCollision_, lambda_selfCollision_});
+  // setCollisionsDampers({zeta_selfCollision_, lambda_selfCollision_}) used to
+  // be called here. Dropped for two independent reasons:
+  //   - it only exists in bastien-muraccioli/mc_rtc. The robot PC builds
+  //     against upstream jrl-umi3218 (superbuild be391d0 of 2026-07-08, mc_rtc
+  //     ed8fd236), where the symbol is absent and this file does not compile.
+  //   - it was already a no-op: selfCollisionConstraint is never handed to
+  //     solver().addConstraintSet(), so nothing it configures reaches the QP.
+  //     What actually installs a self-collision constraint is the `collisions`
+  //     block of the yaml, via MCController's own CollisionsConstraint.
+  // The iDist loop above is kept: `cols` is public in both versions, and it
+  // documents the thigh-pair correction even though it shares the same fate.
   // use_torque_task needs the dynamics: TorqueTask minimises the error between
   // the requested torque and the one the dynamic model produces, so without
   // dynamicsConstraint there is no relation between alphaD and tau to solve
@@ -60,9 +70,22 @@ NewRLQPController::NewRLQPController(mc_rbdyn::RobotModulePtr rm, double dt, con
   // joint at half its maximum speed, which brakes exactly the fast lateral
   // corrections this policy relies on -- it already runs ANKLE_R near
   // saturation. Running the default was measured at ~1.6x the bypass roll.
+  // The 5-element damper {di, ds, 0, zeta, lambda} is the CBF form, and it only
+  // exists in bastien-muraccioli/mc_rtc. Upstream jrl-umi3218 -- what the robot
+  // PC builds (superbuild be391d0, mc_rtc ed8fd236) -- offers only the classic
+  // {di, ds, offset} + timeStep signature, which the fork also still carries.
+  // Writing it this way therefore compiles against BOTH, and what runs in
+  // simulation is what runs on the robot rather than a form the robot cannot
+  // have.
+  //
+  // What is lost: the acceleration-level CBF and its zeta/lambda gains. What is
+  // kept is the part that was actually measured to matter -- velPercent_ at
+  // 0.95 instead of MCController's 0.50, the ceiling whose absence brakes the
+  // fast lateral corrections this policy depends on (it runs ANKLE_R near
+  // saturation; the default was measured at ~1.6x the bypass roll).
   kinematicsConstraint = mc_rtc::unique_ptr<mc_solver::KinematicsConstraint>(
-    new mc_solver::KinematicsConstraint(robots(), 0,
-      {diPercent_, dsPercent_, 0.0, zeta_jointLimit_, lambda_jointLimit_}, velPercent_));
+    new mc_solver::KinematicsConstraint(robots(), 0, timeStep,
+      {diPercent_, dsPercent_, 0.0}, velPercent_));
   solver().addConstraintSet(kinematicsConstraint);
 
   initializeRobot();
