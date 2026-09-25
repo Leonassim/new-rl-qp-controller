@@ -24,8 +24,13 @@ NewRLQPController::NewRLQPController(mc_rbdyn::RobotModulePtr rm, double dt, con
   // stored `cols` because setCollisionsDampers re-creates every pair from it.
   for(auto & col : selfCollisionConstraint->cols)
   {
-    const bool thighPair = (col.body1 == "L_CROTCH_P_LINK" && col.body2 == "R_CROTCH_P_LINK")
-                           || (col.body1 == "R_CROTCH_P_LINK" && col.body2 == "L_CROTCH_P_LINK");
+    // HRP5P body names (this branch is HRP5P-only): Lleg_Link2/Rleg_Link2 are
+    // the thigh bodies (child of LCP/RCP, labelled "L/R Thigh" in
+    // mc_hrp5_p.cpp's own selfCollision comments), unlike RHPS1's
+    // L_CROTCH_P_LINK/R_CROTCH_P_LINK which don't exist on this robot and
+    // left this correction a silent no-op.
+    const bool thighPair = (col.body1 == "Lleg_Link2" && col.body2 == "Rleg_Link2")
+                           || (col.body1 == "Rleg_Link2" && col.body2 == "Lleg_Link2");
     if(thighPair)
     {
       col.iDist = 0.025;
@@ -149,9 +154,14 @@ bool NewRLQPController::run()
   if(useQP_ && policyArmed_)
   {
     auto pt = getPostureTask(robot().name());
+    // Fixed actuation (servo transport) delay, when configured -- see the
+    // class-level comment on qDelayBuf_/actuationDelaySteps_. Applied here,
+    // between q_rl and the PostureTask target mc_mujoco's own PD tracks, to
+    // mirror where mjlab's actuation_delay_min_lag/max_lag sits in training.
+    const Eigen::VectorXd & qDelayed = delayedQRl_();
     std::map<std::string, std::vector<double>> q_target;
     for(int i = 0; i < nbActuatedJoints; ++i)
-      q_target[jointNames[i]] = {q_rl(i)};
+      q_target[jointNames[i]] = {qDelayed(i)};
     pt->target(q_target);
     // Give the QP the velocity target alongside the position target, always
     // -- not just under posture_feedforward. qdTarget_ already holds it
@@ -386,6 +396,17 @@ void NewRLQPController::initializeRobot()
   // indices that trained without it are untouched.
   torqueFeasibilityRatio_ = config_("policies")[currentPolicyIndex]("torque_feasibility_ratio", -1.0);
   velTargetFilterAlpha_   = config_("policies")[currentPolicyIndex]("vel_target_filter_alpha", 0.0);
+
+  // Fixed actuation delay for sim-in-sim deployment -- see the class-level
+  // comment above qDelayBuf_/qdDelayBuf_ for why this is a constant number of
+  // ticks rather than mjlab's randomized DelayBuffer.
+  const double actuationDelayMs = config_("policies")[currentPolicyIndex]("actuation_delay_ms", 0.0);
+  actuationDelaySteps_ = static_cast<int>(std::lround(actuationDelayMs / 1000.0 / timeStep));
+  qDelayBuf_.clear();
+  qdDelayBuf_.clear();
+  if(actuationDelaySteps_ > 0)
+    mc_rtc::log::info("[NewRLQPController] actuation delay: {:.0f} ms ({} ticks at timeStep {:.4f}s)",
+                      actuationDelayMs, actuationDelaySteps_, timeStep);
   effortLimit_    = Eigen::VectorXd::Zero(nbActuatedJoints);
   velTargetLimitPerJoint_ = Eigen::VectorXd::Constant(nbActuatedJoints, 1e9);
   qdTarget_       = Eigen::VectorXd::Zero(nbActuatedJoints);
@@ -804,6 +825,22 @@ Eigen::VectorXd NewRLQPController::applyPostureFilter(const Eigen::VectorXd & qC
   return postureQ_;
 }
 
+const Eigen::VectorXd & NewRLQPController::delayedQRl_()
+{
+  if(actuationDelaySteps_ <= 0) { return q_rl; }
+  qDelayBuf_.push_back(q_rl);
+  while(static_cast<int>(qDelayBuf_.size()) > actuationDelaySteps_ + 1) { qDelayBuf_.pop_front(); }
+  return qDelayBuf_.front();
+}
+
+const Eigen::VectorXd & NewRLQPController::delayedQdTarget_()
+{
+  if(actuationDelaySteps_ <= 0) { return qdTarget_; }
+  qdDelayBuf_.push_back(qdTarget_);
+  while(static_cast<int>(qdDelayBuf_.size()) > actuationDelaySteps_ + 1) { qdDelayBuf_.pop_front(); }
+  return qdDelayBuf_.front();
+}
+
 int NewRLQPController::postureDofOffset() const
 {
   return robot().mb().joint(0).type() == rbd::Joint::Free ? 6 : 0;
@@ -834,6 +871,7 @@ void NewRLQPController::setPostureRefVel(mc_tasks::PostureTaskPtr & pt)
   const int off = postureDofOffset();
   const int n = mb.nrDof() - off;
   Eigen::VectorXd v = Eigen::VectorXd::Zero(n);
+  const Eigen::VectorXd & qdDelayed = delayedQdTarget_();
   for(int i = 0; i < nbActuatedJoints; ++i)
   {
     const int dof = mb.jointPosInDof(robot().jointIndexByName(jointNames[i])) - off;
@@ -842,7 +880,7 @@ void NewRLQPController::setPostureRefVel(mc_tasks::PostureTaskPtr & pt)
     // is already bounded upstream (vel_target_limit_per_joint for
     // velocity_action, applyVelocityDamper/the EMA filter for position_action),
     // but nothing re-checks it here otherwise.
-    v(dof) = std::clamp(qdTarget_(i), -velTargetLimit_, velTargetLimit_);
+    v(dof) = std::clamp(qdDelayed(i), -velTargetLimit_, velTargetLimit_);
   }
   pt->refVel(v);
   postureRefAccelWritten_ = true;
@@ -1092,8 +1130,13 @@ void NewRLQPController::updateImpactVelocity()
     }
   };
 
-  processFoot("LeftFootForceSensor", "L_ANKLE_P_LINK", leftFootContact_, leftFootForceZ_, leftFootImpactVel_);
-  processFoot("RightFootForceSensor", "R_ANKLE_P_LINK", rightFootContact_, rightFootForceZ_, rightFootImpactVel_);
+  // HRP5P body names (this branch is HRP5P-only): Lleg_Link5/Rleg_Link5 are
+  // what LeftFootForceSensor/RightFootForceSensor are actually attached to
+  // (mc_hrp5_p.cpp's ForceSensor registration), unlike RHPS1's
+  // L_ANKLE_P_LINK/R_ANKLE_P_LINK which don't exist on this robot and threw
+  // std::out_of_range out of mc_rbdyn::Robot::bodyIndexByName on first impact.
+  processFoot("LeftFootForceSensor", "Lleg_Link5", leftFootContact_, leftFootForceZ_, leftFootImpactVel_);
+  processFoot("RightFootForceSensor", "Rleg_Link5", rightFootContact_, rightFootForceZ_, rightFootImpactVel_);
 }
 
 bool NewRLQPController::byPassQPControl()

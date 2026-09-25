@@ -320,7 +320,19 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
 
       // Fill index 0 with current state
       ctl.linVel_[0]   = R_w2b * rr.bodyVelW(baseName).linear();
-      ctl.angVel_[0]   = R_w2b * rr.bodyVelW(baseName).angular();
+      // Gyro, NOT bodyVelW().angular(). MCWaiko publishes a floating-base
+      // velocity whose angular part is identically zero: MCWaiko.cpp:454 takes
+      // it from worldFbKine_, built from the legged-odometry robot's velW(),
+      // which carries no angular velocity, while the linear part comes from the
+      // estimator. Measured over a full 115 s run: the angular block fed to the
+      // network was exactly 0.0 on all 22976 samples while the IMU read up to
+      // 3.93 rad/s, and restoring it moves the action by 28% of its norm.
+      //
+      // The sensor frame needs no rotation here: mc_hrp5_p registers
+      // "Accelerometer" on "Body" (the floating base) with a pure translation,
+      // so the gyro already reads the base angular velocity in the base frame --
+      // exactly mjlab's base_ang_vel (root_link_ang_vel_b, envs/mdp/observations.py).
+      ctl.angVel_[0]   = rr.bodySensor("Accelerometer").angularVelocity();
       ctl.projGrav_[0] = R_w2b * Eigen::Vector3d(0, 0, -1);
       ctl.velCmd_[0]   = ctl.currentVelCmd_;
 
@@ -396,7 +408,8 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       }
 
       ctl.linVel_[0]   = R_w2b * rr.bodyVelW(baseName).linear();
-      ctl.angVel_[0]   = R_w2b * rr.bodyVelW(baseName).angular();
+      // Gyro, not bodyVelW().angular() -- see case 0 above.
+      ctl.angVel_[0]   = rr.bodySensor("Accelerometer").angularVelocity();
       ctl.projGrav_[0] = R_w2b * Eigen::Vector3d(0, 0, -1);
       ctl.velCmd_[0]   = ctl.currentVelCmd_;
       ctl.jointAct_[0] = ctl.currentAction;
@@ -507,7 +520,8 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       }
 
       ctl.linVel_[0]   = R_w2b * rr.bodyVelW(baseName).linear();
-      ctl.angVel_[0]   = R_w2b * rr.bodyVelW(baseName).angular();
+      // Gyro, not bodyVelW().angular() -- see case 0 above.
+      ctl.angVel_[0]   = rr.bodySensor("Accelerometer").angularVelocity();
       ctl.projGrav_[0] = R_w2b * Eigen::Vector3d(0, 0, -1);
       ctl.velCmd_[0]   = ctl.currentVelCmd_;
       ctl.jointAct_[0] = ctl.currentAction;
@@ -553,7 +567,18 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       break;
     }
     case 2: // hippolyte's velocity-action run -- obs = 4080 dims.
-            // Index 2 is this policy now: the list was condensed to v3 (0),
+    case 8: // HRP5P, velocity-action (policy/hrp5delai.onnx, `hrp5p` branch).
+            // observation_names (ONNX metadata, confirmed with onnxruntime:
+            // input [1, 2220]): base_lin_vel, base_ang_vel, projected_gravity,
+            // joint_pos, joint_vel, actions, command, all at history depth 20
+            // -- 20 * (3+3+3+33+33+33+3) = 20*111 = 2220, matching mjlab's
+            // history_length=20 (velocity_env_cfg_hrp5.py). Falls through
+            // into case 2's body: same layout, already generic on actionDim
+            // via refJointOrderRLAction.size(), only the joint count (33 vs
+            // 30) and the *Deep_ buffer depth (V3_DEEP_HISTORY_SIZE = 20,
+            // NewRLQPController.h) differ, and both come from config/data,
+            // not from this switch.
+    // Index 2 is this policy now: the list was condensed to v3 (0),
             // v9 (1) and this one (2), so the V4 label that used to sit on
             // case 2 was dropped from the shared body above. The only
             // velocity_action entry (see NewRLQPController::velocityAction_).
@@ -593,7 +618,9 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
 
       // Fill index 0 with current state
       ctl.linVelDeep_[0]   = R_w2b * rr.bodyVelW(baseName).linear();
-      ctl.angVelDeep_[0]   = R_w2b * rr.bodyVelW(baseName).angular();
+      // Gyro, not bodyVelW().angular() -- see case 0 above. This is the path the
+      // HRP5P policy actually takes (obs_format 8 falls through to this body).
+      ctl.angVelDeep_[0]   = rr.bodySensor("Accelerometer").angularVelocity();
       ctl.projGravDeep_[0] = R_w2b * Eigen::Vector3d(0, 0, -1);
       ctl.velCmdDeep_[0]   = ctl.currentVelCmd_;
 

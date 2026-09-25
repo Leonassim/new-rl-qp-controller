@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <deque>
 #include <mc_control/fsm/Controller.h>
 #include <mc_rbdyn/SCHAddon.h>
 
@@ -290,14 +291,26 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   static constexpr int RAW_TORQUE_HISTORY = 10;
   std::array<Eigen::VectorXd, RAW_TORQUE_HISTORY> rawTorque_;
 
-  // Policy index 4 only (hippolyte's run, obs = 4080 = 40 * 102): history 40
-  // on every term (base_lin_vel, base_ang_vel, projected_gravity, joint_pos,
-  // joint_vel, actions, command), unlike V3/V4/V5's depth-5 history. Kept in
-  // its own buffers rather than resizing HISTORY_SIZE, for the same reason
-  // rawTorque_ has its own RAW_TORQUE_HISTORY: one array size is shared by
-  // every case's declarations, so bumping it for one policy silently breaks
-  // the observation size of all the others.
-  static constexpr int V3_DEEP_HISTORY_SIZE = 10;
+  // History depth on every term (base_lin_vel, base_ang_vel,
+  // projected_gravity, joint_pos, joint_vel, actions, command), unlike
+  // V3/V4/V5's depth-5 history. Kept in its own buffers rather than resizing
+  // HISTORY_SIZE, for the same reason rawTorque_ has its own
+  // RAW_TORQUE_HISTORY: one array size is shared by every case's
+  // declarations.
+  //
+  // Set to 20 on the `hrp5p` branch (obs_format 8, policy/hrp5delai.onnx:
+  // onnxruntime confirms input [1, 2220] = 20 * (3+3+3+33+33+33+3), matching
+  // mjlab/tasks/velocity/velocity_env_cfg_hrp5.py:93's history_length=20).
+  // Was 40 for the first HRP5P policy (hrp5p.onnx, retired -- input [1,
+  // 4440]); this constant tracks whichever single policy is on the branch,
+  // not a robot-fixed value. Case 2 (rhps1_low_impact.onnx, obs_format 2,
+  // trained at depth 10) shares these buffers: on THIS branch it builds a
+  // 2220-dim observation against a 1020-dim onnx and will refuse to load
+  // ("Observation size mismatch") rather than silently feed the wrong
+  // shape -- moot anyway, RHPS1 policies were dropped from this branch's
+  // yaml. Deliberate, same tradeoff as the `rhp7` branch dropping the RHPS1
+  // entries outright -- this branch exists for one robot, one policy.
+  static constexpr int V3_DEEP_HISTORY_SIZE = 20;
   bool histInitializedV3Deep_ = false;
   std::array<Eigen::Vector3d, V3_DEEP_HISTORY_SIZE> linVelDeep_;
   std::array<Eigen::Vector3d, V3_DEEP_HISTORY_SIZE> angVelDeep_;
@@ -308,6 +321,28 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   std::array<Eigen::Vector3d, V3_DEEP_HISTORY_SIZE> velCmdDeep_;
 
   Eigen::Vector3d currentVelCmd_ = Eigen::Vector3d::Zero();
+
+  // =========================================================================
+  // Constant actuation (servo transport) delay for sim-in-sim deployment
+  // =========================================================================
+  // mjlab (IdealPdActuatorCfg.actuation_delay_min_lag/max_lag, pd_actuator.py)
+  // trains against a RANDOMIZED delay between the policy's position/velocity
+  // target and where it enters the PD error (a DelayBuffer resampled per env,
+  // held actuation_delay_hold_prob of the time). Here, deploying a single
+  // policy against mc_mujoco rather than a training batch, actuation_delay_ms
+  // (policies[] key, milliseconds) gives a FIXED delay instead -- same
+  // insertion point (between q_rl/qdTarget_ and the PostureTask target this
+  // controller writes every tick, which mc_mujoco's own PD then tracks), no
+  // per-episode resampling. 0 (default) disables it entirely (ring buffers
+  // stay empty, delayedQRl_()/delayedQdTarget_() return the undelayed value).
+  int actuationDelaySteps_ = 0;
+  std::deque<Eigen::VectorXd> qDelayBuf_;
+  std::deque<Eigen::VectorXd> qdDelayBuf_;
+  /** @brief Push q_rl/qdTarget_ this tick, return what was pushed
+   * actuationDelaySteps_ ticks ago (or the current value, undelayed, while
+   * the buffer is still filling or the delay is disabled). */
+  const Eigen::VectorXd & delayedQRl_();
+  const Eigen::VectorXd & delayedQdTarget_();
 
   // =========================================================================
   // Gait phase clock (V4 observation only)

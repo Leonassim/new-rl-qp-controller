@@ -62,913 +62,533 @@ init: NewRLQPController_Initial
 # Toutes les politiques sont EMBARQUEES : les fichiers vivent dans policy/ et
 # CMake installe le repertoire entier vers @RL_POLICY_INSTALL_PREFIX@. Aucun
 # chemin absolu vers le home de qui que ce soit, donc un clone + build sur le PC
-# du robot a les politiques sans avoir mjlab-rhps1 nulle part.
+# du robot a les politiques sans avoir mjlab-hrp5p nulle part.
 #
-# Liste ramenee a trois entrees le 2026-09-10, puis reordonnee le 2026-09-11
-# pour regrouper les deux politiques de Leo en tete et laisser la politique
-# d'Hippolyte (low_impact) en dernier. Les onze autres politiques retirees le
-# 2026-09-10 sont dans l'historique git : aucune ne valait mieux qu'une autre
-# au banc, et toutes partageaient le meme defaut (95 % d'appui simple, 3.6 mm
-# de lever de pied, emballement vers l'avant). Les trois blocs RHP7 partent
-# avec -- autre robot, autre MainRobot, autre module.
+# Cette branche `hrp5p` ne porte que HRP5P : les entrees RHPS1 (trois
+# policies, x_shared_plant, joint_torque_scale) sont parties le jour de la
+# creation de cette branche, meme geste que RHP7 retirant RHPS1 sur `rhp7` le
+# 2026-09-01 -- les deux robots ne peuvent de toute facon pas coexister a
+# l'execution (MainRobot est fige au demarrage de mc_rtc, et les maps
+# kp/kd/q0/effort_limit sont lues en .at() contre le refJointOrder du robot
+# charge, donc un index de l'autre robot leve std::out_of_range dans
+# initializeRobot()). Recuperables sur `real-robot-safe`/l'historique git.
 #
-#   0  policy 0 (Leo) -- la SEULE a avoir tourne sur le robot (2026-08-06).
-#      On n'y touche pas : c'est la reference de couple et de securite.
-#   1  CRENEAU D'ESSAI de Leo. C'est celui-la qu'on remplace a chaque
-#      politique a tester ; les index 0 et 2 ne bougent jamais.
-#   2  la politique low_impact d'Hippolyte, velocity-action, 1020 dims
-#      (10x102, historique profondeur 10). Validee en simulation seulement.
-#      Toujours en dernier -- c'est la seule qu'on garde de cette lignee.
-#
-# obs_format est declare EXPLICITEMENT sur les index 1 et 2. Sans lui le C++
-# prend le numero du creneau comme numero de `case` (NewRLQPController.cpp:306),
-# donc deplacer une politique d'un creneau a l'autre changerait en silence le
-# format d'observation qu'on lui presente.
-#
-# ARMER DEPUIS LA GUI, une main sur l'arret.
+# ARMER DEPUIS LA GUI, une main sur l'arret. Aucune de ces policies n'a encore
+# tourne, ni en simulation ni sur le robot.
 policy_path: [
-  # index 0 : V3 (126 dims), la politique conservative qui a marche sur le robot.
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_velocity_v3_2026-07-10.onnx",
-  # index 1 : creneau d'essai de Leo -- run 2026-09-10_15-27-45, model_26850,
-  # 530 dims. Reprise de 2026-09-10_09-47-21 (l'ancien index 13) avec
-  # exactement la meme configuration : RHPS1_W_STANDSS=-24 etait ecrase par
-  # ablation.py:235 qui force -4.0. Damper de vitesse a 0.4
-  # (Curriculum/velocity_damper = 1.0 des la reprise), horloge 0.9 s, echelles
-  # d'action exactes du run.
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_p6_it26850.onnx",
-  # index 2 (dernier) : politique low_impact d'Hippolyte -- mjlab
-  # JointVelocityAction + IdealPdActuator, obs 1020 = 10x102 (historique
-  # profondeur 10, V3_DEEP_HISTORY_SIZE). La SEULE entree avec
-  # velocity_action: true : q_rl y est l'integrale libre de la vitesse
-  # commandee au lieu d'etre reconstruite depuis q_zero. utils.cpp case 2,
-  # d'ou obs_format: 2 sur son bloc.
-  # Fichier copie le 2026-09-11 depuis l'install locale (jamais commite avant
-  # ca : reference par nom des le 2026-08-31 sans que le .onnx suive, cf.
-  # l'historique git de ce fichier). 1020 dims, coherent avec utils.cpp::case 2
-  # tel qu'il existe aujourd'hui -- contrairement aux trois variantes 4080
-  # dims (2026-08-20_18-46-29.onnx et les deux autres) qui avaient occupe ce
-  # creneau entre-temps sans jamais matcher le C++.
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_low_impact.onnx",
+  "@RL_POLICY_INSTALL_PREFIX@/model_5000.onnx",
 ]
-# Stays 0: the real-robot entry is the only one with hardware time behind it.
-# Back to 0 on 2026-08-21 for a real-robot session. Index 0 is the only entry
-# with hardware time behind it; whatever is being tested gets selected from the
-# GUI, so the default is what the controller falls back to, not what anyone
-# intends to run. It had been left at 2 by a merge.
-#
-# 6, 7, 8 = RHP7 Kaleido (obs_format: 6 on their blocks, see the comment on
-# policy_path above -- NOT the same number as their own index). Doit rester
-# coherent avec MainRobot dans mc_rtc.yaml : 0-5 exigent RHPS1_MuJoCo, 6-8
-# exigent RHP7. Un index incoherent avec le robot charge leve std::out_of_range
-# dans initializeRobot() (les maps kp/kd/q0 sont lues avec .at() sur le
-# refJointOrder du robot courant).
-# REMIS A 0 le 2026-08-31. Le commit 3b68bcd l'avait passe a 7, soit
-# rhp7test.onnx : sur un RHPS1 -- le robot que le lanceur mc_mujoco charge via
-# mc_rtc_superbuild_mujoco.yaml -- ca leve std::out_of_range au demarrage, avant
-# meme d'atteindre la GUI. Le defaut est ce sur quoi le controleur RETOMBE, pas
-# ce que quelqu'un a l'intention de lancer : ce qu'on teste se choisit depuis la
-# GUI. 0 est la seule entree avec du temps materiel derriere elle.
-#
-# Pour travailler sur RHP7, lancer avec MainRobot: RHP7 et selectionner 6, 7 ou
-# 8 dans la GUI -- le defaut n'a pas a porter ce choix.
-#
-# Cette branche ne porte que RHPS1 : les entrees RHP7 Kaleido (anciens index
-# 6/7/8) sont parties sur la branche `rhp7` le 2026-09-01. Exige donc
-# MainRobot: RHPS1_MuJoCo dans mc_rtc.yaml. Un index incoherent avec le robot
-# charge leve std::out_of_range dans initializeRobot() (les maps kp/kd/q0 sont
-# lues avec .at() sur le refJointOrder du robot courant).
+# Une seule entree -- le defaut n'a rien d'autre a porter. Exige
+# MainRobot: HRP5P dans mc_rtc.yaml (module mc_hrp5_p).
 default_policy_index: 0
 
-# N*Kt per joint, to convert what the robot measures into N.m.
-#
-# What RobotHardware publishes on `tau` is NOT a torque on RHPS1: the VRML
-# sets gearRatio=1 and torqueConst=1 for all 62 joints, so the value is really
-# ratedCurrent * 0x6077/1000, a CURRENT in amps. The controller logs both:
-# NewRLQPController_joint_current (A, raw) and NewRLQPController_joint_torque
-# (N.m, = current * the value below).
-#
-# Source: scripts/ppc/joint_torque_limits_rotate.csv, synced 2026-08-21 with
-# Leonassim/RHPS1_gains. The Kt before that sync were wrong -- 0.0582/0.101/0.047
-# against nameplate 0.116/0.424/0.246 -- so every torque this table produced was
-# understated by 2.0x, 4.2x or 5.2x depending on the joint. Do not hand-edit:
-# mc-rtc-superbuild/scripts/ppc/apply_kt.py writes all four files that carry
-# these constants together.
-#
-# Deliberately limited to the six single-motor joints. Chest now has a Kt
-# (0.246) but stays out anyway: its two drives are ChestYPL = P+Y and
-# ChestYPR = P-Y, and the IOB sums the current over a joint's drives with no
-# sign, which is the common mode. That sum is right for CHEST_P and wrong for
-# CHEST_Y, and one scale cannot be both. The other differential pairs (shoulder
-# R/Y, elbow P/Y, wrist P/Y, head) still have no sourced Kt, and the piston
-# joints (crotch P/R, ankle P/R) have a variable lever arm needing
-# CylinderToAngle. Joints absent here stay at 0 in the log rather than being
-# converted with a made-up factor.
-joint_torque_scale:
-  L_CROTCH_Y:    18.455   # 159.091 * 0.116
-  R_CROTCH_Y:    18.455   # 159.091 * 0.116
-  L_KNEE_P:     89.040   # 210 * 0.424
-  R_KNEE_P:     89.040   # 210 * 0.424
-  L_SHOULDER_P:  49.200   # 200 * 0.246
-  R_SHOULDER_P:  49.200   # 200 * 0.246
-
-# kp/kd/q0/ref_joint_order below are identical for index 0 and index 1: PD
-# gains and reference pose are a hardware/QP choice, not something the
-# training run decides. Anchored once here so policies[] does not repeat 114
-# lines per index -- not read directly, the controller only looks up
-# `policies` and `policy_path`, so this key is inert to it.
-x_shared_plant:
-  kp: &kp
-    L_CROTCH_Y:   20000.0
-    L_CROTCH_R:   20000.0
-    L_CROTCH_P:   20000.0
-    L_KNEE_P:     20000.0
-    L_ANKLE_R:    10000.0
-    L_ANKLE_P:    10000.0
-    CHEST_Y:      44000.0
-    CHEST_P:      44000.0
-    R_CROTCH_Y:   20000.0
-    R_CROTCH_R:   20000.0
-    R_CROTCH_P:   20000.0
-    R_KNEE_P:     20000.0
-    R_ANKLE_R:    10000.0
-    R_ANKLE_P:    10000.0
-    HEAD_Y:       2000.0
-    HEAD_P:       2000.0
-    L_SHOULDER_P: 15000.0
-    L_SHOULDER_R: 14000.0
-    L_SHOULDER_Y: 14000.0
-    L_ELBOW_P:    14000.0
-    L_ELBOW_Y:    14000.0
-    L_WRIST_R:    14000.0
-    L_WRIST_Y:    14000.0
-    R_SHOULDER_P: 15000.0
-    R_SHOULDER_R: 14000.0
-    R_SHOULDER_Y: 14000.0
-    R_ELBOW_P:    14000.0
-    R_ELBOW_Y:    14000.0
-    R_WRIST_R:    14000.0
-    R_WRIST_Y:    14000.0
-  kd: &kd
-    L_CROTCH_Y:   400.0
-    L_CROTCH_R:   400.0
-    L_CROTCH_P:   400.0
-    L_KNEE_P:     400.0
-    L_ANKLE_R:    300.0
-    L_ANKLE_P:    300.0
-    CHEST_Y:      440.0
-    CHEST_P:      440.0
-    R_CROTCH_Y:   400.0
-    R_CROTCH_R:   400.0
-    R_CROTCH_P:   400.0
-    R_KNEE_P:     400.0
-    R_ANKLE_R:    300.0
-    R_ANKLE_P:    300.0
-    HEAD_Y:       50.0
-    HEAD_P:       50.0
-    L_SHOULDER_P: 240.0
-    L_SHOULDER_R: 240.0
-    L_SHOULDER_Y: 240.0
-    L_ELBOW_P:    240.0
-    L_ELBOW_Y:    240.0
-    L_WRIST_R:    240.0
-    L_WRIST_Y:    240.0
-    R_SHOULDER_P: 240.0
-    R_SHOULDER_R: 240.0
-    R_SHOULDER_Y: 240.0
-    R_ELBOW_P:    240.0
-    R_ELBOW_Y:    240.0
-    R_WRIST_R:    240.0
-    R_WRIST_Y:    240.0
-  q0: &q0
-    CHEST_Y:      0.0
-    CHEST_P:      0.0
-    HEAD_Y:       0.0
-    HEAD_P:       0.0
-    L_SHOULDER_P: 0.261799
-    L_SHOULDER_R: 0.174533
-    L_SHOULDER_Y: -0.087266
-    L_ELBOW_P:    -0.523599
-    L_ELBOW_Y:    0.0
-    L_WRIST_R:    0.0
-    L_WRIST_Y:    0.0
-    R_SHOULDER_P: 0.261799
-    R_SHOULDER_R: -0.174533
-    R_SHOULDER_Y: 0.087266
-    R_ELBOW_P:    -0.523599
-    R_ELBOW_Y:    0.0
-    R_WRIST_R:    0.0
-    R_WRIST_Y:    0.0
-    L_CROTCH_Y:   -0.010533
-    L_CROTCH_R:   0.028787
-    L_CROTCH_P:   -0.271191
-    L_KNEE_P:     0.622021
-    L_ANKLE_R:    -0.030652
-    L_ANKLE_P:    -0.350679
-    R_CROTCH_Y:   0.010533
-    R_CROTCH_R:   -0.028787
-    R_CROTCH_P:   -0.271191
-    R_KNEE_P:     0.622021
-    R_ANKLE_R:    0.030652
-    R_ANKLE_P:    -0.350679
-  ref_joint_order: &ref_joint_order
-    - CHEST_Y
-    - CHEST_P
-    - HEAD_Y
-    - HEAD_P
-    - L_SHOULDER_P
-    - L_SHOULDER_R
-    - L_SHOULDER_Y
-    - L_ELBOW_P
-    - L_ELBOW_Y
-    - L_WRIST_R
-    - L_WRIST_Y
-    - R_SHOULDER_P
-    - R_SHOULDER_R
-    - R_SHOULDER_Y
-    - R_ELBOW_P
-    - R_ELBOW_Y
-    - R_WRIST_R
-    - R_WRIST_Y
-    - L_CROTCH_Y
-    - L_CROTCH_R
-    - L_CROTCH_P
-    - L_KNEE_P
-    - L_ANKLE_R
-    - L_ANKLE_P
-    - R_CROTCH_Y
-    - R_CROTCH_R
-    - R_CROTCH_P
-    - R_KNEE_P
-    - R_ANKLE_R
-    - R_ANKLE_P
-
 policies:
-  # index 0 : RHPS1 velocity policy -- the real-robot entry.
+  # index 0 (seule entree) : HRP5P, velocity-action -- premiere integration,
+  # jamais testee (ni sim ni robot). Exige MainRobot: HRP5P (module
+  # mc_hrp5_p, construit dans le superbuild avec WITH_HRP5 ON) sous peine de
+  # std::out_of_range dans initializeRobot() (les maps kp/kd/q0/effort_limit
+  # ci-dessous sont lues avec .at() sur le refJointOrder du robot charge --
+  # les 53 joints, pas seulement les 33 pilotes par la policy, cf. le
+  # commentaire sur effort_limit plus bas).
   #
-  # use_QP true (was false, 2026-07-31): the bypass path writes torques
-  # straight to the robot with nothing between the policy and the hardware --
-  # acceptable in mc_mujoco, not on a machine that can break. With the QP the
-  # policy's output becomes a PostureTask target and the self-collision and
-  # joint-limit constraint sets stay in the loop as a safety net. No
-  # torque-feasibility projection: this policy did not train with one.
-  - use_QP: &use_QP true
-    policy_step_size: &policy_step_size 0.005   # 200 Hz (5 ms)
-    physics_step_size: &physics_step_size 0.004 # mc_mujoco at 250 Hz (4 ms)
-    pd_gains_ratio: &pd_gains_ratio 1.0
-    # Command ranges of the 2026-07-10_20-59-17 run (completed, final
-    # command_vel curriculum stage). Same final stage for index 1.
-    max_vel_x: &max_vel_x 0.3
-    max_vel_y: &max_vel_y 0.4
-    max_yaw: &max_yaw 0.45
-    joystick_deadzone: &joystick_deadzone 0.05
-    vel_ramp_rate: &vel_ramp_rate 0.5
-
-    # No posture_stiffness here on purpose: the global 1600 applies.
-    #
-    # An earlier note pinned 8000 in every block, reasoning that the shadowed
-    # overload meant 8000 was "what actually ran". Half right. The yaml path was
-    # dead, but the GUI writes pt->stiffness() straight into the task and always
-    # worked -- and Leo's hardware sessions set it there. His measurement: 40000
-    # trembled badly on the robot, 1600 was clearly better. Pinning 8000 would
-    # have overridden the value that was actually validated on hardware.
-    #
-    # The margin argument agrees: sqrt(K)*dt is 1.0 at 40000 and 0.20 at 1600,
-    # for dt = 0.005. mc_mujoco prefers 8000 by 14% of tracking lag, but it does
-    # not model the robot's communication and sensing delays, which is exactly
-    # what the margin buys. The robot's verdict wins.
-
-    # PostureTask velocity feedforward: OFF by default, and it stays off.
-    #
-    # Measured 2026-08-24 on two mc_mujoco logs (18-25-28, 18-27-03), K=1600
-    # both sides -- the global value in mc_rtc_superbuild.yaml AND in the
-    # mujoco overlay, so there is no 40000 anywhere and an earlier note here
-    # claiming there was is wrong.
-    #
-    # Neither half is unstable alone. refVel to the QP with the servo's
-    # velocity term removed (--pd-zero-ref-vel): bounded, 37 s of walking.
-    # No feedforward with the servo term present: bounded, walks. BOTH: the
-    # equilibrium is linearly unstable. Toggling the feedforward on a robot
-    # standing still at zero command, the state grows out of rounding noise by
-    # a factor ~1.38 per 5 ms tick -- 1e-4 rad/s to saturation in under 400 ms
-    # -- ending at refVel pinned to its 8 rad/s clamp, qd* at 13.2 rad/s,
-    # measured joint velocity 7.7 rad/s and 2399 N.m of commanded torque.
-    #
-    # Why: joint velocity then enters the loop twice in series. Once inside the
-    # QP, where the PostureTask objective is
-    #   alphaD = K*(q* - q) + D*(refVel - alpha),  D = 2*sqrt(K) = 80
-    # and once in mc_mujoco's servo, kd*(alpha_ref - alpha) with kd 240-440
-    # (PDgains_sim.dat). The product of the two gains leaves the stability
-    # region. The real robot has only the first: RobotHardware sends position,
-    # IOB's PD has no velocity reference. So this is a simulation artifact, not
-    # a property of the feedforward -- but it is exactly what a default here
-    # would hand to anyone launching mc_mujoco without the flag.
-    #
-    # It also buys nothing. Same log, walking, PostureTask eval normalised by
-    # qd*: 53.5 ms of lag without the feedforward, 63.0 ms with. The lag is the
-    # task's own 1/sqrt(K) = 25 ms, and qd* cannot cancel it because the EMA at
-    # alpha 0.8 delays qd* by dt*a/(1-a) = 20 ms -- the correction arrives about
-    # as late as the error it is meant to pre-empt.
-    #
-    # To test it anyway, use the GUI button (ControlMode / Toggle posture
-    # feedforward), and only with --pd-zero-ref-vel.
-    posture_feedforward: false
-
-
-    action_scale: &action_scale
-      CHEST_Y:      0.002
-      CHEST_P:      0.002
-      HEAD_Y:       0.002
-      HEAD_P:       0.002
-      L_SHOULDER_P: 0.002
-      L_SHOULDER_R: 0.002
-      L_SHOULDER_Y: 0.002
-      L_ELBOW_P:    0.002
-      L_ELBOW_Y:    0.002
-      L_WRIST_R:    0.002
-      L_WRIST_Y:    0.002
-      R_SHOULDER_P: 0.002
-      R_SHOULDER_R: 0.002
-      R_SHOULDER_Y: 0.002
-      R_ELBOW_P:    0.002
-      R_ELBOW_Y:    0.002
-      R_WRIST_R:    0.002
-      R_WRIST_Y:    0.002
-      L_CROTCH_Y:   0.002625
-      L_CROTCH_R:   0.0075
-      L_CROTCH_P:   0.0105
-      L_KNEE_P:     0.0075   # policy 0's effort_limit was 100 for this joint
-      L_ANKLE_R:    0.00675
-      L_ANKLE_P:    0.00975
-      R_CROTCH_Y:   0.002625
-      R_CROTCH_R:   0.0075
-      R_CROTCH_P:   0.0105
-      R_KNEE_P:     0.0075 
-      R_ANKLE_R:    0.00675
-      R_ANKLE_P:    0.00975
-
-    kp: *kp
-    kd: *kd
-    q0: *q0
-    ref_joint_order: *ref_joint_order
-
-  # index 1 (deplace de 2 a 1 le 2026-09-11) : CRENEAU D'ESSAI de Leo. Bloc
-  # repris tel quel de l'ancien index 13 -- meme run, meme plant, memes
-  # echelles. Pour tester une autre politique : remplacer le fichier .onnx dans
-  # policy_path ci-dessus et, si le format d'observation change, obs_format
-  # ici. Ne pas deplacer l'index 0 (reference hardware) ni l'index 2 (politique
-  # low_impact d'Hippolyte, doit rester en dernier).
-  - use_QP: *use_QP
-    obs_format: 7
-    policy_step_size: *policy_step_size
-    physics_step_size: *physics_step_size
-    pd_gains_ratio: *pd_gains_ratio
-    max_vel_x: *max_vel_x
-    max_vel_y: *max_vel_y
-    max_yaw: *max_yaw
-    joystick_deadzone: *joystick_deadzone
-    vel_ramp_rate: *vel_ramp_rate
-    # Jambes : les valeurs EXACTES du run (params/env.yaml), identiques a
-    # l'ancre *action_scale. Elles ont ete arrondies ici -- 0.003 pour 0.002625,
-    # 0.007 pour 0.0075, 0.01 pour 0.0105 -- parce que les metadonnees de l'ONNX
-    # les portaient ainsi : l'exportateur mjlab formatait en %.3f, ce qui ne
-    # laisse qu'un ou deux chiffres significatifs sur des valeurs en 1e-3.
-    # Corrige le 2026-09-10 des deux cotes (mjlab exporter_utils.py, %.10g).
-    #
-    # L'ecart n'etait PAS uniforme -- -6.7 % au genou contre +14.3 % au lacet de
-    # hanche -- donc il deformait la coordination entre articulations, pas
-    # l'amplitude de la marche. Les bras gardent leur propre valeur, qui differe
-    # bien de l'ancre.
-    action_scale:
-      CHEST_Y:      0.0007
-      CHEST_P:      0.0007
-      HEAD_Y:       0.0007
-      HEAD_P:       0.0007
-      L_SHOULDER_P: 0.0007
-      L_SHOULDER_R: 0.0007
-      L_SHOULDER_Y: 0.0007
-      L_ELBOW_P:    0.0007
-      L_ELBOW_Y:    0.0007
-      L_WRIST_R:    0.0007
-      L_WRIST_Y:    0.0007
-      R_SHOULDER_P: 0.0007
-      R_SHOULDER_R: 0.0007
-      R_SHOULDER_Y: 0.0007
-      R_ELBOW_P:    0.0007
-      R_ELBOW_Y:    0.0007
-      R_WRIST_R:    0.0007
-      R_WRIST_Y:    0.0007
-      L_CROTCH_Y:   0.002625
-      L_CROTCH_R:   0.0075
-      L_CROTCH_P:   0.0105
-      L_KNEE_P:     0.0075
-      L_ANKLE_R:    0.00675
-      L_ANKLE_P:    0.00975
-      R_CROTCH_Y:   0.002625
-      R_CROTCH_R:   0.0075
-      R_CROTCH_P:   0.0105
-      R_KNEE_P:     0.0075
-      R_ANKLE_R:    0.00675
-      R_ANKLE_P:    0.00975
-    kp: *kp
-    kd: *kd
-    q0: *q0
-    ref_joint_order: *ref_joint_order
-    runaway_disarm_vel: 4.0
-
-    # The velocity damper, and the qd* it reads. NOT optional here, and leaving
-    # it out is what made this policy fall forward on the first mc_mujoco test:
-    # index 0's block was copied wholesale, and policy 0 has no damper because
-    # policy 0 trained without one. This run did -- Curriculum/velocity_damper
-    # sat at 1.0 for its whole length, params/env.yaml records di 0.4, ds 0.01,
-    # vel_percent 0.9 -- so deployment was running the network against a plant
-    # missing the stage mjlab puts between qd* and the target. Undamped, the
-    # commanded target moves faster than anything the policy ever saw, and on a
-    # forward command the QP chases a target running out ahead of the robot.
-    #
-    # applyVelocityDamper() also clamps qd*, so the two parameters that define
-    # qd* have to match training too: EMA 0.8 and the per-joint limit. Their
-    # fallbacks are 0.0 (no filter) and 1e9 (no clamp).
-    # AMORTISSEUR INACTIF, et c'est ce que l'entrainement fait. Le curriculum
-    # velocity_damper monte de 0 a 1 entre les pas 360000 et 612000, soit les
-    # iterations 15000 a 25500 ; cette lignee tourne autour de 2500, donc
-    # Curriculum/velocity_damper vaut 0.0000 et l'actionneur calcule
-    # di = progress * 0.4 = 0. Deployer di 0.4 fait tourner la politique contre
-    # un etage de bridage qu'elle n'a jamais vu -- symetrique exact de l'erreur
-    # de 2026-08-13, ou l'amortisseur MANQUAIT au deploiement.
-    # velocity_damper_di : la valeur EFFECTIVE au checkpoint, pas celle de la
-    # configuration. Le curriculum velocity_damper_progress monte de 0 a 1 entre
-    # les pas 360000 et 612000 (iterations 7500 a 12750 a 48 pas/env), et mjlab
-    # applique di = progress * 0.4, ds = progress * 0.01. Ce bloc portait 0.0,
-    # donc le damper etait desarme au deploiement alors que l'entrainement l'avait
-    # pleinement actif -- la politique commande des cibles que le damper rognait,
-    # et sans lui elles s'executent en entier. Vaut sur les deux chemins, QP ou
-    # bypass (utils.cpp applyVelocityDamper).
-    velocity_damper_di: 0.4   # progress 1.000 x 0.4
-    velocity_damper_ds: 0.01
-    velocity_damper_vel_percent: 0.9
-    # Ces deux-la restent actifs a l'entrainement quoi qu'il arrive :
-    # velocity_target_filter_alpha 0.8 et velocity_target_limit 8.0 rad/s, ce
-    # dernier applique hors de l'amortisseur (finite_difference_pd_actuator.py,
-    # le clamp precede la porte velocity_damper_progress).
-    vel_target_filter_alpha: 0.8
-    # 8.0 partout, la valeur velocity_target_limit de l'actionneur
-    # d'entrainement. C'etait l'ancre *vel_target_limit_flat8, definie dans un
-    # bloc supprime le 2026-09-10 ; recopiee ici pour que ce bloc soit autonome.
-    vel_target_limit_per_joint:
-      CHEST_Y:          8.0
-      CHEST_P:          8.0
-      HEAD_Y:           8.0
-      HEAD_P:           8.0
-      L_SHOULDER_P:     8.0
-      L_SHOULDER_R:     8.0
-      L_SHOULDER_Y:     8.0
-      L_ELBOW_P:        8.0
-      L_ELBOW_Y:        8.0
-      L_WRIST_R:        8.0
-      L_WRIST_Y:        8.0
-      R_SHOULDER_P:     8.0
-      R_SHOULDER_R:     8.0
-      R_SHOULDER_Y:     8.0
-      R_ELBOW_P:        8.0
-      R_ELBOW_Y:        8.0
-      R_WRIST_R:        8.0
-      R_WRIST_Y:        8.0
-      L_CROTCH_Y:       8.0
-      L_CROTCH_R:       8.0
-      L_CROTCH_P:       8.0
-      L_KNEE_P:         8.0
-      L_ANKLE_R:        8.0
-      L_ANKLE_P:        8.0
-      R_CROTCH_Y:       8.0
-      R_CROTCH_R:       8.0
-      R_CROTCH_P:       8.0
-      R_KNEE_P:         8.0
-      R_ANKLE_R:        8.0
-      R_ANKLE_P:        8.0
-    # Required by the damper, and their absence is a hard throw, not a default:
-    # a joint left at lo == hi would be skipped silently, i.e. one joint on a
-    # different plant from the other 29. Missing them is why switching to this
-    # index failed outright instead of misbehaving.
-    # joint_limits : etait l'ancre *joint_limits, definie dans un bloc supprime
-    # le 2026-09-10. Recopiee ici pour que ce bloc soit autonome.
-    joint_limits:
-      CHEST_Y:        [ -0.52360,   0.52360]
-      CHEST_P:        [ -0.52360,   1.22173]
-      HEAD_Y:         [ -3.14159,   3.14159]
-      HEAD_P:         [ -0.52360,   0.52360]
-      L_SHOULDER_P:   [ -3.14159,   3.14159]
-      L_SHOULDER_R:   [ -0.69813,   1.83260]
-      L_SHOULDER_Y:   [ -3.14159,   3.14159]
-      L_ELBOW_P:      [ -2.35619,   0.00000]
-      L_ELBOW_Y:      [ -3.14159,   3.14159]
-      L_WRIST_R:      [ -0.87267,   1.57080]
-      L_WRIST_Y:      [ -1.57080,   1.57080]
-      R_SHOULDER_P:   [ -3.14159,   3.14159]
-      R_SHOULDER_R:   [ -1.83260,   0.69813]
-      R_SHOULDER_Y:   [ -3.14159,   3.14159]
-      R_ELBOW_P:      [ -2.35619,   0.00000]
-      R_ELBOW_Y:      [ -3.14159,   3.14159]
-      R_WRIST_R:      [ -1.57080,   0.87267]
-      R_WRIST_Y:      [ -1.57080,   1.57080]
-      L_CROTCH_Y:     [ -1.57080,   1.57080]
-      L_CROTCH_R:     [ -0.62832,   0.62832]
-      L_CROTCH_P:     [ -1.91986,   0.61086]
-      L_KNEE_P:       [  0.00000,   2.44346]
-      L_ANKLE_R:      [ -0.52360,   0.52360]
-      L_ANKLE_P:      [ -1.57080,   0.69813]
-      R_CROTCH_Y:     [ -1.57080,   1.57080]
-      R_CROTCH_R:     [ -0.62832,   0.62832]
-      R_CROTCH_P:     [ -1.91986,   0.61086]
-      R_KNEE_P:       [  0.00000,   2.44346]
-      R_ANKLE_R:      [ -0.52360,   0.52360]
-      R_ANKLE_P:      [ -1.57080,   0.69813]
-    # velocity_limits : etait l'ancre *velocity_limits, definie dans un bloc supprime
-    # le 2026-09-10. Recopiee ici pour que ce bloc soit autonome.
-    velocity_limits:
-      CHEST_Y:        6
-      CHEST_P:        6
-      HEAD_Y:         4
-      HEAD_P:         4
-      L_SHOULDER_P:   6
-      L_SHOULDER_R:   6
-      L_SHOULDER_Y:   6
-      L_ELBOW_P:      6
-      L_ELBOW_Y:      6
-      L_WRIST_R:      6
-      L_WRIST_Y:      6
-      R_SHOULDER_P:   6
-      R_SHOULDER_R:   6
-      R_SHOULDER_Y:   6
-      R_ELBOW_P:      6
-      R_ELBOW_Y:      6
-      R_WRIST_R:      6
-      R_WRIST_Y:      6
-      L_CROTCH_Y:     8
-      L_CROTCH_R:     8
-      L_CROTCH_P:     8
-      L_KNEE_P:       10
-      L_ANKLE_R:      10
-      L_ANKLE_P:      10
-      R_CROTCH_Y:     8
-      R_CROTCH_R:     8
-      R_CROTCH_P:     8
-      R_KNEE_P:       10
-      R_ANKLE_R:      10
-      R_ANKLE_P:      10
-    # Horloge calee sur l'entrainement : 0.9 s des DEUX cotes de
-    # l'interpolation. Les defauts du controleur sont 2.0 et 1.1, ceux des
-    # index 9 a 11 ; les laisser ici faisait avancer la phase a moins de la
-    # moitie du rythme attendu et le robot n'avancait pas -- 0.002 m/s
-    # mesures pour 0.30 commandes.
-    gait_period_slow: 0.9
-    gait_period_fast: 0.9
-
-  # index 2 (dernier, 2026-09-11) : politique low_impact d'Hippolyte, deplacee
-  # du creneau 1 au creneau 2 pour laisser les deux politiques de Leo (index 0
-  # et 1) en tete. obs_format: 2 EXPLICITE -- sans lui le C++ prendrait le
-  # numero du creneau comme numero de `case` (NewRLQPController.cpp:306) et
-  # partirait sur `case 2` (530 dims, obs_format 7) au lieu du format
-  # velocity-action reel.
+  # 33 joints actionnes par ref_joint_order (RCY..LWRP), ordre confirme
+  # directement dans les metadonnees embarquees de policy/model_5000.onnx
+  # (joint_names / action_scale) -- PAS celui de hrp5_constants.py
+  # (HRP5P_ACTUATORS a un ordre bras-gauche incoherent avec l'onnx reel,
+  # WRY avant EP au lieu de EP avant WRY).
+  #
+  # obs_format: 8 -- l'onnx attend une entree [1, 2220] = 20 * (3+3+3+33+33+33+3),
+  # donc un historique profondeur 20 sur les sept termes (base_lin_vel,
+  # base_ang_vel, projected_gravity, joint_pos, joint_vel, actions, command),
+  # confirme par onnxruntime (InferenceSession(...).get_inputs()) ET par
+  # mjlab/tasks/velocity/velocity_env_cfg_hrp5.py:93 (history_length=20).
+  # Chaque frame correspond a un pas de policy (policyStepSize, PAS timeStep) :
+  # utils.cpp ne pousse l'historique que dans le bloc `if(newInference)`
+  # (une fois par policy_step_size), qui tombe a 100 Hz ici -- exactement le
+  # rythme d'un pas d'env mjlab (decimation 4 * timestep 0.0025 = 0.01s).
+  # Implemente dans utils.cpp `case 8:` (fallthrough vers le corps generique
+  # partage avec l'ancien `case 2:` RHPS1) et V3_DEEP_HISTORY_SIZE a 20 dans
+  # NewRLQPController.h -- sans consequence sur RHPS1 puisque cette branche ne
+  # le porte plus. NE PAS ARMER avant un premier test simulation.
   - use_QP: true
-    obs_format: 2
-    # Velocity-action policy (mjlab JointVelocityAction + IdealPdActuator):
-    # q_rl = measured joint position + action * policy_step_size, and the
-
-    # commanded velocity is passed separately as qdTarget_. See
-    # NewRLQPController::velocityAction_. torque_feasibility_ratio and
-    # vel_target_filter_alpha below are position-action-only concepts and
-    # are unused on this path; left in only because this block started as a
-    # copy of a position-action entry.
+    obs_format: 8
     velocity_action: true
-    #
-    # --- QP-mode tuning (no effect while use_QP is false) ---
-    #
-    # posture_stiffness: the QP TASK's K (postureStiffness(), NOT the plant PD
-    # this whole file's kp/kd maps or PDgains_sim.dat feed). Without this key
-    # it falls back to 0.2/(policy_step_size*timeStep) = 0.2/(0.01*0.005) =
-    # 4000 here -- a lag of 1/sqrt(K) = 15.8 ms, NOT what training saw.
-    # Training modelled this exact filter (FiniteDifferencePdActuator's
-    # posture_task_stiffness) at K=1600 -> 25 ms lag: set here to match the
-    # plant the policy actually learned on, rather than leave it a function of
-    # the control rate. Was silently dead until now: initializeRobot() and
-    # applyPostureMode() called postureStiffness(), and a second, non-const
-    # overload of that name (removed) shadowed the one that reads this key --
-    # the override compiled, logged nothing wrong, and was never applied.
-    posture_stiffness: 1600
-    #
-    # posture_damping: overrides the QP TASK's Kv (stiffness(K) otherwise sets
-    # it automatically to 2*sqrt(K), critically damped) --
-    # NewRLQPController::applyPostureDampingOverride(). NOT what the 800 rad/s
-    # experiment below is about -- that one is the PLANT's damper, mc_mujoco's
-    # own local PD on (q_ref, alpha_ref) (MjRobot::PD, mj_sim.cpp:30-36), read
-    # from PDgains_sim.dat, a file this yaml has no key for at all. Left unset
-    # (auto) here; the mechanism stays available (GUI: PostureTask > Damping)
-    # for whenever the TASK's own damping is actually the thing to test.
-    # posture_damping: 800
-    # use_torque_task: drive the QP with a TorqueJointTask instead of the
-    # PostureTask. The PostureTask route stacks two regulators -- the task,
-    # then mc_mujoco's own joint PD on the (q, qdot) the QP produced -- where
-    # training had one, and the QP's single coupled output cannot feed that
-    # PD's two independent channels: every setting trades one for the other
-    # (velocity ratio 1.00 but 61% of the position feedforward, or full
-    # position bias and no holding torque at all). TorqueJointTask computes
-    # tau = kp*(qd - q) + kd*(qd_dot - qdot) itself -- the training law, same
-    # gains convention -- and the QP solves for the accelerations realising it
-    # under the constraints.
-    #
-    # REQUIRES mc_mujoco started with --torque-control. Without that flag
-    # sendControl() falls back to its own PD on (q_ref, alpha_ref) and every
-    # torque computed here is silently discarded. Also keeps
-    # dynamicsConstraint in the solver, which the kinematic route removes.
     use_torque_task: false
-    #
-    # qp_accel_task: hand the solver the training actuator's acceleration
-    # instead of leaving it to re-derive the commanded velocity from the slope
-    # of q_rl:
-    #   tau   = kp*(q_rl - q_meas) + kd*(qdTarget - qdot_meas)
-    #   qddot = tau / m            -> pt->refAccel()
-    # Gravity and external forces are deliberately neglected: this is a
-    # feedforward, not a simulation. refAccel is a native task input, so unlike
-    # use_torque_task it needs no contacts and the QP stays kinematic -- the
-    # output remains fully the solver's, constraints included.
-    #
-    # Without it, measured on the legs (bypass 1.000 in the same run):
-    # velocity ratio 0.884, with the anti-windup clamp biting 36-41% of the
-    # time on the knees.
     qp_accel_task: false
-    #
-    # joint_armature: rotor inertia added to diag(H). The mc_rtc model comes
-    # from the URDF, which has none -- fd_.HIr() logs 0.00000 on every joint --
-    # while the plant does: mc_mujoco's RHPS1main.xml sets armature="1" in its
-    # <joint> default and mjlab's rhps1_constants.py sets armature=1.0 on every
-    # actuator, so training and simulation both run with it.
-    #
-    # Not optional. diag(H) alone spans 13000x across the robot (L_WRIST_Y
-    # 0.0003 against CHEST_P 4.26), so kp/m explodes on the light distal
-    # segments: the ankles land at sqrt(kp/m)*dt = 3.9-4.6 against a stability
-    # limit near 1, and the first attempt diverged exactly there (qddot
-    # doubling every ~3 ticks on R_ANKLE_P, 3235 -> 17564 rad/s^2 in nine
-    # ticks). With 1.0 the spread drops to 5.3x and every joint sits between
-    # 0.42 and 0.68. The startup dump prints wn*dt per joint and flags anything
-    # above 1 -- check it before trusting a run.
     joint_armature: 1.0
-    #
-    # Gains while qp_accel_task is on. Left unset, the posture task keeps its
-    # own (4000 / 2*sqrt(K)) so the feedforward is ADDED to current behaviour.
-    # Set both to 0 for pure feedforward -- the reference then has no pull back
-    # towards q_rl while tau reads the measured state and the QP integrates its
-    # own (OpenLoop), so watch ctrl_q against qIn for drift.
-    # qp_accel_stiffness: 0
-    # qp_accel_damping: 0
-    policy_step_size: 0.01   # 100 Hz (10 ms)
-    physics_step_size: 0.0025  # mc_mujoco at 400 Hz (2.5 ms)
+    policy_step_size: 0.01     # 100 Hz (10 ms) -- decimation 4 * timestep 0.0025,
+                                # mjlab/tasks/velocity/velocity_env_cfg_hrp5.py
+    physics_step_size: 0.0025  # mc_mujoco a 400 Hz (2.5 ms)
     pd_gains_ratio: 1.0
-    # Plages du run 2026-08-21, meme etage final de curriculum.
+    posture_stiffness: 1600
     max_vel_x: 0.3
     max_vel_y: 0.2
     max_yaw: 0.45
     joystick_deadzone: 0.05
     vel_ramp_rate: 0.5
-
-    # Torque-feasibility projection (mirrors mjlab's FiniteDifferencePdActuator).
-    # Active only when torque_feasibility_ratio is set. This policy trained WITH
-    # it, so without it here the plant differs from the one it learned on --
-    # visibly so in transients. This run measured raw_torque_peak_mean 1.019 and
-    # over_limit_fraction 0.377 at the end of training, under exploration noise;
-    # the deterministic figure is not measured yet.
     torque_feasibility_ratio: 1.0
     vel_target_filter_alpha: 0.8
 
-    effort_limit:
-      CHEST_Y:        120
-      CHEST_P:        120
-      HEAD_Y:         13
-      HEAD_P:         13
-      L_SHOULDER_P:   50
-      L_SHOULDER_R:   50
-      L_SHOULDER_Y:   50
-      L_ELBOW_P:      40
-      L_ELBOW_Y:      40
-      L_WRIST_R:      30
-      L_WRIST_Y:      30
-      R_SHOULDER_P:   50
-      R_SHOULDER_R:   50
-      R_SHOULDER_Y:   50
-      R_ELBOW_P:      40
-      R_ELBOW_Y:      40
-      R_WRIST_R:      30
-      R_WRIST_Y:      30
-      L_CROTCH_Y:     35
-      L_CROTCH_R:     100
-      L_CROTCH_P:     140
-      L_KNEE_P:       45
-      L_ANKLE_R:      45
-      L_ANKLE_P:      65
-      R_CROTCH_Y:     35
-      R_CROTCH_R:     100
-      R_CROTCH_P:     140
-      R_KNEE_P:       45
-      R_ANKLE_R:      45
-      R_ANKLE_P:      65
+    # Delai d'actionneur FIXE pour ce deploiement sim-in-sim (rl_controller +
+    # mc_mujoco), demande explicitement plutot que de laisser le delai
+    # randomise de l'entrainement (mjlab IdealPdActuatorCfg
+    # actuation_delay_min_lag/actuation_delay_max_lag, pd_actuator.py : un
+    # DelayBuffer resample par env, garde a actuation_delay_hold_prob du
+    # temps). Ici : un seul deploiement, donc un seul delai constant en ms,
+    # converti en pas de controleur (timeStep, PAS policy_step_size ni
+    # physics_step_size) dans NewRLQPController::configRL(). 40ms / 0.005s
+    # (Timestep de mc_rtc.yaml) = 8 pas. Applique entre q_rl/qdTarget_ et la
+    # cible de la PostureTask (delayedQRl_()/delayedQdTarget_() dans
+    # NewRLQPController.cpp), au meme endroit que le DelayBuffer de mjlab
+    # (apres l'anti-windup, juste avant l'erreur de PD).
+    #
+    # L'entrainement randomise ce delai entre actuation_delay_min_lag=14 et
+    # actuation_delay_max_lag=22 (hrp5_constants.py), soit 35-55 ms a 400 Hz.
+    # Un 40 ms fixe avait donc ete choisi ici, au milieu de cette plage.
+    #
+    # Remis a 0 : mesure par correlation croisee sur le log du 2026-09-24
+    # 13:06 (115 s de marche, regime etabli), la sortie du QP suit q_rl avec
+    # 5-10 ms de retard seulement, pas les 40 configures -- le QP en annule
+    # ~30. Verifie que ce n'etait ni le binaire (le code du retard y est), ni
+    # le YAML installe, ni le clamp anti-windup (il ne borne que 4.5% du
+    # temps), ni setPostureRefAccel (posture_passthrough absent donc false),
+    # ni le filtre de la PostureTask (-0.7 deg de dephasage a 1.2 Hz). Cause
+    # non identifiee. A 0 vs 120 ms on saura si l'estimateur est biaise ou
+    # s'il y a un vrai bug entre la PostureTask et la sortie du QP.
+    actuation_delay_ms: 0.0
 
-    vel_target_limit_per_joint:
-      CHEST_Y:        6
-      CHEST_P:        6
-      HEAD_Y:         4
-      HEAD_P:         4
-      L_SHOULDER_P:   6
-      L_SHOULDER_R:   6
-      L_SHOULDER_Y:   6
-      L_ELBOW_P:      6
-      L_ELBOW_Y:      6
-      L_WRIST_R:      6
-      L_WRIST_Y:      6
-      R_SHOULDER_P:   6
-      R_SHOULDER_R:   6
-      R_SHOULDER_Y:   6
-      R_ELBOW_P:      6
-      R_ELBOW_Y:      6
-      R_WRIST_R:      6
-      R_WRIST_Y:      6
-      L_CROTCH_Y:     8
-      L_CROTCH_R:     8
-      L_CROTCH_P:     8
-      L_KNEE_P:       10
-      L_ANKLE_R:      10
-      L_ANKLE_P:      10
-      R_CROTCH_Y:     8
-      R_CROTCH_R:     8
-      R_CROTCH_P:     8
-      R_KNEE_P:       10
-      R_ANKLE_R:      10
-      R_ANKLE_P:      10
+    # effort_limit reels des HRP5P_ACTUATOR_* d'entrainement
+    # (mjlab/asset_zoo/robots/hrp5/hrp5_constants.py), utilises pour deriver
+    # action_scale par la meme formule que RHP7 (e / (3*(kp*0.01+kd))) --
+    # recoupe chiffre par chiffre avec policy/model_5000.onnx (metadata action_scale).
+    effort_limit: &hrp5p_effort_limit
+      RCY:  200
+      RCR:  500
+      RCP:  500
+      RKP:  1200
+      RAP:  250
+      RAR:  200
+      LCY:  200
+      LCR:  500
+      LCP:  500
+      LKP:  1200
+      LAP:  250
+      LAR:  200
+      WP:   900
+      WR:   900
+      WY:   250
+      HY:   45
+      HP:   45
+      RSC:  200
+      RSP:  400
+      RSR:  350
+      RSY:  200
+      REP:  400
+      RWRY: 300
+      RWRR: 300
+      RWRP: 120
+      LSC:  200
+      LSP:  400
+      LSR:  350
+      LSY:  200
+      LEP:  400
+      LWRY: 300
+      LWRR: 300
+      LWRP: 120
+      # Joints hors ref_joint_order (mc_hrp5_p::refJointOrder() en a 53, la
+      # policy n'en pilote que 33) -- necessaires quand meme, kp/kd/q0/
+      # effort_limit sont lus avec .at() sur TOUS les joints du robot charge,
+      # pas seulement ceux de ref_joint_order (NewRLQPController.cpp:373-380).
+      # Non entraines : jamais dans currentAction, donc q_rl y reste fige a
+      # q0 en permanence (personne ne l'ecrit), tenu par la PostureTask a
+      # kp/kd ci-dessous -- une pose statique, pas une commande RL. effort_limit
+      # = ctrlrange * gear du <motor> MJCF (HRP5Pmain.xml), pas une valeur
+      # d'entrainement (ces joints n'en ont pas) : RHDY/LHDY 0.113*300=33.9,
+      # doigts 0.062*623.27=38.64.
+      RHDY: 33.9
+      LHDY: 33.9
+      RTMP:  38.64
+      RTPIP: 38.64
+      RTDIP: 38.64
+      RIMP:  38.64
+      RIPIP: 38.64
+      RIDIP: 38.64
+      RMMP:  38.64
+      RMPIP: 38.64
+      RMDIP: 38.64
+      LTMP:  38.64
+      LTPIP: 38.64
+      LTDIP: 38.64
+      LIMP:  38.64
+      LIPIP: 38.64
+      LIDIP: 38.64
+      LMMP:  38.64
+      LMPIP: 38.64
+      LMDIP: 38.64
 
-    action_scale:
-      CHEST_Y:      0.11363636363636363
-      CHEST_P:      0.11363636363636363
-      HEAD_Y:       0.14285714285714285
-      HEAD_P:       0.14285714285714285
-      L_SHOULDER_P: 0.1282051282051282
-      L_SHOULDER_R: 0.13157894736842105
-      L_SHOULDER_Y: 0.13157894736842105
-      L_ELBOW_P:    0.10526315789473684
-      L_ELBOW_Y:    0.10526315789473684
-      L_WRIST_R:    0.07894736842105263
-      L_WRIST_Y:    0.07894736842105263
-      R_SHOULDER_P: 0.1282051282051282
-      R_SHOULDER_R: 0.13157894736842105
-      R_SHOULDER_Y: 0.13157894736842105
-      R_ELBOW_P:    0.10526315789473684
-      R_ELBOW_Y:    0.10526315789473684
-      R_WRIST_R:    0.07894736842105263
-      R_WRIST_Y:    0.07894736842105263
-      L_CROTCH_Y:   0.05
-      L_CROTCH_R:   0.125
-      L_CROTCH_P:   0.2
-      L_KNEE_P:     0.075 #0.11666666666666667
-      L_ANKLE_R:    0.075
-      L_ANKLE_P:    0.125
-      R_CROTCH_Y:   0.05
-      R_CROTCH_R:   0.125
-      R_CROTCH_P:   0.2
-      R_KNEE_P:     0.075 #0.11666666666666667
-      R_ANKLE_R:    0.075
-      R_ANKLE_P:    0.125
+    # Valeurs conservatrices choisies a la main (pas mesurees), memes
+    # proportions que le bloc RHP7 (jambes/taille plus permissives que
+    # bras/tete) -- a resserrer/relacher apres un premier essai.
+    vel_target_limit_per_joint: &hrp5p_vel_target_limit_per_joint
+      RCY:  8
+      RCR:  8
+      RCP:  8
+      RKP:  10
+      RAP:  10
+      RAR:  10
+      LCY:  8
+      LCR:  8
+      LCP:  8
+      LKP:  10
+      LAP:  10
+      LAR:  10
+      WP:   8
+      WR:   8
+      WY:   8
+      HY:   4
+      HP:   4
+      RSC:  6
+      RSP:  6
+      RSR:  6
+      RSY:  6
+      REP:  6
+      RWRY: 6
+      RWRR: 6
+      RWRP: 6
+      LSC:  6
+      LSP:  6
+      LSR:  6
+      LSY:  6
+      LEP:  6
+      LWRY: 6
+      LWRR: 6
+      LWRP: 6
+      # Hors ref_joint_order (cf. commentaire sur effort_limit ci-dessus) --
+      # optionnel en pratique (updateIfExists, pas de .at()), mais explicite
+      # ici pour rester coherent avec le reste du fichier.
+      RHDY: 4
+      LHDY: 4
+      RTMP:  4
+      RTPIP: 4
+      RTDIP: 4
+      RIMP:  4
+      RIPIP: 4
+      RIDIP: 4
+      RMMP:  4
+      RMPIP: 4
+      RMDIP: 4
+      LTMP:  4
+      LTPIP: 4
+      LTDIP: 4
+      LIMP:  4
+      LIPIP: 4
+      LIDIP: 4
+      LMMP:  4
+      LMPIP: 4
+      LMDIP: 4
 
-    kp:
-      L_CROTCH_Y:   20000.0
-      L_CROTCH_R:   20000.0
-      L_CROTCH_P:   20000.0
-      L_KNEE_P:     20000.0
-      L_ANKLE_R:    10000.0
-      L_ANKLE_P:    10000.0
-      CHEST_Y:      44000.0
-      CHEST_P:      44000.0
-      R_CROTCH_Y:   20000.0
-      R_CROTCH_R:   20000.0
-      R_CROTCH_P:   20000.0
-      R_KNEE_P:     20000.0
-      R_ANKLE_R:    10000.0
-      R_ANKLE_P:    10000.0
-      HEAD_Y:       2000.0
-      HEAD_P:       2000.0
-      L_SHOULDER_P: 15000.0
-      L_SHOULDER_R: 14000.0
-      L_SHOULDER_Y: 14000.0
-      L_ELBOW_P:    14000.0
-      L_ELBOW_Y:    14000.0
-      L_WRIST_R:    14000.0
-      L_WRIST_Y:    14000.0
-      R_SHOULDER_P: 15000.0
-      R_SHOULDER_R: 14000.0
-      R_SHOULDER_Y: 14000.0
-      R_ELBOW_P:    14000.0
-      R_ELBOW_Y:    14000.0
-      R_WRIST_R:    14000.0
-      R_WRIST_Y:    14000.0
+    # HRP5P_ACTION_SCALE du run d'entrainement (mjlab hrp5_constants.py),
+    # pleine precision (memes valeurs e/(3*(kp*0.01+kd)) que la policy
+    # precedente pour jambes/taille -- inchangees -- mais bras/tete
+    # desormais *0.3 au lieu de *0.5, hrp5_constants.py:738, pour cette
+    # policy entrainee avec le delai d'actionneur randomise). Recoupe avec
+    # les metadonnees action_scale de policy/model_5000.onnx (arrondies a 3
+    # decimales) : les 33 entrees concordent.
+    action_scale: &hrp5p_action_scale
+      RCY:  0.6172839506172839
+      RCR:  0.7163836904085618
+      RCP:  0.5208333333333334
+      RKP:  0.5555555555555556
+      RAP:  0.5208333333333334
+      RAR:  1.4854426442369588
+      LCY:  0.6172839506172839
+      LCR:  0.7163836904085618
+      LCP:  0.5208333333333334
+      LKP:  0.5555555555555556
+      LAP:  0.5208333333333334
+      LAR:  1.4854426442369588
+      # WP/RSP/LSP/RWRR/LWRR ne sont plus fixes par la saturation de
+      # l'actionneur mais par un plafond de COURSE ajoute dans hrp5_constants.py
+      # (0.4 s minimum pour traverser le plus court debattement depuis q0). WP
+      # passe de 1.875 a 0.5236 : avec l'ancienne valeur, une action de 1
+      # epuisait ses 12 deg de course arriere en 11 pas de policy (0.112 s), et
+      # la policy s'installait en butee -- son action moyenne y etait de -1.9,
+      # contre -0.3 au maximum ailleurs.
+      #
+      # RWRR/LWRR tombent a 0.3054 pour une autre raison : q0 est passe a +-40
+      # deg (alignement sur halfSitting de mc_hrp5_p), ce qui rapproche le joint
+      # de sa butee et reduit sa course mini de 27 a 7 deg. C'est le joint le
+      # plus serre de l'espace d'action desormais.
+      WP:   0.5236
+      WR:   1.875
+      WY:   0.5208333333333334
+      HY:   0.1716247162060515
+      HP:   0.1716247162060515
+      RSC:  0.3091190181094002
+      RSP:  0.4363311220085059
+      RSR:  0.3132832063085133
+      RSY:  0.796178346367181
+      REP:  0.22975301148104216
+      RWRY: 1.081860805041801
+      RWRR: 0.3054332480056704
+      RWRP: 0.4595940326638579
+      LSC:  0.3091190181094002
+      LSP:  0.4363311220085059
+      LSR:  0.3132832063085133
+      LSY:  0.796178346367181
+      LEP:  0.22975301148104216
+      LWRY: 1.081860805041801
+      LWRR: 0.3054332480056704
+      LWRP: 0.4595940326638579
+      # Hors ref_joint_order, jamais lu par currentActionScaled (boucle sur
+      # actionToDofMap uniquement) -- 0 explicite par coherence.
+      RHDY: 0.0
+      LHDY: 0.0
+      RTMP:  0.0
+      RTPIP: 0.0
+      RTDIP: 0.0
+      RIMP:  0.0
+      RIPIP: 0.0
+      RIDIP: 0.0
+      RMMP:  0.0
+      RMPIP: 0.0
+      RMDIP: 0.0
+      LTMP:  0.0
+      LTPIP: 0.0
+      LTDIP: 0.0
+      LIMP:  0.0
+      LIPIP: 0.0
+      LIDIP: 0.0
+      LMMP:  0.0
+      LMPIP: 0.0
+      LMDIP: 0.0
 
-    kd:
-      L_CROTCH_Y:   400.0
-      L_CROTCH_R:   400.0
-      L_CROTCH_P:   400.0
-      L_KNEE_P:     400.0
-      L_ANKLE_R:    300.0
-      L_ANKLE_P:    300.0
-      CHEST_Y:      440.0
-      CHEST_P:      440.0
-      R_CROTCH_Y:   400.0
-      R_CROTCH_R:   400.0
-      R_CROTCH_P:   400.0
-      R_KNEE_P:     400.0
-      R_ANKLE_R:    300.0
-      R_ANKLE_P:    300.0
-      HEAD_Y:       50.0
-      HEAD_P:       50.0
-      L_SHOULDER_P: 240.0
-      L_SHOULDER_R: 240.0
-      L_SHOULDER_Y: 240.0
-      L_ELBOW_P:    240.0
-      L_ELBOW_Y:    240.0
-      L_WRIST_R:    240.0
-      L_WRIST_Y:    240.0
-      R_SHOULDER_P: 240.0
-      R_SHOULDER_R: 240.0
-      R_SHOULDER_Y: 240.0
-      R_ELBOW_P:    240.0
-      R_ELBOW_Y:    240.0
-      R_WRIST_R:    240.0
-      R_WRIST_Y:    240.0
+    # HRP5P_PD_GAINS (mjlab hrp5_constants.py), reprises telles quelles de
+    # hrp5p_mj_description/pdgains/PDgains_sim.dat -- gains PD REELS du robot,
+    # PAS recopiees de RHPS1 (RHPS1 et HRP5P n'ont ni les memes joints ni les
+    # memes actionneurs, cf. commentaire en tete du fichier).
+    kp: &hrp5p_kp
+      RCY:  5400.0
+      RCR:  12925.0
+      RCP:  16000.0
+      RKP:  36000.0
+      RAP:  8000.0
+      RAR:  2244.0
+      LCY:  5400.0
+      LCR:  12925.0
+      LCP:  16000.0
+      LKP:  36000.0
+      LAP:  8000.0
+      LAR:  2244.0
+      WP:   8000.0
+      WR:   8000.0
+      WY:   8000.0
+      HY:   1311.0
+      HP:   1311.0
+      RSC:  3235.0
+      RSP:  3235.0
+      RSR:  5586.0
+      RSY:  1429.0
+      REP:  8705.0
+      RWRY: 1386.0
+      RWRR: 1386.0
+      RWRP: 1492.0
+      LSC:  3235.0
+      LSP:  3235.0
+      LSR:  5586.0
+      LSY:  1429.0
+      LEP:  8705.0
+      LWRY: 1386.0
+      LWRR: 1386.0
+      LWRP: 1492.0
+      # PDgains_sim.dat lignes 26-53 (hors ref_joint_order) : RHDY/LHDY et les
+      # 9 articulations de chaque main partagent toutes la meme valeur (693.0).
+      RHDY: 693.0
+      LHDY: 693.0
+      RTMP:  693.0
+      RTPIP: 693.0
+      RTDIP: 693.0
+      RIMP:  693.0
+      RIPIP: 693.0
+      RIDIP: 693.0
+      RMMP:  693.0
+      RMPIP: 693.0
+      RMDIP: 693.0
+      LTMP:  693.0
+      LTPIP: 693.0
+      LTDIP: 693.0
+      LIMP:  693.0
+      LIPIP: 693.0
+      LIDIP: 693.0
+      LMMP:  693.0
+      LMPIP: 693.0
+      LMDIP: 693.0
+    kd: &hrp5p_kd
+      RCY:  54.00
+      RCR:  103.40
+      RCP:  160.00
+      RKP:  360.00
+      RAP:  80.00
+      RAR:  22.44
+      LCY:  54.00
+      LCR:  103.40
+      LCP:  160.00
+      LKP:  360.00
+      LAP:  80.00
+      LAR:  22.44
+      WP:   80.00
+      WR:   80.00
+      WY:   80.00
+      HY:   13.11
+      HP:   13.11
+      RSC:  32.35
+      RSP:  32.35
+      RSR:  55.86
+      RSY:  10.83
+      REP:  87.05
+      RWRY: 13.87
+      RWRR: 13.87
+      RWRP: 11.19
+      LSC:  32.35
+      LSP:  32.35
+      LSR:  55.86
+      LSY:  10.83
+      LEP:  87.05
+      LWRY: 13.87
+      LWRR: 13.87
+      LWRP: 11.19
+      RHDY: 6.93
+      LHDY: 6.93
+      RTMP:  6.93
+      RTPIP: 6.93
+      RTDIP: 6.93
+      RIMP:  6.93
+      RIPIP: 6.93
+      RIDIP: 6.93
+      RMMP:  6.93
+      RMPIP: 6.93
+      RMDIP: 6.93
+      LTMP:  6.93
+      LTPIP: 6.93
+      LTDIP: 6.93
+      LIMP:  6.93
+      LIPIP: 6.93
+      LIDIP: 6.93
+      LMMP:  6.93
+      LMPIP: 6.93
+      LMDIP: 6.93
 
+    # HRP5P_INIT_STATE (mjlab hrp5_constants.py) = default_joint_pos de
+    # policy/model_5000.onnx (metadata, arrondi a 3 decimales -- concorde, verifie
+    # par tools/sync_policy_yaml.py). PAS recopie de RHPS1 : q0 definit
+    # l'observation (jointPos_ = q_mesure - q_zero), une erreur ici est un biais
+    # constant sur l'entree du reseau, pas juste un decalage de posture.
+    #
+    # RWRR/LWRR sont passes de +-20 a +-40 deg : HRP5P_INIT_STATE est desormais
+    # aligne sur le halfSitting de mc_hrp5_p, qui etait le seul endroit ou les
+    # deux differaient. Effet de bord : ces deux joints se retrouvent a 7 deg de
+    # leur butee, d'ou leur action_scale rabotee plus haut.
     q0:
-      CHEST_Y:      0.0
-      CHEST_P:      0.0
-      HEAD_Y:       0.0
-      HEAD_P:       0.0
-      L_SHOULDER_P: 0.261799
-      L_SHOULDER_R: 0.174533
-      L_SHOULDER_Y: -0.087266
-      L_ELBOW_P:    -0.523599
-      L_ELBOW_Y:    0.0
-      L_WRIST_R:    0.0
-      L_WRIST_Y:    0.0
-      R_SHOULDER_P: 0.261799
-      R_SHOULDER_R: -0.174533
-      R_SHOULDER_Y: 0.087266
-      R_ELBOW_P:    -0.523599
-      R_ELBOW_Y:    0.0
-      R_WRIST_R:    0.0
-      R_WRIST_Y:    0.0
-      L_CROTCH_Y:   -0.010533
-      L_CROTCH_R:   0.028787
-      L_CROTCH_P:   -0.271191
-      L_KNEE_P:     0.622021
-      L_ANKLE_R:    -0.030652
-      L_ANKLE_P:    -0.350679
-      R_CROTCH_Y:   0.010533
-      R_CROTCH_R:   -0.028787
-      R_CROTCH_P:   -0.271191
-      R_KNEE_P:     0.622021
-      R_ANKLE_R:    0.030652
-      R_ANKLE_P:    -0.350679
+      RCY:  0.0
+      RCR:  0.0
+      RCP:  -0.468970    # -26.87 deg
+      RKP:  0.872665     # 50 deg
+      RAP:  -0.403695    # -23.13 deg
+      RAR:  0.0
+      LCY:  0.0
+      LCR:  0.0
+      LCP:  -0.468970
+      LKP:  0.872665
+      LAP:  -0.403695
+      LAR:  0.0
+      WP:   0.0
+      WR:   0.0
+      WY:   0.0
+      HY:   0.0
+      HP:   0.0
+      RSC:  0.0
+      RSP:  1.047198    # 60 deg
+      RSR:  -0.349066   # -20 deg
+      RSY:  -0.087266   # -5 deg
+      REP:  -1.832596   # -105 deg
+      RWRY: 0.0
+      RWRR: -0.698132   # -40 deg
+      RWRP: 0.0
+      LSC:  0.0
+      LSP:  1.047198
+      LSR:  0.349066    # 20 deg
+      LSY:  0.087266    # 5 deg
+      LEP:  -1.832596
+      LWRY: 0.0
+      LWRR: 0.698132    # 40 deg
+      LWRP: 0.0
+      # halfSitting de mc_hrp5_p.cpp (pose de repos du module, PAS
+      # l'entrainement -- ces joints n'en ont pas) : la PostureTask les y
+      # tient en permanence puisqu'ils ne sont jamais ecrits par la RL.
+      #
+      # SEULEMENT RHDY/LHDY ici, PAS les 18 articulations des doigts (RTMP,
+      # RIMP, ... ) : contrairement a kp/kd/effort_limit (.at() par nom,
+      # tolerent aux cles en trop), configRL() exige
+      # q0.keys().size() == nbActuatedJoints EXACTEMENT
+      # (NewRLQPController.cpp:1481-1485). robot().refJointOrder() filtre a
+      # 35 (confirme au chargement, log "35 actuated joints retained out of
+      # 53") : les 18 doigts ont dof() != 1 ou !hasJoint() (mimic joints /
+      # geres via les Grippers l_gripper=LTMP, r_gripper=RTMP dans
+      # mc_hrp5_p.cpp) et ne comptent donc pas dans les 35. Les avoir dans
+      # kp/kd/effort_limit/action_scale/vel_target_limit_per_joint ne pose
+      # aucun probleme (ces maps ne verifient que la presence de chaque cle
+      # utilisee, pas la taille totale) -- laisses tels quels par coherence
+      # avec le reste du fichier.
+      RHDY: 0.0
+      LHDY: 0.0
 
+    # Ordre ATTENDU PAR LE RESEAU, confirme directement dans les metadonnees
+    # de policy/model_5000.onnx (joint_names, action_scale -- 33 entrees). NE PAS
+    # utiliser l'ordre de HRP5P_ACTUATORS dans hrp5_constants.py : ce tuple
+    # place LWRY avant LEP pour le bras gauche, incoherent avec l'onnx reel
+    # (qui a EP avant WRY des deux cotes, symetrique avec le bras droit).
     ref_joint_order:
-      - CHEST_Y
-      - CHEST_P
-      - HEAD_Y
-      - HEAD_P
-      - L_SHOULDER_P
-      - L_SHOULDER_R
-      - L_SHOULDER_Y
-      - L_ELBOW_P
-      - L_ELBOW_Y
-      - L_WRIST_R
-      - L_WRIST_Y
-      - R_SHOULDER_P
-      - R_SHOULDER_R
-      - R_SHOULDER_Y
-      - R_ELBOW_P
-      - R_ELBOW_Y
-      - R_WRIST_R
-      - R_WRIST_Y
-      - L_CROTCH_Y
-      - L_CROTCH_R
-      - L_CROTCH_P
-      - L_KNEE_P
-      - L_ANKLE_R
-      - L_ANKLE_P
-      - R_CROTCH_Y
-      - R_CROTCH_R
-      - R_CROTCH_P
-      - R_KNEE_P
-      - R_ANKLE_R
-      - R_ANKLE_P
+      - RCY
+      - RCR
+      - RCP
+      - RKP
+      - RAP
+      - RAR
+      - LCY
+      - LCR
+      - LCP
+      - LKP
+      - LAP
+      - LAR
+      - WP
+      - WR
+      - WY
+      - HY
+      - HP
+      - RSC
+      - RSP
+      - RSR
+      - RSY
+      - REP
+      - RWRY
+      - RWRR
+      - RWRP
+      - LSC
+      - LSP
+      - LSR
+      - LSY
+      - LEP
+      - LWRY
+      - LWRR
+      - LWRP
 
 use_async_inference: false
 log_timing: true
 timing_log_interval: 100
 # log_impact_vel: rising-edge detection on the ankle F/T sensors' Fz
-# (RightFootForceSensor/LeftFootForceSensor, RHPS1main.xml's rf_force/
-# lf_force sites). On touchdown, logs the ankle body's world-frame linear
+# (RightFootForceSensor/LeftFootForceSensor -- same names on mc_hrp5_p,
+# attached to Rleg_Link5/Lleg_Link5, confirmed in mc_hrp5_p.cpp). On
+# touchdown, logs the ankle body's world-frame linear
 # velocity (NewRLQPController_leftFootImpactVel / _rightFootImpactVel) --
 # holds the last value between impacts, read it where
 # NewRLQPController_{left,right}FootContact steps 0 -> 1. Raw Fz is logged
