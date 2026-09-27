@@ -1,0 +1,16 @@
+# Build artifacts and IDE-generated symlinks -- machine/user-specific, never
+# meant to be shared (the committed versions pointed into a colleague's home
+# directory, e.g. build -> /home/lmoussafir/build/rl_controller).
+build
+compile_commands.json
+
+# Diagnostic tooling not meant for the shared repo (log auditing, personal
+# scripts).
+/tools/check_deployment_log.py
+
+# Stray artifact from a mistyped command.
+/--help.csv
+
+# mc_mujoco's own runtime log -- accumulates timestamped warnings on every
+# local run, pure noise to track.
+/MUJOCO_LOG.TXT

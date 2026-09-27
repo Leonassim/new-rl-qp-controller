@@ -1098,9 +1098,29 @@ void NewRLQPController::gaitPhaseStep()
 
 void NewRLQPController::updateVelocityCommand()
 {
+  // useJoystick_ false: the operator drives via the GUI sliders/Stop button
+  // instead (see the GUI section below), which own currentVelCmd_ in that
+  // mode -- returning untouched here is correct, not a gap.
   if(!useJoystick_) return;
-  if(!datastore().has("Joystick::connected") || !datastore().get<bool>("Joystick::connected")) return;
-  if(!datastore().has("Joystick::Stick")) return;
+
+  // useJoystick_ true but the joystick vanished (unplugged, plugin not
+  // running, or connected() not yet published): the operator has no
+  // interface driving currentVelCmd_ at all -- neither this function's
+  // normal read below, nor the GUI sliders, which are for the OTHER mode.
+  // Previously this just returned, leaving currentVelCmd_ at its last
+  // value: the robot kept walking at the last commanded velocity, forever,
+  // with the operator holding a joystick that no longer does anything.
+  // Zero immediately (not ramped like a stick recentering, see the deadzone
+  // logic below) -- a stick returning to zero is a normal input a ramp
+  // makes smooth, an unplug is a loss of control that should stop the
+  // robot as fast as the plant can safely absorb the step, not glide there.
+  const bool connected =
+      datastore().has("Joystick::connected") && datastore().get<bool>("Joystick::connected");
+  if(!connected || !datastore().has("Joystick::Stick"))
+  {
+    currentVelCmd_.setZero();
+    return;
+  }
 
   Eigen::Vector3d targetCmd = Eigen::Vector3d::Zero();
 
