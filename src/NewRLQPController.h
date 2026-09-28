@@ -547,6 +547,13 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   bool qpZeroVelOut_ = false;
   Eigen::VectorXd alphaOutShadow_;
 
+  // Gate on setPostureRefVel() -- the plain-path refVel = qdTarget_ write in
+  // run(). On by default (the current behaviour); the GUI toggle turns it off
+  // to fall back to pure feedback on the position target. Does not affect
+  // setPostureFeedforward(), which writes its own refVel under
+  // postureFeedforward_.
+  bool postureRefVel_ = true;
+
   /** @brief Put back the velocity zeroAlphaOut() hid from mc_mujoco last
    *  tick, before the solver integrates from it again. Must run before
    *  mc_control::fsm::Controller::run(). */

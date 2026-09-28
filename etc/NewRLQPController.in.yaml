@@ -76,10 +76,14 @@ init: NewRLQPController_Initial
 # ARMER DEPUIS LA GUI, une main sur l'arret. Aucune de ces policies n'a encore
 # tourne, ni en simulation ni sur le robot.
 policy_path: [
+  "@RL_POLICY_INSTALL_PREFIX@/model_1500.onnx",
+  # index 1 : model_5000.onnx, l'ancienne policy de deploiement (77ca165).
+  # Memes metadonnees que l'index 0 (joint_names, default_joint_pos,
+  # action_scale -- les 33 valeurs concordent), donc meme bloc de config,
+  # repris par alias YAML plus bas.
   "@RL_POLICY_INSTALL_PREFIX@/model_5000.onnx",
 ]
-# Une seule entree -- le defaut n'a rien d'autre a porter. Exige
-# MainRobot: HRP5P dans mc_rtc.yaml (module mc_hrp5_p).
+# Exige MainRobot: HRP5P dans mc_rtc.yaml (module mc_hrp5_p).
 default_policy_index: 0
 
 policies:
@@ -92,7 +96,7 @@ policies:
   # commentaire sur effort_limit plus bas).
   #
   # 33 joints actionnes par ref_joint_order (RCY..LWRP), ordre confirme
-  # directement dans les metadonnees embarquees de policy/model_5000.onnx
+  # directement dans les metadonnees embarquees de policy/hrp5_collisions.onnx
   # (joint_names / action_scale) -- PAS celui de hrp5_constants.py
   # (HRP5P_ACTUATORS a un ordre bras-gauche incoherent avec l'onnx reel,
   # WRY avant EP au lieu de EP avant WRY).
@@ -110,7 +114,8 @@ policies:
   # partage avec l'ancien `case 2:` RHPS1) et V3_DEEP_HISTORY_SIZE a 20 dans
   # NewRLQPController.h -- sans consequence sur RHPS1 puisque cette branche ne
   # le porte plus. NE PAS ARMER avant un premier test simulation.
-  - use_QP: true
+  - &hrp5p_policy
+    use_QP: true
     obs_format: 8
     velocity_action: true
     use_torque_task: false
@@ -160,7 +165,7 @@ policies:
     # effort_limit reels des HRP5P_ACTUATOR_* d'entrainement
     # (mjlab/asset_zoo/robots/hrp5/hrp5_constants.py), utilises pour deriver
     # action_scale par la meme formule que RHP7 (e / (3*(kp*0.01+kd))) --
-    # recoupe chiffre par chiffre avec policy/model_5000.onnx (metadata action_scale).
+    # recoupe chiffre par chiffre avec policy/hrp5_collisions.onnx (metadata action_scale).
     effort_limit: &hrp5p_effort_limit
       RCY:  200
       RCR:  500
@@ -292,7 +297,7 @@ policies:
     # precedente pour jambes/taille -- inchangees -- mais bras/tete
     # desormais *0.3 au lieu de *0.5, hrp5_constants.py:738, pour cette
     # policy entrainee avec le delai d'actionneur randomise). Recoupe avec
-    # les metadonnees action_scale de policy/model_5000.onnx (arrondies a 3
+    # les metadonnees action_scale de policy/hrp5_collisions.onnx (arrondies a 3
     # decimales) : les 33 entrees concordent.
     action_scale: &hrp5p_action_scale
       RCY:  0.6172839506172839
@@ -479,7 +484,7 @@ policies:
       LMDIP: 6.93
 
     # HRP5P_INIT_STATE (mjlab hrp5_constants.py) = default_joint_pos de
-    # policy/model_5000.onnx (metadata, arrondi a 3 decimales -- concorde, verifie
+    # policy/hrp5_collisions.onnx (metadata, arrondi a 3 decimales -- concorde, verifie
     # par tools/sync_policy_yaml.py). PAS recopie de RHPS1 : q0 definit
     # l'observation (jointPos_ = q_mesure - q_zero), une erreur ici est un biais
     # constant sur l'entree du reseau, pas juste un decalage de posture.
@@ -543,7 +548,7 @@ policies:
       LHDY: 0.0
 
     # Ordre ATTENDU PAR LE RESEAU, confirme directement dans les metadonnees
-    # de policy/model_5000.onnx (joint_names, action_scale -- 33 entrees). NE PAS
+    # de policy/hrp5_collisions.onnx (joint_names, action_scale -- 33 entrees). NE PAS
     # utiliser l'ordre de HRP5P_ACTUATORS dans hrp5_constants.py : ce tuple
     # place LWRY avant LEP pour le bras gauche, incoherent avec l'onnx reel
     # (qui a EP avant WRY des deux cotes, symetrique avec le bras droit).
@@ -581,6 +586,11 @@ policies:
       - LWRY
       - LWRR
       - LWRP
+
+  # index 1 : model_5000.onnx -- configuration identique a l'index 0 (memes
+  # action_scale/q0/ordre dans les metadonnees de l'onnx), d'ou l'alias. Si
+  # une valeur doit un jour differer, recopier le bloc au lieu de l'aliaser.
+  - *hrp5p_policy
 
 use_async_inference: false
 log_timing: true

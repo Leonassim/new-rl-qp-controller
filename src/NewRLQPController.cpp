@@ -196,7 +196,7 @@ bool NewRLQPController::run()
     // postureFeedforward_ above. Setting refVel here removes that lag without
     // the finite-difference noise postureFeedforward_ risks: qdTarget_ is the
     // network's own action for velocity_action, not a derivative of q_rl.
-    setPostureRefVel(pt);
+    if(postureRefVel_) { setPostureRefVel(pt); }
     if(posturePassthrough_) { setPostureRefAccel(pt); }
     else if(postureFeedforward_)
     {
@@ -1509,6 +1509,20 @@ void NewRLQPController::addGui()
                            qpZeroVelOut_ ? "ZEROED (position only)" : "restored (position + velocity)");
     }),
     mc_rtc::gui::Label("QP vel-out", [this]() { return qpZeroVelOut_ ? "zeroed" : "normal"; }),
+    // Turning it off zeroes refVel right away: otherwise the last qdTarget_
+    // written would stay latched in the task for as long as the policy is
+    // armed. Left alone under feedforward, whose own refVel write owns it.
+    mc_rtc::gui::Button("Toggle posture refVel", [this]() {
+      postureRefVel_ = !postureRefVel_;
+      if(!postureRefVel_ && !postureFeedforward_)
+      {
+        auto pt = getPostureTask(robot().name());
+        if(pt) { pt->refVel(Eigen::VectorXd::Zero(robot().mb().nrDof() - postureDofOffset())); }
+      }
+      mc_rtc::log::warning("[NewRLQPController] posture refVel (qdTarget_ -> QP): {}",
+                           postureRefVel_ ? "ON" : "OFF");
+    }),
+    mc_rtc::gui::Label("Posture refVel", [this]() { return postureRefVel_ ? "qdTarget_" : "off (zero)"; }),
     mc_rtc::gui::Button("Toggle print limits",     [this]() { printLimits_ = !printLimits_; }),
     mc_rtc::gui::Label("Print joint limits",       [this]() { return printLimits_ ? "Enabled" : "Disabled"; })
   );

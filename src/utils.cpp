@@ -123,9 +123,38 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
         //
         // The two clamps below are not optional: they are what makes the
         // free-running integral usable at all.
+        //
+        // Under the QP, the integral restarts every tick from the QP's own
+        // previous output (robot().mbc().q, OpenLoop) instead of from q_rl
+        // itself. The free-running integral wound up whenever the QP refused a
+        // motion (joint-limit damper latched at zero damping: LWRR frozen at
+        // 0.652 while q_rl climbed to 0.793, LSP 0.931 vs 1.056, 2026-09-28
+        // 15:06 log), and switching to bypass then handed the PD the whole
+        // accumulated gap in one tick (0.14 rad, 6.8 rad/s, 165 Nm on LWRR).
+        // Re-seeding leaves nothing to accumulate, so the switch starts from
+        // where the QP actually is.
+        //
+        // Exact velocity, thanks to the one-tick lag in run(): the target is
+        // written before the state runs, so q_rl computed here from output
+        // k-1 is tracked at solve k+1 against output k, error (v - qdot)*dt,
+        // and both the position and the refVel term push qdot to v. Needs
+        // refVel (without it qdot ~ v*K*dt/Kv, ~0.1 v): with the "Toggle
+        // posture refVel" button off, the joints essentially stop.
+        //
+        // Not under pass-through (its deadbeat refAccel reads q_rl - q and
+        // would brake to v/3) nor with an actuation delay (the delayed target
+        // would be an output N ticks old, pulling back): the free-running
+        // integral stays there, as it does in bypass, where the previous
+        // output IS the previous q_rl anyway.
+        const bool seedFromQP = ctl.useQP() && !ctl.posturePassthrough_ && ctl.actuationDelaySteps_ == 0;
         auto & rr = ctl.realRobot(ctl.robots()[0].name());
         for (int j = 0; j < ctl.currentAction.size(); ++j) {
             int i = ctl.actionToDofMap[j];
+            if(seedFromQP)
+            {
+              const auto & qOut = ctl.robot().mbc().q[ctl.robot().jointIndexByName(ctl.jointNames[i])];
+              if(!qOut.empty()) { ctl.q_rl(i) = qOut[0]; }
+            }
             ctl.q_rl(i) += ctl.currentActionScaled(i) * ctl.timeStep;
 
             const int mcIdx = static_cast<int>(rr.jointIndexByName(ctl.jointNames[i]));
