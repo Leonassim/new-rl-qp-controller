@@ -76,12 +76,12 @@ init: NewRLQPController_Initial
 # ARMER DEPUIS LA GUI, une main sur l'arret. Aucune de ces policies n'a encore
 # tourne, ni en simulation ni sur le robot.
 policy_path: [
-  "@RL_POLICY_INSTALL_PREFIX@/model_1500.onnx",
-  # index 1 : model_5000.onnx, l'ancienne policy de deploiement (77ca165).
-  # Memes metadonnees que l'index 0 (joint_names, default_joint_pos,
-  # action_scale -- les 33 valeurs concordent), donc meme bloc de config,
-  # repris par alias YAML plus bas.
-  "@RL_POLICY_INSTALL_PREFIX@/model_5000.onnx",
+  # low4 (run mjlab exp1/2026-09-29_23-24-40) : meme observation (obs_format 8,
+  # historique 20), memes gains et meme q0 ; seule l'action_scale change (voir
+  # plus bas). Entrainee AVEC le filtre PostureTask (posture_task_filter,
+  # K=1600, Kv auto=2*sqrt(K), dt 5 ms, K randomise +-20 %, 20 % des envs en
+  # bypass) : ne pas changer posture_stiffness sans reentrainer.
+  "@RL_POLICY_INSTALL_PREFIX@/low4.onnx",
 ]
 # Exige MainRobot: HRP5P dans mc_rtc.yaml (module mc_hrp5_p).
 default_policy_index: 0
@@ -114,8 +114,7 @@ policies:
   # partage avec l'ancien `case 2:` RHPS1) et V3_DEEP_HISTORY_SIZE a 20 dans
   # NewRLQPController.h -- sans consequence sur RHPS1 puisque cette branche ne
   # le porte plus. NE PAS ARMER avant un premier test simulation.
-  - &hrp5p_policy
-    use_QP: true
+  - use_QP: true
     obs_format: 8
     velocity_action: true
     use_torque_task: false
@@ -300,18 +299,23 @@ policies:
     # les metadonnees action_scale de policy/hrp5_collisions.onnx (arrondies a 3
     # decimales) : les 33 entrees concordent.
     action_scale: &hrp5p_action_scale
-      RCY:  0.6172839506172839
-      RCR:  0.7163836904085618
-      RCP:  0.5208333333333334
-      RKP:  0.5555555555555556
-      RAP:  0.5208333333333334
-      RAR:  1.4854426442369588
-      LCY:  0.6172839506172839
-      LCR:  0.7163836904085618
-      LCP:  0.5208333333333334
-      LKP:  0.5555555555555556
-      LAP:  0.5208333333333334
-      LAR:  1.4854426442369588
+      # low4.onnx : valeurs pleine precision recopiees de
+      # actions.joint_pos.scale dans params/env.yaml du run
+      # 2026-09-29_23-24-40 (recoupees avec les metadonnees action_scale de
+      # l'onnx, 3 decimales). Les commentaires WP/RWRR ci-dessous datent
+      # d'une echelle plus ancienne.
+      RCY:  0.18518518518518517
+      RCR:  0.21491510712256853
+      RCP:  0.15625
+      RKP:  0.16666666666666666
+      RAP:  0.15625
+      RAR:  0.4456327932710876
+      LCY:  0.18518518518518517
+      LCR:  0.21491510712256853
+      LCP:  0.15625
+      LKP:  0.16666666666666666
+      LAP:  0.15625
+      LAR:  0.4456327932710876
       # WP/RSP/LSP/RWRR/LWRR ne sont plus fixes par la saturation de
       # l'actionneur mais par un plafond de COURSE ajoute dans hrp5_constants.py
       # (0.4 s minimum pour traverser le plus court debattement depuis q0). WP
@@ -324,27 +328,27 @@ policies:
       # deg (alignement sur halfSitting de mc_hrp5_p), ce qui rapproche le joint
       # de sa butee et reduit sa course mini de 27 a 7 deg. C'est le joint le
       # plus serre de l'espace d'action desormais.
-      WP:   0.5236
-      WR:   1.875
-      WY:   0.5208333333333334
+      WP:   0.5625
+      WR:   0.5625
+      WY:   0.15625
       HY:   0.1716247162060515
       HP:   0.1716247162060515
-      RSC:  0.3091190181094002
-      RSP:  0.4363311220085059
+      RSC:  0.3091190181094001
+      RSP:  0.6182380362188002
       RSR:  0.3132832063085133
-      RSY:  0.796178346367181
-      REP:  0.22975301148104216
+      RSY:  0.7961783463671811
+      REP:  0.22975301148104224
       RWRY: 1.081860805041801
-      RWRR: 0.3054332480056704
-      RWRP: 0.4595940326638579
-      LSC:  0.3091190181094002
-      LSP:  0.4363311220085059
+      RWRR: 1.081860805041801
+      RWRP: 0.45959403266385784
+      LSC:  0.3091190181094001
+      LSP:  0.6182380362188002
       LSR:  0.3132832063085133
-      LSY:  0.796178346367181
-      LEP:  0.22975301148104216
+      LSY:  0.7961783463671811
+      LEP:  0.22975301148104224
       LWRY: 1.081860805041801
-      LWRR: 0.3054332480056704
-      LWRP: 0.4595940326638579
+      LWRR: 1.081860805041801
+      LWRP: 0.45959403266385784
       # Hors ref_joint_order, jamais lu par currentActionScaled (boucle sur
       # actionToDofMap uniquement) -- 0 explicite par coherence.
       RHDY: 0.0
@@ -587,10 +591,6 @@ policies:
       - LWRR
       - LWRP
 
-  # index 1 : model_5000.onnx -- configuration identique a l'index 0 (memes
-  # action_scale/q0/ordre dans les metadonnees de l'onnx), d'ou l'alias. Si
-  # une valeur doit un jour differer, recopier le bloc au lieu de l'aliaser.
-  - *hrp5p_policy
 
 use_async_inference: false
 log_timing: true

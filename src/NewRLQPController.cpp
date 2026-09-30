@@ -85,7 +85,16 @@ NewRLQPController::NewRLQPController(mc_rbdyn::RobotModulePtr rm, double dt, con
   // saturation; the default was measured at ~1.6x the bypass roll).
   kinematicsConstraint = mc_rtc::unique_ptr<mc_solver::KinematicsConstraint>(
     new mc_solver::KinematicsConstraint(robots(), 0, timeStep,
-      {diPercent_, dsPercent_, 0.0}, velPercent_));
+      // Third element = damping offset (xsiOff in tvm::task_dynamics::
+      // VelocityDamper), 0.5 as in MCController's own default. It was 0.0 from
+      // 430443f to 2026-09-30, carried over from the fork's 5-element CBF form
+      // where that slot meant something else. At 0.0 the classic damper latches
+      // a joint that enters its zone slowly: damping is set from the entry
+      // velocity, so a joint armed inside the zone at rest (RSP/LSP at q0 =
+      // 60 deg, RWRR/LWRR at +-40 deg) could never move toward the limit again
+      // -- executed/commanded velocity 0.00 on all four in the 2026-09-30 10:15
+      // log, arms frozen from arming on.
+      {diPercent_, dsPercent_, 0.5}, velPercent_));
   solver().addConstraintSet(kinematicsConstraint);
 
   initializeRobot();
