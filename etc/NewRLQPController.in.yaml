@@ -818,6 +818,13 @@ policies:
     # are unused on this path; left in only because this block started as a
     # copy of a position-action entry.
     velocity_action: true
+    # Feedforward refVel de la PostureTask coupe ici aussi. Le defaut de
+    # postureRefVel_ est velocityAction_, donc cette entree l'aurait active :
+    # c'est la seule des cinq pour laquelle setPostureRefVel() a ete ecrit
+    # (qdTarget_ y est bien la sortie du reseau, pas une difference finie).
+    # Desactive quand meme, sur demande, pour que les cinq creneaux tournent
+    # sans feedforward de vitesse tant qu'il n'a pas ete valide sur le robot.
+    posture_ref_vel: false
     #
     # --- QP-mode tuning (no effect while use_QP is false) ---
     #
