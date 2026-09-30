@@ -1153,6 +1153,44 @@ policies:
   - use_QP: *use_QP
     # Politique entrainee en DIRECTION : elle n'a vu que -1, 0, +1.
     command_as_sign: true
+    # Arming: min-jerk ramp to the policy's own standing fixed point, then a
+    # settle hold, first inference seeded with the matching last action.
+    # Measured in mc_mujoco (checkpoint 50000, command 0, 3.5-5.5 s after
+    # arming, target std 0.04 deg). Ramping to q0 instead made the first
+    # inference jump the target 6.6 deg and shake for 2-3 s.
+    arm_ramp_speed: 0.1
+    arm_settle_time: 0.5
+    arm_posture:
+      L_CROTCH_Y: 0.00570
+      L_CROTCH_R: 0.06117
+      L_CROTCH_P: -0.15174
+      L_KNEE_P: 0.49476
+      L_ANKLE_R: -0.03988
+      L_ANKLE_P: -0.31829
+      CHEST_Y: 0.01586
+      CHEST_P: 0.01250
+      R_CROTCH_Y: 0.00126
+      R_CROTCH_R: -0.00391
+      R_CROTCH_P: -0.17327
+      R_KNEE_P: 0.54590
+      R_ANKLE_R: 0.16053
+      R_ANKLE_P: -0.35473
+      HEAD_Y: 0.04904
+      HEAD_P: -0.01553
+      L_SHOULDER_P: 0.28032
+      L_SHOULDER_R: 0.18688
+      L_SHOULDER_Y: -0.11638
+      L_ELBOW_P: -0.55854
+      L_ELBOW_Y: -0.02297
+      L_WRIST_R: -0.06715
+      L_WRIST_Y: 0.03913
+      R_SHOULDER_P: 0.23966
+      R_SHOULDER_R: -0.14044
+      R_SHOULDER_Y: 0.03461
+      R_ELBOW_P: -0.49129
+      R_ELBOW_Y: 0.02023
+      R_WRIST_R: 0.02244
+      R_WRIST_Y: 0.04476
     obs_format: 0
     policy_step_size: *policy_step_size
     physics_step_size: *physics_step_size

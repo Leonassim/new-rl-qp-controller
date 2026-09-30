@@ -115,4 +115,8 @@ struct utils
    int rampSteps_{0};          ///< Ramp steps remaining
    int rampTotalSteps_{0};     ///< Total ramp steps
    Eigen::VectorXd rampStartQ_; ///< Measured posture at state start (q_rl indexing)
+   Eigen::VectorXd rampTargetQ_; ///< Ramp end: q_zero, or arm_posture when set
+   bool rampSmooth_{false};    ///< Min-jerk profile (arm_posture) instead of linear
+   int settleSteps_{0};        ///< Hold at rampTargetQ_ before the first inference
+   bool seedAction_{false};    ///< Present the first inference the stance's own last action
 };

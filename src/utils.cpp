@@ -38,16 +38,27 @@ void utils::start_rl_state(mc_control::fsm::Controller & ctl_, std::string state
   }
   ctl.q_rl = rampStartQ_;
 
-  // Ramp duration scales with the largest joint offset (~0.15 rad/s, capped
-  // at 2 s); if the policy's q_zero matches the spawn posture (old policies)
-  // the ramp is skipped entirely.
-  const double maxOffset = (rampStartQ_ - ctl.q_zero).cwiseAbs().maxCoeff();
-  const double rampDuration = maxOffset < 0.02 ? 0.0 : std::min(2.0, maxOffset / 0.15);
+  // Legacy (no arm_posture): linear ramp to q_zero at ~0.15 rad/s, capped at
+  // 2 s, skipped under 0.02 rad, first inference right after.
+  //
+  // arm_posture: min-jerk ramp to the policy's own standing posture, then a
+  // settle hold. Measured 2026-09-30 on slot 4: arriving at q_zero, the first
+  // inference jumped the target 6.6 deg (hips and knees straighten toward the
+  // BWC stance) and took 2-3 s to settle -- the shake seen at arming.
+  const bool armSeq = ctl.armPosture_.size() == ctl.q_zero.size();
+  rampTargetQ_ = armSeq ? ctl.armPosture_ : ctl.q_zero;
+  rampSmooth_ = armSeq;
+  const double maxOffset = (rampStartQ_ - rampTargetQ_).cwiseAbs().maxCoeff();
+  double rampDuration = 0.0;
+  if(armSeq) { rampDuration = maxOffset < 1e-4 ? 0.0 : std::max(1.0, maxOffset / ctl.armRampSpeed_); }
+  else { rampDuration = maxOffset < 0.02 ? 0.0 : std::min(2.0, maxOffset / 0.15); }
   rampTotalSteps_ = std::max(1, static_cast<int>(rampDuration / ctl.timeStep));
   rampSteps_ = rampDuration > 0.0 ? rampTotalSteps_ : 0;
+  settleSteps_ = armSeq ? static_cast<int>(ctl.armSettleTime_ / ctl.timeStep) : 0;
+  seedAction_ = armSeq && !ctl.velocityAction_;
   mc_rtc::log::info(
-      "[NewRLQPController::utils] go-to-init ramp: max offset {:.3f} rad, duration {:.2f} s",
-      maxOffset, rampDuration);
+      "[NewRLQPController::utils] go-to-init ramp: max offset {:.3f} rad, duration {:.2f} s{}",
+      maxOffset, rampDuration, armSeq ? " (min-jerk to arm_posture, then settle)" : "");
 
   ctl.initializeRLObservation();
   ctl.q_rl_prev_ = ctl.q_rl;
@@ -68,10 +79,32 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
     if(rampSteps_ > 0)
     {
       rampSteps_--;
-      const double alpha =
+      double alpha =
           1.0 - static_cast<double>(rampSteps_) / static_cast<double>(rampTotalSteps_);
-      ctl.q_rl = (1.0 - alpha) * rampStartQ_ + alpha * ctl.q_zero;
-      return; // go-to-init: reach q_zero before the first inference
+      // Min-jerk: zero velocity and acceleration at both ends, no kick.
+      if(rampSmooth_) { alpha = alpha * alpha * alpha * (10.0 + alpha * (-15.0 + 6.0 * alpha)); }
+      ctl.q_rl = (1.0 - alpha) * rampStartQ_ + alpha * rampTargetQ_;
+      return; // go-to-init: reach the start posture before the first inference
+    }
+    if(settleSteps_ > 0)
+    {
+      settleSteps_--;
+      ctl.q_rl = rampTargetQ_;
+      return; // let the robot come to rest, as training's arming hold does
+    }
+    if(seedAction_)
+    {
+      // Last-action observation consistent with the posture held: the policy
+      // then sees its own steady standing state, not "at stance, never acted".
+      for(int j = 0; j < ctl.currentAction.size(); ++j)
+      {
+        const int i = ctl.actionToDofMap[j];
+        const double s = ctl.actionScale(i);
+        const double d = rampTargetQ_(i) - ctl.q_zero(i);
+        ctl.currentAction(j) = std::abs(s) > 1e-9 ? d / s : 0.0;
+        ctl.currentActionScaled(i) = d;
+      }
+      seedAction_ = false;
     }
     syncTime_ += ctl.timeStep;
     const bool newInference = syncTime_ >= ctl.policyStepSize;

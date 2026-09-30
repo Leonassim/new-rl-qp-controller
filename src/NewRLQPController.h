@@ -172,6 +172,19 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   Eigen::VectorXd q_zero;                      // Reference joint positions
 
   /**
+   * @brief Arming sequence target, opt-in per slot via `arm_posture`.
+   *
+   * Empty (the default) keeps the legacy sequence: linear ramp to q_zero, first
+   * inference right after. Set, the ramp is min-jerk, ends here instead, holds
+   * for armSettleTime_, and the first inference sees the matching last action.
+   * Meant to be the policy's own standing fixed point: a policy whose stance
+   * differs from q_zero otherwise snaps to it on its first action.
+   */
+  Eigen::VectorXd armPosture_;
+  double armRampSpeed_ = 0.1;  ///< Mean joint speed of the min-jerk ramp (rad/s)
+  double armSettleTime_ = 0.5; ///< Hold at armPosture_ before the first inference (s)
+
+  /**
    * @brief Raw output from the RL policy (before scaling).
    *
    * Directly returned by rlPolicy->predict(). Typically in [-1, 1] if the

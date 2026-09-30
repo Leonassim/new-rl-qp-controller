@@ -425,6 +425,20 @@ void NewRLQPController::initializeRobot()
     updateIfExists(jointTorqueScale_[i], torqueScale_map, jointNames[i]);
   }
 
+  // Opt-in: absent, the arming sequence is exactly the legacy one.
+  armPosture_.resize(0);
+  const auto & polCfg = config_("policies")[currentPolicyIndex];
+  if(polCfg.has("arm_posture"))
+  {
+    std::map<std::string, double> armMap = polCfg("arm_posture");
+    armPosture_ = q_zero;
+    for(int i = 0; i < nbActuatedJoints; ++i) { updateIfExists(armPosture_[i], armMap, jointNames[i]); }
+    armRampSpeed_  = polCfg("arm_ramp_speed", 0.1);
+    armSettleTime_ = polCfg("arm_settle_time", 0.5);
+    mc_rtc::log::info("[NewRLQPController] arming: min-jerk ramp to arm_posture ({:.2f} rad/s mean), "
+                      "{:.2f} s settle, first inference seeded", armRampSpeed_, armSettleTime_);
+  }
+
   kp_ = pdGainsRatio_ * kpBase_;
   kd_ = sqrt(pdGainsRatio_) * kdBase_;
 
