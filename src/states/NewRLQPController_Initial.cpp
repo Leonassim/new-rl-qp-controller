@@ -43,7 +43,7 @@ bool NewRLQPController_Initial::run(mc_control::fsm::Controller & ctl_)
   for(int i = 0; i < ctl.nbActuatedJoints; ++i)
   {
     const int mcIdx = ctl.robot().jointIndexByName(ctl.jointNames[i]);
-    posture[mcIdx][0] = ctl.q_rl[i];
+    posture[mcIdx][0] = ctl.benchQSend_.size() == ctl.q_rl.size() ? ctl.benchQSend_[i] : ctl.q_rl[i];
   }
   pt->posture(posture);
   return false;

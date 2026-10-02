@@ -151,7 +151,10 @@ bool NewRLQPController::run()
   updateVelocityCommand();
   if(benchAutoArm_ > 0.0 && benchInSimulation_)
   {
-    currentVelCmd_ = benchVelocity_;  // apres la rampe : consigne constante
+    // RLQP_BENCH_VEL_START_S: zero until that long after arming, the operator's
+    // joystick push while the robot stands.
+    currentVelCmd_ = benchElapsed_ >= benchAutoArm_ + benchVelStart_ ? benchVelocity_
+                                                                     : Eigen::Vector3d::Zero();
   }
   if(printLimits_) computeLimits();
   if(logImpactVel_) updateImpactVelocity();
@@ -182,9 +185,19 @@ bool NewRLQPController::run()
   if(useQP_ && policyArmed_)
   {
     auto pt = getPostureTask(robot().name());
+    // Bench only: the real actuators lag the target 30-35 ms more than
+    // mc_mujoco's; RLQP_BENCH_DELAY_MS replays that latency in simulation.
+    Eigen::VectorXd q_send = q_rl;
+    if(benchDelaySteps_ > 0)
+    {
+      benchDelayBuf_.push_back(q_rl);
+      while(static_cast<int>(benchDelayBuf_.size()) > benchDelaySteps_ + 1) { benchDelayBuf_.pop_front(); }
+      q_send = benchDelayBuf_.front();
+      benchQSend_ = q_send;  // the Initial state writes the posture after this
+    }
     std::map<std::string, std::vector<double>> q_target;
     for(int i = 0; i < nbActuatedJoints; ++i)
-      q_target[jointNames[i]] = {q_rl(i)};
+      q_target[jointNames[i]] = {q_send(i)};
     pt->target(q_target);
     // Give the QP the velocity target alongside the position target, always
     // -- not just under posture_feedforward. qdTarget_ already holds it
@@ -339,6 +352,11 @@ void NewRLQPController::initializeRobot()
   commandAsSign_ = config_("policies")[currentPolicyIndex]("command_as_sign", false);
   commandSignDeadZone_ =
     config_("policies")[currentPolicyIndex]("command_sign_deadzone", 0.1);
+  commandFilterTau_ = config_("policies")[currentPolicyIndex]("command_filter_tau", 0.0);
+  if(commandFilterTau_ > 0.0)
+  {
+    mc_rtc::log::info("[NewRLQPController] commande filtree, tau {} s", commandFilterTau_);
+  }
   if(commandAsSign_)
   {
     mc_rtc::log::info("[NewRLQPController] commande envoyee au reseau en SIGNE "
@@ -482,6 +500,8 @@ void NewRLQPController::initializeRobot()
     std::getline(comm, prog);
     benchInSimulation_ = prog.find("mc_mujoco") != std::string::npos;
     benchAutoArm_ = std::atof(a);
+    benchVelStart_ = 0.0;
+    if(const char * s = std::getenv("RLQP_BENCH_VEL_START_S")) { benchVelStart_ = std::atof(s); }
     if(const char * v = std::getenv("RLQP_BENCH_VELOCITY"))
     {
       std::istringstream is(v);
@@ -491,6 +511,35 @@ void NewRLQPController::initializeRobot()
                          "arm={:.1f}s vel=[{:.3f} {:.3f} {:.3f}]",
                          prog, benchInSimulation_, benchAutoArm_,
                          benchVelocity_.x(), benchVelocity_.y(), benchVelocity_.z());
+  }
+  benchDelaySteps_ = 0;
+  benchDelayBuf_.clear();
+  if(const char * dl = std::getenv("RLQP_BENCH_DELAY_MS"))
+  {
+    // Same guard as the auto-arm: only when the host program is mc_mujoco.
+    std::ifstream comm("/proc/self/comm");
+    std::string prog;
+    std::getline(comm, prog);
+    if(prog.find("mc_mujoco") != std::string::npos)
+    {
+      benchDelaySteps_ = static_cast<int>(std::lround(std::atof(dl) / 1000.0 / timeStep));
+      mc_rtc::log::warning("[NewRLQPController] BANC : cible retardee de {} ms ({} pas), simulation",
+                           dl, benchDelaySteps_);
+    }
+  }
+  // RLQP_BENCH_CMD_TAU: bench a filtered-command policy in any slot without
+  // editing the installed yaml. mc_mujoco only, like the two above.
+  if(const char * ct = std::getenv("RLQP_BENCH_CMD_TAU"))
+  {
+    std::ifstream comm("/proc/self/comm");
+    std::string prog;
+    std::getline(comm, prog);
+    if(prog.find("mc_mujoco") != std::string::npos)
+    {
+      commandFilterTau_ = std::atof(ct);
+      mc_rtc::log::warning("[NewRLQPController] BANC : commande filtree, tau {} s (simulation)",
+                           commandFilterTau_);
+    }
   }
 
   // Experimental: see restoreQPVelocity()/zeroAlphaOut() and run(). Off by
@@ -711,6 +760,7 @@ void NewRLQPController::initializeRLObservation()
     velCmd_[i]   = obsVelCmd();
     gaitPhase_[i].setZero();
   }
+  cmdFilt_ = obsVelCmd();  // training resets the filter to the raw command
   gaitPhase_value_ = 0.0;
 
   // Zero, not the current demand: at init the target is the measured posture, so

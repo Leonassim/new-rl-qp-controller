@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <deque>
 #include <mc_control/fsm/Controller.h>
 #include <mc_rbdyn/SCHAddon.h>
 
@@ -343,8 +344,21 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
     return s;
   }
 
+  /** @brief obsVelCmd() through the training's first-order filter, one step per
+   *  inference: y += (policyStepSize / tau) * (u - y). command_filter_tau must
+   *  equal the policy's RHPS1_CMD_TAU; 0 (default) passes obsVelCmd() through.
+   *  A 0 -> 1 step made every checkpoint jolt in the 0.3 s after the joystick push. */
+  Eigen::Vector3d policyVelCmd()
+  {
+    if(commandFilterTau_ <= 0.0) return obsVelCmd();
+    cmdFilt_ += (policyStepSize / commandFilterTau_) * (obsVelCmd() - cmdFilt_);
+    return cmdFilt_;
+  }
+
   bool commandAsSign_ = false;
   double commandSignDeadZone_ = 0.1;
+  double commandFilterTau_ = 0.0;
+  Eigen::Vector3d cmdFilt_ = Eigen::Vector3d::Zero();
 
   // =========================================================================
   // Gait phase clock (V4 observation only)
@@ -726,6 +740,11 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   bool benchInSimulation_ = false;
   double benchElapsed_ = 0.0;
   Eigen::Vector3d benchVelocity_ = Eigen::Vector3d::Zero();
+  /** @brief Banc, simulation seulement : retard de la cible (RLQP_BENCH_DELAY_MS). */
+  int benchDelaySteps_ = 0;
+  std::deque<Eigen::VectorXd> benchDelayBuf_;
+  Eigen::VectorXd benchQSend_;  ///< Delayed target, when benchDelaySteps_ > 0
+  double benchVelStart_ = 0.0;  ///< Seconds after arming before benchVelocity_ applies
 
 private:
   mc_rtc::Configuration config_;
