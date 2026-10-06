@@ -76,12 +76,13 @@ init: NewRLQPController_Initial
 # ARMER DEPUIS LA GUI, une main sur l'arret. Aucune de ces policies n'a encore
 # tourne, ni en simulation ni sur le robot.
 policy_path: [
-  # low4 (run mjlab exp1/2026-09-29_23-24-40) : meme observation (obs_format 8,
-  # historique 20), memes gains et meme q0 ; seule l'action_scale change (voir
-  # plus bas). Entrainee AVEC le filtre PostureTask (posture_task_filter,
-  # K=1600, Kv auto=2*sqrt(K), dt 5 ms, K randomise +-20 %, 20 % des envs en
-  # bypass) : ne pas changer posture_stiffness sans reentrainer.
-  "@RL_POLICY_INSTALL_PREFIX@/low4.onnx",
+  # 05_10 (run mjlab exp1/2026-10-04_17-45-40) : meme observation (obs_format 8,
+  # historique 20) et meme q0. Entrainee avec le filtre PostureTask (K=1600,
+  # Kv auto, dt 5 ms), le servo bas niveau iob du HRP5P (iob_servo, pas de
+  # reference de vitesse, interpolation sur 2 pas de 1 ms) et un modele de
+  # frottement articulaire. NOUVEAUX gains PD (HRP5P_PD_GAINS) et nouvelle
+  # action_scale, voir plus bas ; physique a 1 ms, decimation 10.
+  "@RL_POLICY_INSTALL_PREFIX@/hrp5_mirror.onnx",
 ]
 # Exige MainRobot: HRP5P dans mc_rtc.yaml (module mc_hrp5_p).
 default_policy_index: 0
@@ -120,9 +121,10 @@ policies:
     use_torque_task: false
     qp_accel_task: false
     joint_armature: 1.0
-    policy_step_size: 0.01     # 100 Hz (10 ms) -- decimation 4 * timestep 0.0025,
+    policy_step_size: 0.01     # 100 Hz (10 ms) -- decimation 10 * timestep 0.001,
                                 # mjlab/tasks/velocity/velocity_env_cfg_hrp5.py
-    physics_step_size: 0.0025  # mc_mujoco a 400 Hz (2.5 ms)
+    physics_step_size: 0.001   # pas physique de l'entrainement 05_10 (1 ms) ;
+                               # sert seulement a un avertissement dans configRL()
     pd_gains_ratio: 1.0
     posture_stiffness: 1600
     max_vel_x: 0.3
@@ -299,23 +301,23 @@ policies:
     # les metadonnees action_scale de policy/hrp5_collisions.onnx (arrondies a 3
     # decimales) : les 33 entrees concordent.
     action_scale: &hrp5p_action_scale
-      # low4.onnx : valeurs pleine precision recopiees de
+      # 05_10.onnx : valeurs pleine precision recopiees de
       # actions.joint_pos.scale dans params/env.yaml du run
-      # 2026-09-29_23-24-40 (recoupees avec les metadonnees action_scale de
+      # 2026-10-04_17-45-40 (recoupees avec les metadonnees action_scale de
       # l'onnx, 3 decimales). Les commentaires WP/RWRR ci-dessous datent
       # d'une echelle plus ancienne.
-      RCY:  0.18518518518518517
-      RCR:  0.21491510712256853
-      RCP:  0.15625
-      RKP:  0.16666666666666666
-      RAP:  0.15625
-      RAR:  0.4456327932710876
-      LCY:  0.18518518518518517
-      LCR:  0.21491510712256853
-      LCP:  0.15625
-      LKP:  0.16666666666666666
-      LAP:  0.15625
-      LAR:  0.4456327932710876
+      RCY:  0.19462447208111955
+      RCR:  0.31330676491966813
+      RCP:  0.2587348898824309
+      RKP:  0.6109481915933528
+      RAP:  0.26033531188170367
+      RAR:  0.31931538780853846
+      LCY:  0.19462447208111955
+      LCR:  0.31330676491966813
+      LCP:  0.2587348898824309
+      LKP:  0.6109481915933528
+      LAP:  0.26033531188170367
+      LAR:  0.31931538780853846
       # WP/RSP/LSP/RWRR/LWRR ne sont plus fixes par la saturation de
       # l'actionneur mais par un plafond de COURSE ajoute dans hrp5_constants.py
       # (0.4 s minimum pour traverser le plus court debattement depuis q0). WP
@@ -328,27 +330,27 @@ policies:
       # deg (alignement sur halfSitting de mc_hrp5_p), ce qui rapproche le joint
       # de sa butee et reduit sa course mini de 27 a 7 deg. C'est le joint le
       # plus serre de l'espace d'action desormais.
-      WP:   0.5625
-      WR:   0.5625
-      WY:   0.15625
-      HY:   0.1716247162060515
-      HP:   0.1716247162060515
-      RSC:  0.3091190181094001
-      RSP:  0.6182380362188002
-      RSR:  0.3132832063085133
-      RSY:  0.7961783463671811
-      REP:  0.22975301148104224
-      RWRY: 1.081860805041801
-      RWRR: 1.081860805041801
-      RWRP: 0.45959403266385784
-      LSC:  0.3091190181094001
-      LSP:  0.6182380362188002
-      LSR:  0.3132832063085133
-      LSY:  0.7961783463671811
-      LEP:  0.22975301148104224
-      LWRY: 1.081860805041801
-      LWRR: 1.081860805041801
-      LWRP: 0.45959403266385784
+      WP:   0.4379050621825189
+      WR:   0.6940331655315369
+      WY:   0.36040711587809593
+      HY:   0.11532783860253415
+      HP:   0.08531258531258533
+      RSC:  0.2780094523213789
+      RSP:  0.3342491760757811
+      RSR:  0.433254109724698
+      RSY:  0.303030303030303
+      REP:  0.808080808080808
+      RWRY: 0.4978592054167083
+      RWRR: 1.0293148880105403
+      RWRP: 0.41172595520421607
+      LSC:  0.2780094523213789
+      LSP:  0.3342491760757811
+      LSR:  0.433254109724698
+      LSY:  0.303030303030303
+      LEP:  0.808080808080808
+      LWRY: 0.4978592054167083
+      LWRR: 1.0293148880105403
+      LWRP: 0.41172595520421607
       # Hors ref_joint_order, jamais lu par currentActionScaled (boucle sur
       # actionToDofMap uniquement) -- 0 explicite par coherence.
       RHDY: 0.0
@@ -376,40 +378,43 @@ policies:
     # hrp5p_mj_description/pdgains/PDgains_sim.dat -- gains PD REELS du robot,
     # PAS recopiees de RHPS1 (RHPS1 et HRP5P n'ont ni les memes joints ni les
     # memes actionneurs, cf. commentaire en tete du fichier).
+    # kp/kd des 33 joints actionnes = HRP5P_PD_GAINS de l'entrainement 05_10
+    # (identiques aux stiffness/damping de params/env.yaml du run
+    # 2026-10-04_17-45-40). Mains/HDY inchanges (hors policy).
     kp: &hrp5p_kp
-      RCY:  5400.0
-      RCR:  12925.0
-      RCP:  16000.0
-      RKP:  36000.0
-      RAP:  8000.0
-      RAR:  2244.0
-      LCY:  5400.0
-      LCR:  12925.0
-      LCP:  16000.0
-      LKP:  36000.0
-      LAP:  8000.0
-      LAR:  2244.0
-      WP:   8000.0
-      WR:   8000.0
-      WY:   8000.0
-      HY:   1311.0
-      HP:   1311.0
-      RSC:  3235.0
-      RSP:  3235.0
-      RSR:  5586.0
-      RSY:  1429.0
-      REP:  8705.0
-      RWRY: 1386.0
-      RWRR: 1386.0
-      RWRP: 1492.0
-      LSC:  3235.0
-      LSP:  3235.0
-      LSR:  5586.0
-      LSY:  1429.0
-      LEP:  8705.0
-      LWRY: 1386.0
-      LWRR: 1386.0
-      LWRP: 1492.0
+      RCY:  4500.0
+      RCR:  13000.0
+      RCP:  8000.0
+      RKP:  16000.0
+      RAP:  5500.0
+      RAR:  4500.0
+      LCY:  4500.0
+      LCR:  13000.0
+      LCP:  8000.0
+      LKP:  16000.0
+      LAP:  5500.0
+      LAR:  4500.0
+      WP:   9000.0
+      WR:   4800.0
+      WY:   3500.0
+      HY:   1200.0
+      HP:   1200.0
+      RSC:  5000.0
+      RSP:  8200.0
+      RSR:  4000.0
+      RSY:  4000.0
+      REP:  3000.0
+      RWRY: 2500.0
+      RWRR: 1600.0
+      RWRP: 1600.0
+      LSC:  5000.0
+      LSP:  8200.0
+      LSR:  4000.0
+      LSY:  4000.0
+      LEP:  3000.0
+      LWRY: 2500.0
+      LWRR: 1600.0
+      LWRP: 1600.0
       # PDgains_sim.dat lignes 26-53 (hors ref_joint_order) : RHDY/LHDY et les
       # 9 articulations de chaque main partagent toutes la meme valeur (693.0).
       RHDY: 693.0
@@ -433,39 +438,39 @@ policies:
       LMPIP: 693.0
       LMDIP: 693.0
     kd: &hrp5p_kd
-      RCY:  54.00
-      RCR:  103.40
-      RCP:  160.00
-      RKP:  360.00
-      RAP:  80.00
-      RAR:  22.44
-      LCY:  54.00
-      LCR:  103.40
-      LCP:  160.00
-      LKP:  360.00
-      LAP:  80.00
-      LAR:  22.44
-      WP:   80.00
-      WR:   80.00
-      WY:   80.00
-      HY:   13.11
-      HP:   13.11
-      RSC:  32.35
-      RSP:  32.35
-      RSR:  55.86
-      RSY:  10.83
-      REP:  87.05
-      RWRY: 13.87
-      RWRR: 13.87
-      RWRP: 11.19
-      LSC:  32.35
-      LSP:  32.35
-      LSR:  55.86
-      LSY:  10.83
-      LEP:  87.05
-      LWRY: 13.87
-      LWRR: 13.87
-      LWRP: 11.19
+      RCY:  90.00
+      RCR:  130.00
+      RCP:  170.00
+      RKP:  160.00
+      RAP:  82.00
+      RAR:  52.00
+      LCY:  90.00
+      LCR:  130.00
+      LCP:  170.00
+      LKP:  160.00
+      LAP:  82.00
+      LAR:  52.00
+      WP:   180.00
+      WR:   115.00
+      WY:   60.00
+      HY:   35.00
+      HP:   48.00
+      RSC:  60.00
+      RSP:  100.00
+      RSR:  70.00
+      RSY:  56.00
+      REP:  42.00
+      RWRY: 53.00
+      RWRR: 25.00
+      RWRP: 25.00
+      LSC:  60.00
+      LSP:  100.00
+      LSR:  70.00
+      LSY:  56.00
+      LEP:  42.00
+      LWRY: 53.00
+      LWRR: 25.00
+      LWRP: 25.00
       RHDY: 6.93
       LHDY: 6.93
       RTMP:  6.93
