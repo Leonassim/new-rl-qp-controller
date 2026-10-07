@@ -554,6 +554,22 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   // postureFeedforward_.
   bool postureRefVel_ = true;
 
+  // Joystick loss latch, see updateVelocityCommand(). mc_joystick_plugin's
+  // Joystick::connected only means "its fd was opened once": after an unplug
+  // read() fails every tick, the flag stays true and the last stick values
+  // stay frozen -- which is how the 2026-09-30 11:48 run kept vx = -0.3 for
+  // 100 s. joystickDevicePresent_ is refreshed every
+  // joystickCheckPeriod_ ticks (a stat on /dev/input/js0, the path the plugin
+  // hard-codes); once lost, the command stays at zero until the device is
+  // back AND the sticks differ from the values frozen at loss, i.e. the
+  // plugin is reading live events again (after a replug that takes its Reset
+  // button: it does not reopen the device by itself).
+  bool joystickLost_ = false;
+  bool joystickDevicePresent_ = true;
+  int joystickCheckCountdown_ = 0;
+  static constexpr int joystickCheckPeriod_ = 20; // 0.1 s at 200 Hz
+  Eigen::Vector4d joystickFrozen_ = Eigen::Vector4d::Zero();
+
   /** @brief Put back the velocity zeroAlphaOut() hid from mc_mujoco last
    *  tick, before the solver integrates from it again. Must run before
    *  mc_control::fsm::Controller::run(). */

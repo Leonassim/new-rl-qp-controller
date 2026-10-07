@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <filesystem>
 
 #include <mc_rtc/io_utils.h>
 
@@ -1129,6 +1130,43 @@ void NewRLQPController::updateVelocityCommand()
   {
     currentVelCmd_.setZero();
     return;
+  }
+
+  // ...but `connected` above is only "the plugin opened /dev/input/js0 once":
+  // see joystickLost_ in the header. Skipped in replay, where the device need
+  // not exist and the sticks come from the log.
+  if(!datastore().has("Replay::Log"))
+  {
+    if(--joystickCheckCountdown_ <= 0)
+    {
+      joystickCheckCountdown_ = joystickCheckPeriod_;
+      std::error_code ec;
+      joystickDevicePresent_ = std::filesystem::exists("/dev/input/js0", ec);
+    }
+    const Eigen::Vector2d ls = datastore().call<Eigen::Vector2d>("Joystick::Stick", joystickAnalogicInputs::L_STICK);
+    const Eigen::Vector2d rs = datastore().call<Eigen::Vector2d>("Joystick::Stick", joystickAnalogicInputs::R_STICK);
+    const Eigen::Vector4d sticks(ls(0), ls(1), rs(0), rs(1));
+    if(!joystickDevicePresent_ && !joystickLost_)
+    {
+      joystickLost_ = true;
+      joystickFrozen_ = sticks;
+      mc_rtc::log::error("[NewRLQPController] joystick device /dev/input/js0 gone -- velocity command forced to "
+                         "ZERO until it is back, the JoystickPlugin Reset button pressed and a stick moved");
+    }
+    if(joystickLost_)
+    {
+      const bool live = (sticks - joystickFrozen_).cwiseAbs().maxCoeff() > 1e-6;
+      if(joystickDevicePresent_ && live)
+      {
+        joystickLost_ = false;
+        mc_rtc::log::warning("[NewRLQPController] joystick live again -- velocity command re-enabled");
+      }
+      else
+      {
+        currentVelCmd_.setZero();
+        return;
+      }
+    }
   }
 
   Eigen::Vector3d targetCmd = Eigen::Vector3d::Zero();
