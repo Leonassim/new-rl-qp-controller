@@ -76,7 +76,8 @@ init: NewRLQPController_Initial
 # ARMER DEPUIS LA GUI, une main sur l'arret. Aucune de ces policies n'a encore
 # tourne, ni en simulation ni sur le robot.
 policy_path: [
-  # 05_10 (run mjlab exp1/2026-10-04_17-45-40) : meme observation (obs_format 8,
+  # hrp5_mirror (run mjlab exp1/2026-10-05_11-39-28, symetrie gauche/droite) :
+  # meme observation (obs_format 8,
   # historique 20) et meme q0. Entrainee avec le filtre PostureTask (K=1600,
   # Kv auto, dt 5 ms), le servo bas niveau iob du HRP5P (iob_servo, pas de
   # reference de vitesse, interpolation sur 2 pas de 1 ms) et un modele de
@@ -123,7 +124,7 @@ policies:
     joint_armature: 1.0
     policy_step_size: 0.01     # 100 Hz (10 ms) -- decimation 10 * timestep 0.001,
                                 # mjlab/tasks/velocity/velocity_env_cfg_hrp5.py
-    physics_step_size: 0.001   # pas physique de l'entrainement 05_10 (1 ms) ;
+    physics_step_size: 0.001   # pas physique de l'entrainement (1 ms) ;
                                # sert seulement a un avertissement dans configRL()
     pd_gains_ratio: 1.0
     posture_stiffness: 1600
@@ -301,9 +302,9 @@ policies:
     # les metadonnees action_scale de policy/hrp5_collisions.onnx (arrondies a 3
     # decimales) : les 33 entrees concordent.
     action_scale: &hrp5p_action_scale
-      # 05_10.onnx : valeurs pleine precision recopiees de
+      # hrp5_mirror.onnx : valeurs pleine precision recopiees de
       # actions.joint_pos.scale dans params/env.yaml du run
-      # 2026-10-04_17-45-40 (recoupees avec les metadonnees action_scale de
+      # 2026-10-05_11-39-28 (recoupees avec les metadonnees action_scale de
       # l'onnx, 3 decimales). Les commentaires WP/RWRR ci-dessous datent
       # d'une echelle plus ancienne.
       RCY:  0.19462447208111955
@@ -378,9 +379,9 @@ policies:
     # hrp5p_mj_description/pdgains/PDgains_sim.dat -- gains PD REELS du robot,
     # PAS recopiees de RHPS1 (RHPS1 et HRP5P n'ont ni les memes joints ni les
     # memes actionneurs, cf. commentaire en tete du fichier).
-    # kp/kd des 33 joints actionnes = HRP5P_PD_GAINS de l'entrainement 05_10
-    # (identiques aux stiffness/damping de params/env.yaml du run
-    # 2026-10-04_17-45-40). Mains/HDY inchanges (hors policy).
+    # kp/kd des 33 joints actionnes = HRP5P_PD_GAINS de l'entrainement
+    # hrp5_mirror (identiques aux stiffness/damping de params/env.yaml du run
+    # 2026-10-05_11-39-28). Mains/HDY inchanges (hors policy).
     kp: &hrp5p_kp
       RCY:  4500.0
       RCR:  13000.0
