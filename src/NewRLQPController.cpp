@@ -160,6 +160,7 @@ bool NewRLQPController::run()
   updateVelocityCommand();
   if(printLimits_) computeLimits();
   if(logImpactVel_) updateImpactVelocity();
+  applyVelCmdReplay();  // no-op unless vel_cmd_replay is set; overrides the joystick
 
   // Runaway guard. The feedforward/servo instability grows ~1.38 per tick and
   // saturates in under 400 ms, so no operator can catch it; disarm on the
@@ -207,6 +208,10 @@ bool NewRLQPController::run()
     // the finite-difference noise postureFeedforward_ risks: qdTarget_ is the
     // network's own action for velocity_action, not a derivative of q_rl.
     if(postureRefVel_) { setPostureRefVel(pt); }
+    else if(zeroVelRef_ && !postureFeedforward_)
+    {
+      pt->refVel(Eigen::VectorXd::Zero(robot().mb().nrDof() - postureDofOffset()));
+    }
     if(posturePassthrough_) { setPostureRefAccel(pt); }
     else if(postureFeedforward_)
     {
@@ -440,6 +445,39 @@ void NewRLQPController::initializeRobot()
   if(actuationDelaySteps_ > 0)
     mc_rtc::log::info("[NewRLQPController] actuation delay: {:.0f} ms ({} ticks at timeStep {:.4f}s)",
                       actuationDelayMs, actuationDelaySteps_, timeStep);
+
+  // Pitch bias on the IMU orientation, positive = forward. sva::RotY(theta)
+  // is the successor-frame rotation, so with the robot upright the policy sees
+  // projected_gravity = (sin theta, 0, -cos theta): leaning forward by theta.
+  const double imuPitchBiasDeg = config_("policies")[currentPolicyIndex]("imu_pitch_bias_deg", 0.0);
+  imuBias_ = sva::RotY(imuPitchBiasDeg * M_PI / 180.0);
+  if(imuPitchBiasDeg != 0.0)
+    mc_rtc::log::info("[NewRLQPController] IMU pitch bias: {:.2f} deg", imuPitchBiasDeg);
+
+  // Closed-loop command replay (sim only), see velCmdReplayT_ in the header.
+  velCmdReplayT_.clear();
+  velCmdReplayCmd_.clear();
+  velCmdReplayIdx_ = 0;
+  velCmdReplayElapsed_ = 0.0;
+  const std::string velCmdReplayPath = config_("vel_cmd_replay", std::string(""));
+  if(!velCmdReplayPath.empty())
+  {
+    const mc_rtc::Configuration replay(velCmdReplayPath);
+    velCmdReplayT_ = replay("t").operator std::vector<double>();
+    const std::vector<double> vx = replay("vx");
+    const std::vector<double> vy = replay("vy");
+    const std::vector<double> wz = replay("wz");
+    if(velCmdReplayT_.empty() || vx.size() != velCmdReplayT_.size() || vy.size() != velCmdReplayT_.size()
+       || wz.size() != velCmdReplayT_.size())
+    {
+      mc_rtc::log::error_and_throw<std::runtime_error>(
+          "[NewRLQPController] vel_cmd_replay {}: t/vx/vy/wz must be non-empty and of equal size", velCmdReplayPath);
+    }
+    for(size_t i = 0; i < velCmdReplayT_.size(); ++i) { velCmdReplayCmd_.emplace_back(vx[i], vy[i], wz[i]); }
+    mc_rtc::log::warning("[NewRLQPController] vel_cmd_replay: {} commands over {:.1f} s from {}, replayed from the "
+                         "arming (simulation only)",
+                         velCmdReplayT_.size(), velCmdReplayT_.back(), velCmdReplayPath);
+  }
   effortLimit_    = Eigen::VectorXd::Zero(nbActuatedJoints);
   velTargetLimitPerJoint_ = Eigen::VectorXd::Constant(nbActuatedJoints, 1e9);
   qdTarget_       = Eigen::VectorXd::Zero(nbActuatedJoints);
@@ -459,6 +497,21 @@ void NewRLQPController::initializeRobot()
   // default -- untested on hardware, simulation-only ablation for now.
   qpZeroVelOut_  = config_("policies")[currentPolicyIndex]("qp_zero_vel_out", false);
   alphaOutShadow_ = Eigen::VectorXd::Zero(nbActuatedJoints);
+
+  // Policy trained with a zero velocity reference, and whether the QP still
+  // gets one: see zeroVelRef_ in the header. zero_vel_ref overrides
+  // qp_zero_vel_out; both reset the GUI's posture refVel toggle on load.
+  zeroVelRef_ = config_("policies")[currentPolicyIndex]("zero_vel_ref", false);
+  postureRefVel_ = config_("policies")[currentPolicyIndex]("posture_ref_vel", true);
+  if(zeroVelRef_)
+  {
+    qpZeroVelOut_ = true;
+    mc_rtc::log::info("[NewRLQPController] zero_vel_ref: no desired velocity to the low-level PD (alpha out = 0)");
+  }
+  if(!postureRefVel_)
+  {
+    mc_rtc::log::info("[NewRLQPController] posture_ref_vel false: PostureTask refVel held at 0");
+  }
 
 
   // Velocity damper, off unless the policy declares velocity_damper_di.
@@ -691,7 +744,7 @@ void NewRLQPController::initializeRLObservation()
   {
     linVelDeep_[i]   = lv;
     angVelDeep_[i]   = av;
-    projGravDeep_[i] = pg;
+    projGravDeep_[i] = imuBias_ * pg;
     jointPosDeep_[i] = jp;
     jointVelDeep_[i] = jv;
     jointActDeep_[i] = ja;
@@ -1187,6 +1240,35 @@ void NewRLQPController::updateVelocityCommand()
     const double diff = targetCmd(i) - currentVelCmd_(i);
     currentVelCmd_(i) += std::abs(diff) > maxDelta ? std::copysign(maxDelta, diff) : diff;
   }
+}
+
+void NewRLQPController::applyVelCmdReplay()
+{
+  if(velCmdReplayCmd_.empty()) return;
+  if(!policyArmed_)
+  {
+    velCmdReplayIdx_ = 0;
+    velCmdReplayElapsed_ = 0.0;
+    currentVelCmd_.setZero();
+    return;
+  }
+  // Checked once armed, not at load: isSimulated() is only reliable once
+  // mc_mujoco has registered its datastore calls (see its doc comment). A
+  // recorded command sequence must never drive the real robot.
+  if(!isSimulated())
+  {
+    mc_rtc::log::error("[NewRLQPController] vel_cmd_replay ignored: not running under mc_mujoco");
+    velCmdReplayT_.clear();
+    velCmdReplayCmd_.clear();
+    currentVelCmd_.setZero();
+    return;
+  }
+  while(velCmdReplayIdx_ + 1 < velCmdReplayT_.size() && velCmdReplayT_[velCmdReplayIdx_ + 1] <= velCmdReplayElapsed_)
+  {
+    ++velCmdReplayIdx_;
+  }
+  currentVelCmd_ = velCmdReplayCmd_[velCmdReplayIdx_];
+  velCmdReplayElapsed_ += timeStep;
 }
 
 void NewRLQPController::updateImpactVelocity()

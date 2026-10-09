@@ -83,10 +83,15 @@ policy_path: [
   # reference de vitesse, interpolation sur 2 pas de 1 ms) et un modele de
   # frottement articulaire. NOUVEAUX gains PD (HRP5P_PD_GAINS) et nouvelle
   # action_scale, voir plus bas ; physique a 1 ms, decimation 10.
-  "@RL_POLICY_INSTALL_PREFIX@/hrp5_mirror.onnx",
+  "@RL_POLICY_INSTALL_PREFIX@/cop2.onnx",
 ]
 # Exige MainRobot: HRP5P dans mc_rtc.yaml (module mc_hrp5_p).
 default_policy_index: 0
+
+# Replay en boucle fermee (SIMULATION SEULEMENT, refuse sous RobotHardware) :
+# rejoue les velCmd d'un run reel, chronometres depuis l'armement, a la place
+# du joystick. Commenter pour revenir au joystick.
+#vel_cmd_replay: /home/leroyhi/exp_hrp5p/07_10/reel_velcmd.json
 
 policies:
   # index 0 (seule entree) : HRP5P, velocity-action -- premiere integration,
@@ -119,6 +124,13 @@ policies:
   - use_QP: true
     obs_format: 8
     velocity_action: true
+    # vel0qp : entrainee avec une reference de vitesse NULLE dans le PD bas
+    # niveau (tau = kp (q* - q) - kd qdot) : alpha out a 0 vers la simu / le
+    # robot (comme qp_zero_vel_out).
+    zero_vel_ref: true
+    # refVel de la PostureTask (vitesse desiree dans le QP). false = refVel a 0
+    # et integrale libre de la vitesse comme a l'entrainement.
+    posture_ref_vel: true
     use_torque_task: false
     qp_accel_task: false
     joint_armature: 1.0
@@ -163,6 +175,12 @@ policies:
     # non identifiee. A 0 vs 120 ms on saura si l'estimateur est biaise ou
     # s'il y a un vrai bug entre la PostureTask et la sortie du QP.
     actuation_delay_ms: 0.0
+
+    # Biais de pitch sur l'orientation IMU vue par la politique (degres,
+    # positif = vers l'avant) : avec le robot droit, projected_gravity vaut
+    # (sin, 0, -cos) de cet angle. N'affecte que l'observation, pas
+    # l'estimateur ni le QP.
+    imu_pitch_bias_deg: 0.0
 
     # effort_limit reels des HRP5P_ACTUATOR_* d'entrainement
     # (mjlab/asset_zoo/robots/hrp5/hrp5_constants.py), utilises pour deriver

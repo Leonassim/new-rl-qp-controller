@@ -320,6 +320,23 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   std::array<Eigen::VectorXd, V3_DEEP_HISTORY_SIZE> jointActDeep_;
   std::array<Eigen::Vector3d, V3_DEEP_HISTORY_SIZE> velCmdDeep_;
 
+  // Constant orientation offset (sva convention) applied to projected_gravity
+  // only in the *Deep_ observation; base_lin_vel is left untouched. Built
+  // from the per-policy key imu_pitch_bias_deg; identity when absent.
+  Eigen::Matrix3d imuBias_ = Eigen::Matrix3d::Identity();
+
+  // Closed-loop command replay, simulation only: feeds the velocity commands
+  // a real run logged (NewRLQPController_velCmd), timed from the arming, so an
+  // mc_mujoco run gets exactly that run's operator inputs while the policy
+  // closes the loop on the simulated state. Loaded from the top-level key
+  // vel_cmd_replay (JSON with t, vx, vy, wz; t in s since arming). Refused on
+  // hardware, see applyVelCmdReplay().
+  std::vector<double> velCmdReplayT_;
+  std::vector<Eigen::Vector3d> velCmdReplayCmd_;
+  size_t velCmdReplayIdx_ = 0;
+  double velCmdReplayElapsed_ = 0.0;
+  void applyVelCmdReplay();
+
   Eigen::Vector3d currentVelCmd_ = Eigen::Vector3d::Zero();
 
   // =========================================================================
@@ -553,6 +570,16 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   // setPostureFeedforward(), which writes its own refVel under
   // postureFeedforward_.
   bool postureRefVel_ = true;
+
+  // Per-policy key zero_vel_ref: the policy was trained with a ZERO velocity
+  // reference in its low-level PD (mjlab IdealPdActuator with velocity_target
+  // 0, i.e. tau = kp (q* - q) - kd qdot), so no desired velocity may reach
+  // that PD: forces qpZeroVelOut_ on (alpha_ref = 0 to mc_mujoco / the robot).
+  // The QP's own PostureTask refVel is a separate choice, per-policy key
+  // posture_ref_vel (default true, sets postureRefVel_); with it off, q_rl
+  // switches to the free-running integral of training rather than re-seeding
+  // from the QP output, which needs refVel (utils.cpp, velocity_action branch).
+  bool zeroVelRef_ = false;
 
   // Joystick loss latch, see updateVelocityCommand(). mc_joystick_plugin's
   // Joystick::connected only means "its fd was opened once": after an unplug

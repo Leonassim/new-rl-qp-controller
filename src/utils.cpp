@@ -146,7 +146,14 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
         // would be an output N ticks old, pulling back): the free-running
         // integral stays there, as it does in bypass, where the previous
         // output IS the previous q_rl anyway.
-        const bool seedFromQP = ctl.useQP() && !ctl.posturePassthrough_ && ctl.actuationDelaySteps_ == 0;
+        //
+        // Nor under zero_vel_ref with posture_ref_vel off: refVel is then held
+        // at zero and re-seeding would stall the joints (see above), so it gets
+        // the free-running integral of training, whose windup the anti-windup
+        // clamp below bounds around the measurement. With refVel on, zero_vel_ref
+        // keeps the re-seeded integral: it only zeroes the low-level PD's alpha.
+        const bool seedFromQP = ctl.useQP() && !ctl.posturePassthrough_ && ctl.actuationDelaySteps_ == 0
+                                && !(ctl.zeroVelRef_ && !ctl.postureRefVel_);
         auto & rr = ctl.realRobot(ctl.robots()[0].name());
         for (int j = 0; j < ctl.currentAction.size(); ++j) {
             int i = ctl.actionToDofMap[j];
@@ -650,7 +657,9 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       // Gyro, not bodyVelW().angular() -- see case 0 above. This is the path the
       // HRP5P policy actually takes (obs_format 8 falls through to this body).
       ctl.angVelDeep_[0]   = rr.bodySensor("Accelerometer").angularVelocity();
-      ctl.projGravDeep_[0] = R_w2b * Eigen::Vector3d(0, 0, -1);
+      // imuBias_: imu_pitch_bias_deg from the policy block (identity if absent).
+      // Only the perceived tilt is biased; base_lin_vel stays MCWaiko's.
+      ctl.projGravDeep_[0] = ctl.imuBias_ * R_w2b * Eigen::Vector3d(0, 0, -1);
       ctl.velCmdDeep_[0]   = ctl.currentVelCmd_;
 
       // jointActDeep_[0] = raw NN output from the previous step (before scaling)
