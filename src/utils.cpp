@@ -266,6 +266,17 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
               ctl.currentAction(j) = ctl.currentActionScaled(i) / scale;
             }
       }
+        if(ctl.actionFilterHz_ > 0.0)
+        {
+          const double a = 1.0 - std::exp(-2.0 * M_PI * ctl.actionFilterHz_ * ctl.policyStepSize);
+          if(!ctl.qFiltInit_ || ctl.qFilt_.size() != ctl.q_rl.size())
+          {
+            ctl.qFilt_ = ctl.q_rl;
+            ctl.qFiltInit_ = true;
+          }
+          ctl.qFilt_ += a * (ctl.q_rl - ctl.qFilt_);
+          ctl.q_rl = ctl.qFilt_;
+        }
       }
   }
   catch(const std::exception & e)

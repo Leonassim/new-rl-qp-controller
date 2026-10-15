@@ -360,6 +360,15 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   double commandFilterTau_ = 0.0;
   Eigen::Vector3d cmdFilt_ = Eigen::Vector3d::Zero();
 
+  /** First-order low-pass on the position target sent to the QP, `action_filter_hz`
+   *  per policy (0, the default, is off). The real robot holds a 5.5 Hz limit cycle
+   *  at rest after walking (2026-10-15 logs): the policy's action and the joints
+   *  oscillate together, the joints 1.7x the target. Applied after the executed
+   *  action is fed back, so the observation keeps the raw action training saw. */
+  double actionFilterHz_ = 0.0;
+  bool qFiltInit_ = false;
+  Eigen::VectorXd qFilt_;
+
   // =========================================================================
   // Gait phase clock (V4 observation only)
   // =========================================================================

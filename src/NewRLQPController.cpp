@@ -357,6 +357,12 @@ void NewRLQPController::initializeRobot()
   {
     mc_rtc::log::info("[NewRLQPController] commande filtree, tau {} s", commandFilterTau_);
   }
+  actionFilterHz_ = config_("policies")[currentPolicyIndex]("action_filter_hz", 0.0);
+  qFiltInit_ = false;
+  if(actionFilterHz_ > 0.0)
+  {
+    mc_rtc::log::info("[NewRLQPController] cible filtree passe-bas, {} Hz", actionFilterHz_);
+  }
   if(commandAsSign_)
   {
     mc_rtc::log::info("[NewRLQPController] commande envoyee au reseau en SIGNE "
@@ -761,6 +767,7 @@ void NewRLQPController::initializeRLObservation()
     gaitPhase_[i].setZero();
   }
   cmdFilt_ = obsVelCmd();  // training resets the filter to the raw command
+  qFiltInit_ = false;
   gaitPhase_value_ = 0.0;
 
   // Zero, not the current demand: at init the target is the measured posture, so
