@@ -366,6 +366,7 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
    *  oscillate together, the joints 1.7x the target. Applied after the executed
    *  action is fed back, so the observation keeps the raw action training saw. */
   double actionFilterHz_ = 0.0;
+  double actionFilterHzOverride_ = -1.0;  ///< GUI value, survives policy reloads; -1 = yaml
   bool qFiltInit_ = false;
   Eigen::VectorXd qFilt_;
 

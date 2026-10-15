@@ -357,7 +357,9 @@ void NewRLQPController::initializeRobot()
   {
     mc_rtc::log::info("[NewRLQPController] commande filtree, tau {} s", commandFilterTau_);
   }
-  actionFilterHz_ = config_("policies")[currentPolicyIndex]("action_filter_hz", 0.0);
+  actionFilterHz_ = actionFilterHzOverride_ >= 0.0
+                      ? actionFilterHzOverride_
+                      : static_cast<double>(config_("policies")[currentPolicyIndex]("action_filter_hz", 0.0));
   qFiltInit_ = false;
   if(actionFilterHz_ > 0.0)
   {
@@ -1538,6 +1540,17 @@ void NewRLQPController::addGui()
         postureDampingOverride_ = v;
         auto pt = getPostureTask(robot().name());
         if(pt) pt->damping(v);
+      })
+  );
+
+  gui()->addElement({"NewRLQPController", "Action filter"},
+    mc_rtc::gui::NumberInput("Low-pass cutoff (Hz, 0 = off)",
+      [this]() { return actionFilterHz_; },
+      [this](double v) {
+        actionFilterHzOverride_ = std::max(0.0, v);
+        actionFilterHz_ = actionFilterHzOverride_;
+        qFiltInit_ = false;
+        mc_rtc::log::warning("[NewRLQPController] target low-pass = {} Hz (GUI override)", actionFilterHz_);
       })
   );
 
