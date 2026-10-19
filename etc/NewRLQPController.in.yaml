@@ -139,7 +139,7 @@ policy_path: [
   # index 13 : index 11 + bas niveau lent et souplesse cachee randomises (2026-10-19).
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_bwc_plant_c28000.onnx",
   # index 14 : index 13 + balancement humain du haut du corps (2026-10-20).
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_bwc_upper_swing_29999.onnx",
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_bwc_upper_swing_30500.onnx",
 ]
 # Stays 0: the real-robot entry is the only one with hardware time behind it.
 # Back to 0 on 2026-08-21 for a real-robot session. Index 0 is the only entry
@@ -3163,11 +3163,11 @@ policies:
       R_ANKLE_P:      10
 
   # index 14 : index 13 + balancement humain du haut du corps (2026-10-20).
-  # Run 2026-10-19_22-52-35, model_29999 : l'index 13 affine sur docs/bwc_motion_v3_upper_a1.npz (BWC, jambes
+  # Run 2026-10-20_05-59-48, model_30500 (suite de 2026-10-19_22-52-35) : l'index 13 affine sur docs/bwc_motion_v3_upper_a1.npz (BWC, jambes
   # et appuis inchanges, + oscillation 100STYLE Neutral des bras et du buste calee sur les pas,
-  # alpha 1), sans penalite de couple. Chutes sous poussee x0.6 : 10/80 comme l'index 13.
-  # Couples en simu au-dessus de l'index 13 : hanche roulis p99 59 contre 49 N.m, cheville
-  # tangage p99 a la limite (65 contre 57), impacts p99 798 contre 729 N. mc_mujoco 6/6.
+  # alpha 1), sans penalite de couple, 1500 iterations. Chutes sous poussee x0.6 : 10/80 comme
+  # l'index 13. Couples en simu : genou p99 69 contre 71 N.m, hanche roulis p99 56 contre 49,
+  # cheville tangage p99 a la limite (65 contre 57), impacts p99 716 contre 729 N.
   # Meme bloc que l'index 13, avec sa propre arm_posture.
   - use_QP: *use_QP
     # Politique entrainee en DIRECTION : elle n'a vu que -1, 0, +1.
@@ -3177,41 +3177,41 @@ policies:
     command_filter_tau: 0.3
     # Arming: min-jerk ramp to the policy's own standing fixed point, then a
     # settle hold, first inference seeded with the matching last action.
-    # Measured in mc_mujoco (index 14 = model_29999, command 0, 3.5-5.5 s after
+    # Measured in mc_mujoco (index 14 = model_30500, command 0, 3.5-5.5 s after
     # arming, target std ? deg).
     arm_ramp_speed: 0.1
     arm_settle_time: 0.5
     arm_posture:
-      L_CROTCH_Y: 0.01947
-      L_CROTCH_R: 0.03663
-      L_CROTCH_P: -0.15137
-      L_KNEE_P: 0.47242
-      L_ANKLE_R: -0.03173
-      L_ANKLE_P: -0.30888
-      CHEST_Y: -0.00586
-      CHEST_P: 0.05257
-      R_CROTCH_Y: -0.00993
-      R_CROTCH_R: -0.05179
-      R_CROTCH_P: -0.15508
-      R_KNEE_P: 0.49034
-      R_ANKLE_R: 0.03131
-      R_ANKLE_P: -0.32293
-      HEAD_Y: -0.02080
-      HEAD_P: 0.03103
-      L_SHOULDER_P: 0.22946
-      L_SHOULDER_R: 0.14428
-      L_SHOULDER_Y: -0.05039
-      L_ELBOW_P: -0.55977
-      L_ELBOW_Y: -0.03391
-      L_WRIST_R: 0.03319
-      L_WRIST_Y: -0.03029
-      R_SHOULDER_P: 0.22846
-      R_SHOULDER_R: -0.13409
-      R_SHOULDER_Y: 0.01768
-      R_ELBOW_P: -0.59660
-      R_ELBOW_Y: 0.01511
-      R_WRIST_R: -0.03022
-      R_WRIST_Y: 0.07638
+      L_CROTCH_Y: 0.02764
+      L_CROTCH_R: 0.02881
+      L_CROTCH_P: -0.14873
+      L_KNEE_P: 0.46394
+      L_ANKLE_R: -0.03418
+      L_ANKLE_P: -0.30746
+      CHEST_Y: -0.00521
+      CHEST_P: 0.04294
+      R_CROTCH_Y: 0.00369
+      R_CROTCH_R: -0.04322
+      R_CROTCH_P: -0.15098
+      R_KNEE_P: 0.47409
+      R_ANKLE_R: 0.03402
+      R_ANKLE_P: -0.31407
+      HEAD_Y: -0.01219
+      HEAD_P: 0.00788
+      L_SHOULDER_P: 0.22053
+      L_SHOULDER_R: 0.13584
+      L_SHOULDER_Y: -0.03780
+      L_ELBOW_P: -0.55187
+      L_ELBOW_Y: -0.02262
+      L_WRIST_R: 0.01692
+      L_WRIST_Y: -0.03702
+      R_SHOULDER_P: 0.24138
+      R_SHOULDER_R: -0.13033
+      R_SHOULDER_Y: 0.01730
+      R_ELBOW_P: -0.57696
+      R_ELBOW_Y: 0.01180
+      R_WRIST_R: -0.01276
+      R_WRIST_Y: 0.07734
     obs_format: 0
     policy_step_size: *policy_step_size
     physics_step_size: *physics_step_size
