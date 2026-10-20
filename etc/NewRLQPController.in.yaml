@@ -1433,7 +1433,10 @@ policies:
     max_yaw: *max_yaw
     joystick_deadzone: *joystick_deadzone
     vel_ramp_rate: *vel_ramp_rate
-    runaway_disarm_vel: 4.0
+    # 6.0 here, 4.0 elsewhere (Leo, 2026-10-20): the human style flexes the swing
+    # knee at 4.1 rad/s in mc_mujoco and 4.0 disarmed it mid-step. The runaway it
+    # guards grows x1.38 per 5 ms tick: 6 trips ~6 ms later, under the 8 rad/s clamp.
+    runaway_disarm_vel: 6.0
     # Echelles du run de tracking, tirees des metadonnees de l'ONNX. Le genou
     # vaut 0.0081 ici contre 0.0075 sur l'index 1 : ne pas recopier l'autre bloc.
     action_scale:
