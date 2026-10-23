@@ -93,6 +93,10 @@ policy_path: [
   # action_scale que push7 (metadonnees de l'onnx et bloc actions du env.yaml
   # identiques), meme chaine iob / PostureTask a l'entrainement.
   "@RL_POLICY_INSTALL_PREFIX@/push11.onnx",
+  # index 3 : push_qmes_retarget (run 2026-10-22_19-21-07), meme famille que
+  # push7 mais entrainee avec integrate_from_measured (cible re-seedee sur la
+  # position mesuree a chaque tick QP), cf. son bloc en fin de liste.
+  "@RL_POLICY_INSTALL_PREFIX@/push_qmes_retarget.onnx",
 ]
 # Exige MainRobot: HRP5P dans mc_rtc.yaml (module mc_hrp5_p).
 default_policy_index: 0
@@ -506,6 +510,12 @@ policies:
   - *hrp5p_push_family
   # index 2 : push11 -- memes reglages que push7 (index 0).
   - *hrp5p_push_family
+  # index 3 : push_qmes_retarget -- memes reglages que push7 (env.yaml du run
+  # identique hors action_scale, lue dans l'onnx, et poids de reward), plus
+  # integrate_from_measured: q_rl = q_mesure + v * 5 ms a chaque tick, sous QP
+  # comme en bypass (prioritaire sur qp_reseed_integral).
+  - <<: *hrp5p_push_family
+    integrate_from_measured: true
 
 use_async_inference: false
 log_timing: true

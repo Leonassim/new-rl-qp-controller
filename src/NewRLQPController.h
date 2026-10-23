@@ -600,6 +600,12 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   // seed_lag 0) is the re-seeded form, whose realised velocity is only
   // K dt / Kv = 0.10 x the command -- hence the x11 action scale of those runs.
   int qpReseedIntegral_ = -1;
+  // Per-policy key integrate_from_measured (default false), mjlab's
+  // IdealPdActuatorCfg.integrate_from_measured: q_rl is re-seeded every tick
+  // on the MEASURED joint position, q_rl = q + v * dt, instead of the QP output
+  // or its own previous value. Takes precedence over qp_reseed_integral, under
+  // the QP and in bypass alike (mjlab overrides the seed for every env).
+  bool integrateFromMeasured_ = false;
   /** Whether q_rl is re-seeded on the QP output (velocity_action under the
    *  QP), from qpReseedIntegral_ / zeroVelRef_ / postureRefVel_. Used by
    *  utils.cpp and logged as NewRLQPController_reseedQRl. */

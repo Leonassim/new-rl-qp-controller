@@ -529,6 +529,11 @@ void NewRLQPController::initializeRobot()
     mc_rtc::log::info("[NewRLQPController] qp_reseed_integral: {}", qpReseedIntegral_ ? "re-seeded on QP output"
                                                                                        : "free-running");
   }
+  integrateFromMeasured_ = config_("policies")[currentPolicyIndex]("integrate_from_measured", false);
+  if(integrateFromMeasured_)
+  {
+    mc_rtc::log::info("[NewRLQPController] integrate_from_measured: q_rl re-seeded on the measured joint position");
+  }
   postureRefVel_ = config_("policies")[currentPolicyIndex]("posture_ref_vel", true);
   if(zeroVelRef_)
   {
@@ -1611,6 +1616,7 @@ void NewRLQPController::addLog()
   logger().addLogEntry("NewRLQPController_postureRefVel",    [this]() { return postureRefVel_; });
   logger().addLogEntry("NewRLQPController_zeroVelRef",       [this]() { return zeroVelRef_; });
   logger().addLogEntry("NewRLQPController_reseedQRl",        [this]() { return reseedQRl(); });
+  logger().addLogEntry("NewRLQPController_integrateFromMeasured", [this]() { return integrateFromMeasured_; });
   logger().addLogEntry("NewRLQPController_velCmd",           [this]() { return currentVelCmd_; });
 
   if(logImpactVel_)

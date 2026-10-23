@@ -155,19 +155,27 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
         // qp_reseed_integral, when set, overrides that choice (see its doc in
         // the header): true reproduces mjlab's posture_task_filter without
         // refVel exactly, together with that run's x11 action scale.
+        //
+        // integrate_from_measured (mjlab IdealPdActuatorCfg, same name) seeds on
+        // the measured position instead, whatever the path: q_rl = q + v * dt,
+        // with dt = ctl.timeStep = posture_task_dt (5 ms) as in training. The
+        // target then never leads the joint by more than v * dt.
         const bool seedFromQP = ctl.reseedQRl();
         auto & rr = ctl.realRobot(ctl.robots()[0].name());
         for (int j = 0; j < ctl.currentAction.size(); ++j) {
             int i = ctl.actionToDofMap[j];
-            if(seedFromQP)
+            const int mcIdx = static_cast<int>(rr.jointIndexByName(ctl.jointNames[i]));
+            const double q = rr.mbc().q[mcIdx][0];
+            if(ctl.integrateFromMeasured_)
+            {
+              ctl.q_rl(i) = q;
+            }
+            else if(seedFromQP)
             {
               const auto & qOut = ctl.robot().mbc().q[ctl.robot().jointIndexByName(ctl.jointNames[i])];
               if(!qOut.empty()) { ctl.q_rl(i) = qOut[0]; }
             }
             ctl.q_rl(i) += ctl.currentActionScaled(i) * ctl.timeStep;
-
-            const int mcIdx = static_cast<int>(rr.jointIndexByName(ctl.jointNames[i]));
-            const double q = rr.mbc().q[mcIdx][0];
 
             // Anti-windup, IdealPdActuator's
             //   max_dev = force_limit / stiffness
