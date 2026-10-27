@@ -2806,6 +2806,7 @@ policies:
     # arming, target std ? deg).
     arm_ramp_speed: 0.1
     arm_settle_time: 0.5
+    arm_blend_time: 1.0
     arm_posture:
       L_CROTCH_Y: 0.01366
       L_CROTCH_R: 0.03102
@@ -3204,6 +3205,7 @@ policies:
     # arming, target std ? deg).
     arm_ramp_speed: 0.1
     arm_settle_time: 0.5
+    arm_blend_time: 1.0
     arm_posture:
       L_CROTCH_Y: 0.00865
       L_CROTCH_R: 0.02666
