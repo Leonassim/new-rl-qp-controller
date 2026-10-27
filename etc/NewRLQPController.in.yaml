@@ -131,6 +131,8 @@ policy_path: [
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_bwc_plant_tors_p29499.onnx",
   # index 14 : index 12 durci, poussees x0.8 -- style humain aussi stable que l'index 3 en simu (2026-10-27).
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_bwc_human_lite_push8_h43500.onnx",
+  # index 15 : style humain, etape 1 vers le complet (mid1) -- plus humain que l'index 14 (2026-10-27).
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_bwc_human_mid1_m44750.onnx",
 ]
 # Stays 0: the real-robot entry is the only one with hardware time behind it.
 # Back to 0 on 2026-08-21 for a real-robot session. Index 0 is the only entry
@@ -3237,6 +3239,207 @@ policies:
       R_ELBOW_Y: 0.02488
       R_WRIST_R: -0.04153
       R_WRIST_Y: 0.06786
+    obs_format: 0
+    policy_step_size: *policy_step_size
+    physics_step_size: *physics_step_size
+    pd_gains_ratio: *pd_gains_ratio
+    kp: *kp
+    kd: *kd
+    ref_joint_order: *ref_joint_order
+    q0: *q0
+    max_vel_x: *max_vel_x
+    max_vel_y: *max_vel_y
+    max_yaw: *max_yaw
+    joystick_deadzone: *joystick_deadzone
+    vel_ramp_rate: *vel_ramp_rate
+    runaway_disarm_vel: 4.0
+    # Echelles du run de tracking, tirees des metadonnees de l'ONNX. Le genou
+    # vaut 0.0081 ici contre 0.0075 sur l'index 1 : ne pas recopier l'autre bloc.
+    action_scale:
+      CHEST_Y:      0.00699999975
+      CHEST_P:      0.00699999975
+      HEAD_Y:       0.007
+      HEAD_P:       0.007
+      L_SHOULDER_P: 0.00699999975
+      L_SHOULDER_R: 0.00699999975
+      L_SHOULDER_Y: 0.00699999975
+      L_ELBOW_P:    0.00699999975
+      L_ELBOW_Y:    0.00699999975
+      L_WRIST_R:    0.00699999975
+      L_WRIST_Y:    0.00699999975
+      R_SHOULDER_P: 0.00699999975
+      R_SHOULDER_R: 0.00699999975
+      R_SHOULDER_Y: 0.00699999975
+      R_ELBOW_P:    0.00699999975
+      R_ELBOW_Y:    0.00699999975
+      R_WRIST_R:    0.00699999975
+      R_WRIST_Y:    0.00699999975
+      L_CROTCH_Y:   0.0262499996
+      L_CROTCH_R:   0.0749999983
+      L_CROTCH_P:   0.104999999
+      L_KNEE_P:     0.0525
+      L_ANKLE_R:    0.0675000017
+      L_ANKLE_P:    0.097500002
+      R_CROTCH_Y:   0.0262499996
+      R_CROTCH_R:   0.0749999983
+      R_CROTCH_P:   0.104999999
+      R_KNEE_P:     0.0525
+      R_ANKLE_R:    0.0675000017
+      R_ANKLE_P:    0.097500002
+    vel_target_limit_per_joint:
+      CHEST_Y:          8.0
+      CHEST_P:          8.0
+      HEAD_Y:           8.0
+      HEAD_P:           8.0
+      L_SHOULDER_P:     8.0
+      L_SHOULDER_R:     8.0
+      L_SHOULDER_Y:     8.0
+      L_ELBOW_P:        8.0
+      L_ELBOW_Y:        8.0
+      L_WRIST_R:        8.0
+      L_WRIST_Y:        8.0
+      R_SHOULDER_P:     8.0
+      R_SHOULDER_R:     8.0
+      R_SHOULDER_Y:     8.0
+      R_ELBOW_P:        8.0
+      R_ELBOW_Y:        8.0
+      R_WRIST_R:        8.0
+      R_WRIST_Y:        8.0
+      L_CROTCH_Y:       8.0
+      L_CROTCH_R:       8.0
+      L_CROTCH_P:       8.0
+      L_KNEE_P:         8.0
+      L_ANKLE_R:        8.0
+      L_ANKLE_P:        8.0
+      R_CROTCH_Y:       8.0
+      R_CROTCH_R:       8.0
+      R_CROTCH_P:       8.0
+      R_KNEE_P:         8.0
+      R_ANKLE_R:        8.0
+      R_ANKLE_P:        8.0
+    # Required by the damper, and their absence is a hard throw, not a default:
+    # a joint left at lo == hi would be skipped silently, i.e. one joint on a
+    # different plant from the other 29. Missing them is why switching to this
+    # index failed outright instead of misbehaving.
+    # joint_limits : etait l'ancre *joint_limits, definie dans un bloc supprime
+    # le 2026-09-10. Recopiee ici pour que ce bloc soit autonome.
+    joint_limits:
+      CHEST_Y:        [ -0.52360,   0.52360]
+      CHEST_P:        [ -0.52360,   1.22173]
+      HEAD_Y:         [ -3.14159,   3.14159]
+      HEAD_P:         [ -0.52360,   0.52360]
+      L_SHOULDER_P:   [ -3.14159,   3.14159]
+      L_SHOULDER_R:   [ -0.69813,   1.83260]
+      L_SHOULDER_Y:   [ -3.14159,   3.14159]
+      L_ELBOW_P:      [ -2.35619,   0.00000]
+      L_ELBOW_Y:      [ -3.14159,   3.14159]
+      L_WRIST_R:      [ -0.87267,   1.57080]
+      L_WRIST_Y:      [ -1.57080,   1.57080]
+      R_SHOULDER_P:   [ -3.14159,   3.14159]
+      R_SHOULDER_R:   [ -1.83260,   0.69813]
+      R_SHOULDER_Y:   [ -3.14159,   3.14159]
+      R_ELBOW_P:      [ -2.35619,   0.00000]
+      R_ELBOW_Y:      [ -3.14159,   3.14159]
+      R_WRIST_R:      [ -1.57080,   0.87267]
+      R_WRIST_Y:      [ -1.57080,   1.57080]
+      L_CROTCH_Y:     [ -1.57080,   1.57080]
+      L_CROTCH_R:     [ -0.62832,   0.62832]
+      L_CROTCH_P:     [ -1.91986,   0.61086]
+      L_KNEE_P:       [  0.00000,   2.44346]
+      L_ANKLE_R:      [ -0.52360,   0.52360]
+      L_ANKLE_P:      [ -1.57080,   0.69813]
+      R_CROTCH_Y:     [ -1.57080,   1.57080]
+      R_CROTCH_R:     [ -0.62832,   0.62832]
+      R_CROTCH_P:     [ -1.91986,   0.61086]
+      R_KNEE_P:       [  0.00000,   2.44346]
+      R_ANKLE_R:      [ -0.52360,   0.52360]
+      R_ANKLE_P:      [ -1.57080,   0.69813]
+    # velocity_limits : etait l'ancre *velocity_limits, definie dans un bloc supprime
+    # le 2026-09-10. Recopiee ici pour que ce bloc soit autonome.
+    velocity_limits:
+      CHEST_Y:        6
+      CHEST_P:        6
+      HEAD_Y:         4
+      HEAD_P:         4
+      L_SHOULDER_P:   6
+      L_SHOULDER_R:   6
+      L_SHOULDER_Y:   6
+      L_ELBOW_P:      6
+      L_ELBOW_Y:      6
+      L_WRIST_R:      6
+      L_WRIST_Y:      6
+      R_SHOULDER_P:   6
+      R_SHOULDER_R:   6
+      R_SHOULDER_Y:   6
+      R_ELBOW_P:      6
+      R_ELBOW_Y:      6
+      R_WRIST_R:      6
+      R_WRIST_Y:      6
+      L_CROTCH_Y:     8
+      L_CROTCH_R:     8
+      L_CROTCH_P:     8
+      L_KNEE_P:       10
+      L_ANKLE_R:      10
+      L_ANKLE_P:      10
+      R_CROTCH_Y:     8
+      R_CROTCH_R:     8
+      R_CROTCH_P:     8
+      R_KNEE_P:       10
+      R_ANKLE_R:      10
+      R_ANKLE_P:      10
+
+  # index 15 : style humain, etape 1 vers le complet (mid1) -- plus humain que l'index 14 (2026-10-27).
+  # Run 2026-10-27_11-58-58, model_44750 : depuis l'index 14 (model_43500), meme recette (modes de tangage et
+  # de torsion, correction d'armement, poussees x0.8) + garde de vitesse articulaire, reference
+  # bwc_motion_v3_human_mid1.npz (un tiers du chemin vers short15r, arriere du BWC).
+  # Simu, plant a deux modes : poussees x0.6 20 et 18/80 (index 3 : 30 et 35), arriere 6/16 (index 3 :
+  # 8-10) ; sans poussee 1/80 ; nominal + poussees 9/80 (index 3 : 10-13) ; vibration debout 4.7 deg/s
+  # (index 3 : 7) ; mc_mujoco 0/12 avec 1 s de demarrage progressif. Pied leve 8.3 cm (index 14 : 6.5),
+  # genou vol 53 deg, 0.8 pas/s ; pose max 0.205 m/s (BWC 0.21), impact p99 671 N, hanche max 116 N.m.
+  - use_QP: *use_QP
+    # Politique entrainee en DIRECTION : elle n'a vu que -1, 0, +1.
+    command_as_sign: true
+    # Same first-order filter as training (RHPS1_CMD_TAU). Without it the policy
+    # gets the 0 -> 1 step it never saw and jolts at the joystick push.
+    command_filter_tau: 0.3
+    # Arming: min-jerk ramp to the policy's own standing fixed point, then a
+    # settle hold, first inference seeded with the matching last action.
+    # Measured in mc_mujoco (index 15 = model_44750, command 0, 3.5-5.5 s after
+    # arming, target std ? deg).
+    arm_ramp_speed: 0.1
+    arm_settle_time: 0.5
+    arm_blend_time: 1.0
+    arm_posture:
+      L_CROTCH_Y: 0.01296
+      L_CROTCH_R: 0.01844
+      L_CROTCH_P: -0.18543
+      L_KNEE_P: 0.48829
+      L_ANKLE_R: -0.01768
+      L_ANKLE_P: -0.31043
+      CHEST_Y: 0.00463
+      CHEST_P: 0.04151
+      R_CROTCH_Y: -0.00960
+      R_CROTCH_R: -0.03508
+      R_CROTCH_P: -0.16114
+      R_KNEE_P: 0.48056
+      R_ANKLE_R: 0.03754
+      R_ANKLE_P: -0.31076
+      HEAD_Y: 0.01720
+      HEAD_P: -0.06208
+      L_SHOULDER_P: 0.29596
+      L_SHOULDER_R: 0.15708
+      L_SHOULDER_Y: -0.06374
+      L_ELBOW_P: -0.57258
+      L_ELBOW_Y: 0.03018
+      L_WRIST_R: -0.00196
+      L_WRIST_Y: -0.02122
+      R_SHOULDER_P: 0.28537
+      R_SHOULDER_R: -0.14838
+      R_SHOULDER_Y: 0.03379
+      R_ELBOW_P: -0.57243
+      R_ELBOW_Y: -0.02071
+      R_WRIST_R: -0.00418
+      R_WRIST_Y: 0.06021
     obs_format: 0
     policy_step_size: *policy_step_size
     physics_step_size: *physics_step_size
