@@ -464,6 +464,14 @@ void NewRLQPController::initializeRobot()
     mc_rtc::log::info("[NewRLQPController] arming: min-jerk ramp to arm_posture ({:.2f} rad/s mean), "
                       "{:.2f} s settle, first inference seeded", armRampSpeed_, armSettleTime_);
   }
+  // arm_blend_time: the first policy targets are blended in from the held posture,
+  // so a vivid first move cannot trip the runaway guard at arming.
+  armBlendTime_ = polCfg("arm_blend_time", 0.0);
+  if(const char * bl = std::getenv("RLQP_BENCH_ARM_BLEND_S")) { armBlendTime_ = std::atof(bl); }
+  if(armBlendTime_ > 0.0)
+  {
+    mc_rtc::log::info("[NewRLQPController] arming: {:.2f} s soft start", armBlendTime_);
+  }
 
   kp_ = pdGainsRatio_ * kpBase_;
   kd_ = sqrt(pdGainsRatio_) * kdBase_;

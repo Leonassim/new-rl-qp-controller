@@ -56,6 +56,8 @@ void utils::start_rl_state(mc_control::fsm::Controller & ctl_, std::string state
   rampSteps_ = rampDuration > 0.0 ? rampTotalSteps_ : 0;
   settleSteps_ = armSeq ? static_cast<int>(ctl.armSettleTime_ / ctl.timeStep) : 0;
   seedAction_ = armSeq && !ctl.velocityAction_;
+  blendTotal_ = static_cast<int>(ctl.armBlendTime_ / ctl.policyStepSize);
+  blendSteps_ = blendTotal_;
   mc_rtc::log::info(
       "[NewRLQPController::utils] go-to-init ramp: max offset {:.3f} rad, duration {:.2f} s{}",
       maxOffset, rampDuration, armSeq ? " (min-jerk to arm_posture, then settle)" : "");
@@ -276,6 +278,13 @@ void utils::run_rl_state(mc_control::fsm::Controller & ctl_)
           }
           ctl.qFilt_ += a * (ctl.q_rl - ctl.qFilt_);
           ctl.q_rl = ctl.qFilt_;
+        }
+        if(blendSteps_ > 0)
+        {
+          blendSteps_--;
+          double b = 1.0 - static_cast<double>(blendSteps_) / static_cast<double>(blendTotal_);
+          b = b * b * b * (10.0 + b * (-15.0 + 6.0 * b));
+          ctl.q_rl = (1.0 - b) * rampTargetQ_ + b * ctl.q_rl;
         }
       }
   }

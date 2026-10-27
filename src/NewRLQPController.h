@@ -184,6 +184,7 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   Eigen::VectorXd armPosture_;
   double armRampSpeed_ = 0.1;  ///< Mean joint speed of the min-jerk ramp (rad/s)
   double armSettleTime_ = 0.5; ///< Hold at armPosture_ before the first inference (s)
+  double armBlendTime_ = 0.0;  ///< Soft start: min-jerk blend held posture -> policy target (s)
 
   /**
    * @brief Raw output from the RL policy (before scaling).

@@ -119,4 +119,6 @@ struct utils
    bool rampSmooth_{false};    ///< Min-jerk profile (arm_posture) instead of linear
    int settleSteps_{0};        ///< Hold at rampTargetQ_ before the first inference
    bool seedAction_{false};    ///< Present the first inference the stance's own last action
+   int blendSteps_{0};         ///< Inferences left in the soft start (arm_blend_time)
+   int blendTotal_{0};         ///< Soft start length in inferences
 };
