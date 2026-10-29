@@ -557,6 +557,21 @@ void NewRLQPController::initializeRobot()
                            commandFilterTau_);
     }
   }
+  // RLQP_BENCH_ACTION_FILTER_HZ: the GUI's target low-pass override, set from the bench.
+  if(const char * af = std::getenv("RLQP_BENCH_ACTION_FILTER_HZ"))
+  {
+    std::ifstream comm("/proc/self/comm");
+    std::string prog;
+    std::getline(comm, prog);
+    if(prog.find("mc_mujoco") != std::string::npos)
+    {
+      actionFilterHzOverride_ = std::atof(af);
+      actionFilterHz_ = actionFilterHzOverride_;
+      qFiltInit_ = false;
+      mc_rtc::log::warning("[NewRLQPController] BANC : cible filtree passe-bas {} Hz (simulation)",
+                           actionFilterHz_);
+    }
+  }
 
   // Experimental: see restoreQPVelocity()/zeroAlphaOut() and run(). Off by
   // default -- untested on hardware, simulation-only ablation for now.
