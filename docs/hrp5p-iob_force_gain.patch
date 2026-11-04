@@ -1,0 +1,80 @@
+diff --git a/iob/TransListenerImpl.cpp b/iob/TransListenerImpl.cpp
+index 9287a4d..0bffd4f 100644
+--- a/iob/TransListenerImpl.cpp
++++ b/iob/TransListenerImpl.cpp
+@@ -6,6 +6,9 @@
+ #include "TransListenerImpl.hpp"
+ #include "Manager.hpp"
+ #include <DeviceMotorImpl.hpp>
++#include <fstream>
++#include <iostream>
++#include "config.h"
+ 
+ using namespace BodySignal;
+ 
+@@ -137,9 +140,14 @@ void TransListenerImpl::slaves2iob()
+ 		ftsensor& sensor = m_forceSensors[i];
+ 		hrp::Vector3 force, torque;
+ 		sensor.getForceTorque(force, torque);
++		double fg = 1.0, tg = 1.0;
++		if (2*sensor.id+1 < (int)m_forceGain.size()){
++			fg = m_forceGain[2*sensor.id];
++			tg = m_forceGain[2*sensor.id+1];
++		}
+ 		for (int j=0; j<3; j++){
+-			m_iob->state.force[sensor.id][j  ] = force[j] + m_iob->offset.force[sensor.id][j  ]; 
+-			m_iob->state.force[sensor.id][j+3] = torque[j] + m_iob->offset.force[sensor.id][j+3];
++			m_iob->state.force[sensor.id][j  ] = force[j]*fg + m_iob->offset.force[sensor.id][j  ]; 
++			m_iob->state.force[sensor.id][j+3] = torque[j]*tg + m_iob->offset.force[sensor.id][j+3];
+ 		}
+ 	}
+ 
+@@ -422,6 +430,27 @@ void TransListenerImpl::notify()
+ 	}
+ }
+ 
++/*! force_gain.dat: one line per force sensor id, "<force gain> <torque gain>".
++ *  Missing file or missing lines mean gain 1.0. */
++void TransListenerImpl::loadForceGain(){
++	m_forceGain.assign(2*4, 1.0);
++	std::string path = IOB_SHARE_DIR;
++	path.append("/force_gain.dat");
++	std::ifstream s(path.c_str());
++	if (!s.is_open()){
++		return;
++	}
++	for (unsigned int i=0; i<m_forceGain.size(); i++){
++		double g;
++		if (!(s >> g)) break;
++		m_forceGain[i] = g;
++	}
++	for (unsigned int i=0; i<m_forceGain.size()/2; i++){
++		std::cout << "force sensor " << i << " gain: force " << m_forceGain[2*i]
++			  << " torque " << m_forceGain[2*i+1] << std::endl;
++	}
++}
++
+ void TransListenerImpl::setDeviceInfo(const std::vector<DeviceMotor*>& motors,
+ 				      const std::vector<joint>& joints,
+ 				      const std::vector<imu>& imus,
+@@ -430,6 +459,7 @@ void TransListenerImpl::setDeviceInfo(const std::vector<DeviceMotor*>& motors,
+ 	m_joints = joints;
+ 	m_imus = imus;
+ 	m_forceSensors = forceSensors;
++	loadForceGain();
+ 
+ 	char shortId[8];
+ 	for (unsigned int i=0; i<m_motors.size(); i++){
+diff --git a/iob/TransListenerImpl.hpp b/iob/TransListenerImpl.hpp
+index 8d82813..d4d93ae 100644
+--- a/iob/TransListenerImpl.hpp
++++ b/iob/TransListenerImpl.hpp
+@@ -69,6 +69,8 @@ private:
+ 	bool m_batteryLamp48VState;
+ 	int m_count;
+ 	double m_dt;
++	std::vector<double> m_forceGain;  // per sensor id: [force gain, torque gain]
++	void loadForceGain();
+ 	std::vector<double> m_qErrOld, m_qdRef, m_qdCmd, m_qCmdOld;
+ 
+ 	// windup related members
