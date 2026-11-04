@@ -1,5 +1,7 @@
 # Foot force sensors, 2026-11-04
 
+Detailed report in French (protocol, all measurements, commands): [2026-11-04-rapport-capteurs-force.md](2026-11-04-rapport-capteurs-force.md).
+
 Why: the robot falls to the right with a colleague's controller. Suspected the foot F/T sensors (ATI EtherCAT). Everything below is on the RHPS1 real robot.
 
 ## Summary
