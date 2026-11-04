@@ -14,13 +14,14 @@ Résumé court en anglais : [2026-11-04-force-sensors.md](2026-11-04-force-senso
 | 2 | Le capteur du pied gauche lit environ **12 % trop haut** (rapport 1,09 à 1,13 sur 4 charges), erreur d'échelle pure (pas de décalage). | Bon : 4 points + répété une seconde fois |
 | 3 | Une fois le gauche corrigé, le robot est **réellement plus chargé à droite** : 60 / 40 (écart 100 N) dans la posture task d'origine (genou 35,6 deg). | Bon : stable et répété, mais la correction gauche n'est pas encore revérifiée à la balance |
 | 4 | Cet écart **diminue quand on plie les genoux** : 52,7 / 47,3 (genou 49 deg), 51,9 / 48,1 (genou 71,4 deg). | Moyen : un seul essai par posture |
+| 4b | Le **centre de masse est quasi centré** (environ 4 mm d'après l'équilibre des moments) : l'écart est surtout porté par les moments sous les pieds, pas par une répartition de masse (une estimation de 2 cm faite plus tôt était fausse, voir §5.1). | Moyen : 1 run, 3 points, hypothèse sur `Mx` |
 | 5 | Les mesures au sol sont stables (< 0,4 % sur 4 min). Le **zéro** du capteur gauche dérive d'environ **+9 N en 50 min** (robot en l'air). Le droit reste dans +-3 N. | Bon : enregistrement de 3600 s |
 | 6 | `KI[2]` des 4 chevilles a été remis à **2.0** et sauvegardé dans les drives. Il n'est plus soupçonné d'être la cause (non testé en marche). | Bon pour l'état des drives |
 
 **Ce qu'on n'a pas établi**
 
 - La **cause** du défaut du capteur gauche (calibration ATI, `CountPerForce` mal lu, capteur différent).
-- La **cause** de l'asymétrie de charge (hauteur des pieds, offsets d'articulations, masses).
+- La **cause** de l'asymétrie de charge. Hypothèse de travail (non mesurée) : une petite différence de hauteur effective entre les pieds (offset d'articulation de ~0,1 deg, semelle, sol), amplifiée par la raideur des jambes tendues (§5.4-5.5). L'IMU n'a pas la résolution pour la voir.
 - Si l'erreur du capteur gauche explique la chute à droite avec le contrôleur du collègue.
 
 ## 1. Matériel et outils
@@ -175,7 +176,53 @@ Moments (Mx, My en N.m) : posture 1 D (0,8 ; 13,3) G (5,0 ; -10,1) ; posture 2 D
 
 Même résultat servos éteints et allumés (posture 1 : 310,3 / 208,3 N éteints, 308,4 / 207,9 N allumés). Erreur de suivi (mesuré moins commandé) : au plus 0,0005 deg aux hanches et chevilles, 0,015 deg aux genoux dans la posture 3. L'accéléromètre donne une inclinaison avant-arrière d'environ 1,8 deg (posture 1), 12 deg (posture 2) et 20 deg (posture 3).
 
-**Interprétation (hypothèse).** Un décalage latéral fixe du centre de masse resterait à peu près constant quand on change le tangage de façon symétrique. L'écart diminue pourtant de 100 N à 20 N quand on plie les genoux. Cela va dans le sens d'un **contact hyperstatique** : deux jambes rigides, position-commandées, sur un sol rigide ; une petite différence de hauteur (offset d'articulation, jeu, semelle, sol) déplace beaucoup de charge, et une jambe plus fléchie est moins rigide verticalement. Les efforts horizontaux opposés qui disparaissent avec la flexion vont dans le même sens. Si l'asymétrie se confirme, une estimation du décalage latéral du centre de masse équivalent est d'environ 2 cm vers la droite en posture 1 (écart 100 N sur 514 N, pieds supposés à 20 cm l'un de l'autre, valeur à vérifier).
+### 5.1 Ce que dit l'équilibre des moments
+
+Pour un robot immobile, la répartition de charge dépend de (a) la position latérale du centre de masse, (b) du point d'appui sous chaque pied (moment `Mx` transmis par la cheville) et (c) de la raideur des jambes. Équilibre des moments en roulis, avec `e` le décalage latéral du centre de masse et `d` l'espacement des pieds :
+
+`W * e = (d / 2) * (Fz_G - Fz_D) + (Mx_D + Mx_G)`
+
+Ajustement aux trois plateaux (hypothèse : `Mx` est le moment de roulis, le signe `+` du terme de moments donne un `d` positif) : **`e` ~ 4 mm** et **`d` ~ 15 cm**, avec des écarts résiduels d'au plus 1,2 N.m (le terme de force vaut jusqu'à 7,7 N.m en posture 1).
+
+| Posture | W (N) | Fz_G - Fz_D (N) | Mx_D + Mx_G (N.m) |
+|---|---|---|---|
+| 1 genou 35,6 | 514 | -100,0 | 0,84 + 4,96 = 5,80 |
+| 2 genou 49 | 523 | -27,8 | -1,08 + 0,02 = -1,06 |
+| 3 genou 71,4 | 531 | -19,7 | 6,52 - 6,01 = 0,51 |
+
+**Correction d'une estimation précédente.** Une première estimation donnait environ 2 cm de décalage latéral du centre de masse (100 N d'écart sur 514 N, pieds à 20 cm). Elle ignorait les moments sous les pieds et est **fausse** : l'essentiel du déséquilibre de charge est porté par les moments `Mx` des chevilles, et le centre de masse est quasi centré (quelques millimètres). Le modèle ne repose que sur un run, trois points et une hypothèse d'orientation de `Mx` : ordres de grandeur seulement.
+
+### 5.2 Géométrie de la commande
+
+- Chaîne de tangage (`CROTCH_P + KNEE_P + ANKLE_P`, jambe gauche) : 0,01 deg (posture 1), 12,36 deg (posture 2), 19,16 deg (posture 3). Elle vaut l'inclinaison du bassin : le bassin se penche de ces angles pour garder les semelles à plat en tangage (IMU : 12,6 et 20,3 deg relatifs, voir §5.3).
+- Chaîne de roulis (`CROTCH_R + ANKLE_R`) : **-0,107 deg à gauche et +0,107 deg à droite**, identique dans les trois postures. Les semelles ne sont donc pas exactement à plat en roulis dans la commande : chacune est inclinée de 0,107 deg (environ 0,2 mm sur 10 cm de semelle) et repose sur un bord. Ce n'est pas assez, seul, pour expliquer un déséquilibre (la commande est symétrique), mais un défaut d'offset de 0,1 deg du même ordre ne serait pas détectable sur les angles affichés.
+
+### 5.3 IMU
+
+- Le champ `Accelerometer_orientation` du log vaut l'identité à tout instant : inutilisable. Les valeurs ci-dessous viennent de l'accélération brute (`Accelerometer_linearAcceleration`).
+- Le signal est **remis à zéro au démarrage de l'essai** (posture 1 : roulis et tangage = 0,000 deg exactement). On ne connaît donc que des variations, pas l'inclinaison absolue.
+
+| État | Roulis (deg) | Tangage (deg) |
+|---|---|---|
+| Posture 1 (sol) | 0,001 | 0,00 |
+| Posture 2 (sol) | 0,040 | 12,56 |
+| Posture 3 (sol) | -0,113 | 20,34 |
+| En l'air (t = 940-3600 s) | -0,42 | -3,96 |
+
+- Entre postures, le roulis du bassin varie de 0,04 et -0,11 deg alors que l'écart de charge passe de 100 N à 20 N. Le bruit de l'IMU (environ 0,03 m/s^2 par échantillon, soit 0,16 deg, moyenné sur des centaines d'échantillons) est du même ordre que l'effet cherché (0,1 deg). **L'IMU ne permet pas de conclure sur l'inclinaison du bassin.**
+
+### 5.4 Pourquoi l'écart est le plus grand jambes tendues (hypothèse)
+
+- La différence de force entre les pieds est de l'ordre de `raideur verticale de la jambe x différence de hauteur effective`.
+- Une jambe presque tendue se comporte comme une barre : raideur verticale très grande. Une jambe pliée est un ressort : raideur plus faible. Un défaut de 0,2 mm (un offset d'articulation de 0,1 deg y suffit) peut donc donner une centaine de newtons jambes tendues, et beaucoup moins genoux pliés.
+- Ordre de grandeur : la compliance verticale croît comme le carré de la distance entre le genou et la ligne hanche-cheville, soit `sin^2(flexion / 2)` pour deux segments égaux. Entre 35,6 et 71,4 deg de genou, le rapport est d'environ 3,6 ; l'écart de charge a été divisé par 5 (100 N -> 20 N). Même ordre de grandeur, **sans que ce soit une preuve**.
+- Les efforts horizontaux opposés sous les pieds (Fx, Fy de +-10 à 15 N) qui disparaissent avec la flexion vont dans le même sens (jambes moins précontraintes).
+
+### 5.5 Origine possible : une hauteur effective différente sous chaque pied
+
+Hypothèse : les deux jambes n'ont pas exactement la même **hauteur effective**, sans que les angles affichés ne le montrent. Sources possibles : offset de zéro d'une articulation (0,1 deg ~ 0,2 mm), semelle ou patin plus mince d'un côté (usure), sol non plat. Comme pour une table dont un pied est plus long : le pied le plus long porte le plus de force, et le corps penche légèrement du côté du pied le plus court. Ici le pied droit porte plus : le droit serait effectivement plus long, ou le gauche plus court. Un roulis de bassin de 0,1 deg correspond à environ 0,15 mm de différence de hauteur entre les pieds (espacement 15 cm), soit plusieurs dizaines de newtons avec des jambes tendues.
+
+**Rien de cela n'est mesuré** : c'est la logique de la table, pas une preuve. Si la semelle est usée sur un bord seulement, le pied devient un coin et c'est surtout le point d'appui (`Mx`) qui change.
 
 ## 6. Courants moteur et gains des chevilles
 
@@ -230,9 +277,16 @@ Le zéro gauche monte d'environ 9 N (3,5 % de la charge) en ~50 min, vite pendan
 1. **Lire `CountPerForce`** des 4 capteurs au démarrage d'`io_main` (lignes `[adresse] CountPerForce = ...` sur la console). Si le gauche diffère du droit, ou vaut 1000, c'est la cause : corriger à la source. Sinon, vérifier la calibration active du capteur et son certificat ATI (les indices SDO de calibration ne sont pas connus, ne pas les deviner).
 2. **Refaire la balance sur le pied gauche avec le gain actif** (3 à 4 charges) : le rapport doit passer de 1,12 à ~1,0. Contrôler aussi les moments (poids à bras de levier connu) avant d'appliquer un gain sur les moments.
 3. **Peser chaque pied en posture task** (balance sous un pied, cale de même épaisseur sous l'autre, puis inverser) pour comparer le partage réel (balance) au partage des capteurs. Cela tranche « robot déséquilibré » contre « capteur ».
-4. **Balayage de posture** : genou 25, 35, 49, 60, 71 deg, plusieurs placements par posture, pour confirmer que l'écart diminue avec la flexion et mesurer la reproductibilité (~10 N par placement).
-5. **Causes mécaniques** : comparer les offsets d'articulations (`offset.dat`, du 2026-07-31) à gauche et à droite, mesurer la hauteur des semelles et la planéité du sol.
-6. **Contrôleur du collègue** : savoir s'il fait un zéro des forces au démarrage, s'il suppose un partage 50 / 50, et s'il a été réglé avec `KI[2]=0.02` ou 2.0.
+4. **Test de cale à deux angles de genou** (test central pour l'origine) :
+   - Posture task, genou 35,6 deg : relever `Fz` D / G et `Mx` D / G (dernière image de `bodystat`, 2 s après lancement, ou moyenne du log sur 10 s).
+   - Glisser une cale de 0,5 mm sous le pied gauche, repartir de la même posture, relever à nouveau. Puis cale de 1,0 mm.
+   - Refaire à genou 71,4 deg.
+   - Lecture : si l'écart de charge bouge de plusieurs dizaines de newtons par demi-millimètre à genou 35,6 deg et beaucoup moins à 71,4 deg, la raideur des jambes tendues amplifie un défaut de hauteur (§5.4), et l'épaisseur de cale qui annule l'écart donne la correction mécanique. Si le partage ne bouge presque pas, la cause est ailleurs (offsets, appui).
+   - Précautions : même posture et même placement entre mesures (la reproductibilité est d'environ 10 N), cale rigide, robot posé sans choc.
+5. **Test du roulis de cheville** : changer l'angle de roulis de cheville de +-0,1 deg, symétriquement puis d'un seul côté, par petits pas, et relire `Fz` et `Mx`. Il montre si la chaîne de roulis (+-0,107 deg) pilote l'appui. Mouvement réel du robot : un pas à la fois, avec accord.
+6. **Balayage de posture** : genou 25, 35, 49, 60, 71 deg, plusieurs placements par posture, pour confirmer que l'écart diminue avec la flexion et mesurer la reproductibilité (~10 N par placement).
+7. **Causes mécaniques** : comparer les offsets d'articulations (`offset.dat`, du 2026-07-31) à gauche et à droite, mesurer l'épaisseur des semelles et la planéité du sol.
+8. **Contrôleur du collègue** : savoir s'il fait un zéro des forces au démarrage, s'il suppose un partage 50 / 50, et s'il a été réglé avec `KI[2]=0.02` ou 2.0.
 
 ## 9. Fichiers
 
@@ -240,6 +294,7 @@ Dans `logs/tmp/` :
 
 - `rhps1_halfsit_2026-11-04_keys_t0-1010.bin.xz` (31 Mo) : log `HalfSitPose` du 2026-11-04 19:42, t = 0..1010 s, clés `t`, forces des deux pieds, `qIn`, `qOut`, `tauIn`, orientation de l'accéléromètre. Les 45 min suivantes sont le robot en l'air (pas gardées en détail).
 - `rhps1_halfsit_2026-11-04_summary_1Hz.csv.gz` (133 Ko) : toute la session (3615 s) à 1 Hz, avec forces, commandes de genou, cheville et buste, courants.
+- `rhps1_halfsit_2026-11-04_imu_accel_1Hz.csv.gz` : accélération brute de l'IMU (`ax, ay, az`, m/s^2) à 1 Hz sur toute la session. Le champ `Accelerometer_orientation` du fichier `keys` vaut l'identité et n'est pas exploitable ; le roulis et le tangage du §5.3 viennent de ce fichier (`roulis = atan2(ay, az)`, `tangage = atan2(ax, hypot(ay, az))`, signal remis à zéro au démarrage de l'essai).
 - `rhps1_halfsit_2026-11-04_hrpsys.log.gz` : sortie de la session `io_main` / rtcd.
 
 Dans `docs/` : `hrp5p-iob_force_gain.patch` (le gain IOB), ce rapport et le résumé en anglais.
@@ -261,3 +316,6 @@ Indices des articulations dans `qIn` / `qOut` / `tauIn` (même ordre que `bodyst
 - La somme des forces est 6 à 10 % sous le poids du robot, sans explication confirmée.
 - Le gain du pied gauche (0,89) est un contournement fondé sur la balance, pas une correction de la cause.
 - Le lien entre ces constats et la chute à droite du contrôleur du collègue n'est pas démontré.
+- L'ajustement du §5.1 (centre de masse ~4 mm, espacement ~15 cm) repose sur 3 points d'un seul run et sur l'hypothèse que `Mx` est le moment de roulis ; la mesure d'espacement des pieds n'a pas été vérifiée.
+- L'IMU du log est remise à zéro au démarrage de l'essai et son bruit est de l'ordre de l'effet cherché ; elle ne donne pas l'inclinaison absolue du bassin.
+- L'explication par la raideur des jambes (§5.4) et par la hauteur effective (§5.5) est une hypothèse cohérente avec la tendance, pas une mesure.

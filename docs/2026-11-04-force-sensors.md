@@ -57,11 +57,17 @@ Only `~/sanbox_leo/workspace/install/bin/io_main` was replaced (not `~/workspace
 
 The robot was lifted between postures (sum ~ 0). Joint tracking error: <= 0.0005 deg on hips and ankles, 0.015 deg on knees in the last posture. Servos off or on gives the same split.
 
-Reading: the imbalance is real (not a sensor error) and decreases with knee flexion, consistent with a hyperstatic contact (small height / offset mismatch between feet) more than a fixed lateral CoM offset. One run per posture, not conclusive.
+Reading: the imbalance is real (not a sensor error) and decreases with knee flexion. The lateral CoM is nearly centred (~4 mm, from the moment balance below, which corrects an earlier estimate of ~2 cm that ignored the foot moments): most of the Fz gap is carried by the foot moments Mx. Working hypothesis, not measured: a small effective height difference between the feet (joint offset ~0.1 deg ~ 0.2 mm, sole, floor), amplified by the stiffness of the nearly straight legs (stiffness drops as the knee flexes). One run per posture, not conclusive.
+
+Moment balance, `W*e = (d/2)*(FzL - FzR) + (MxR + MxL)`, fitted on the three plateaus: e ~ 4 mm, d ~ 15 cm, residuals <= 1.2 N.m. Assumes Mx is the roll moment; indicative only.
+
+Commanded geometry: pitch chain (`CROTCH_P + KNEE_P + ANKLE_P`) = pelvis pitch (0.01 / 12.4 / 19.2 deg, matches the IMU); roll chain (`CROTCH_R + ANKLE_R`) = -0.107 deg left, +0.107 deg right in every posture (soles not exactly flat in roll). The IMU (raw acceleration, zeroed at the start of the run, noise ~0.1 deg) cannot resolve the pelvis roll: +0.04 / -0.11 deg between postures.
 
 Knee current (`tauIn`, amperes, see note below) right / left: 1.9, 1.24, 1.07 for the three postures. Load ratio: 1.48, 1.11, 1.08. The knee current asymmetry follows the load asymmetry.
 
 Ankle pitch: right foot My = 17.2 N.m vs 1.1 N.m left in posture 2 (centre of pressure ~6 cm from the ankle on the right, ~0.4 cm on the left). Not explained.
+
+To find the origin: shim test (0.5 / 1.0 mm under the left foot) at knee 35.6 and 71.4 deg, then ankle-roll steps of +-0.1 deg. Procedure in the French report, section 8.
 
 ## 4. Drift
 
@@ -95,9 +101,11 @@ Incident: a verification loop appended `0` to the read commands and wrote `KP[3]
 - `bodystat` prints `torque(%)` but `state.torque` is a motor current in amperes (`gearRatio` and `torqueConst` are 1 in the VRML). The local `bodystat.cpp` comment says so.
 - `bodystat` smooths forces from zero at each start: wait ~2 s before reading.
 - Sensor order in `bodystat` / `state.force`: RF, LF, RH, LH (`sensorId` 0..3 in `RHPS1.conf`).
+- `Accelerometer_orientation` in the mc_rtc log is the identity; use the raw acceleration (`logs/tmp/rhps1_halfsit_2026-11-04_imu_accel_1Hz.csv.gz`, one sample per second, average over windows).
 
 ## Files (`logs/tmp/`)
 
 - `rhps1_halfsit_2026-11-04_keys_t0-1010.bin.xz`: HalfSitPose log 19:42, t = 0..1010 s, keys only (`t`, both foot force sensors, `qIn`, `qOut`, `tauIn`, accelerometer orientation). The full log is 4.3 GB / 3615 s and was not kept; the last 45 min are the robot idle in the air.
 - `rhps1_halfsit_2026-11-04_summary_1Hz.csv.gz`: whole session at 1 Hz (forces, knee / ankle / chest commands, currents), including the drift record.
+- `rhps1_halfsit_2026-11-04_imu_accel_1Hz.csv.gz`: raw IMU acceleration (`ax, ay, az`), whole session at 1 Hz.
 - `rhps1_halfsit_2026-11-04_hrpsys.log.gz`: `io_main` / rtcd output of the session.
