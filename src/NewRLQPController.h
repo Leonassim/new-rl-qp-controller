@@ -361,6 +361,17 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   double commandFilterTau_ = 0.0;
   Eigen::Vector3d cmdFilt_ = Eigen::Vector3d::Zero();
 
+  /** obs_format 9: soles' vertical loads (L, R) in body weights, low-passed like
+   *  mjlab's _foot_force_obs (tau 0.02 s, clamp [-0.1, 2.5]); reset at arming. */
+  static constexpr double FOOT_LOAD_WEIGHT_N = 540.0;
+  double footLoadTau_ = 0.02;
+  bool footLoadInit_ = false;
+  Eigen::Vector2d footLoad_ = Eigen::Vector2d::Zero();
+  /** obs_format 10: both soles' 6-axis wrenches, same filter, history HISTORY_SIZE. */
+  bool footWrenchInit_ = false;
+  Eigen::Matrix<double, 12, 1> footWrenchLP_ = Eigen::Matrix<double, 12, 1>::Zero();
+  std::array<Eigen::Matrix<double, 12, 1>, 5> footWrenchHist_{};
+
   /** First-order low-pass on the position target sent to the QP, `action_filter_hz`
    *  per policy (0, the default, is off). The real robot holds a 5.5 Hz limit cycle
    *  at rest after walking (2026-10-15 logs): the policy's action and the joints

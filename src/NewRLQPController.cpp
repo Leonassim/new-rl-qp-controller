@@ -793,6 +793,8 @@ void NewRLQPController::initializeRLObservation()
   }
   cmdFilt_ = obsVelCmd();  // training resets the filter to the raw command
   qFiltInit_ = false;
+  footLoadInit_ = false;
+  footWrenchInit_ = false;
   gaitPhase_value_ = 0.0;
 
   // Zero, not the current demand: at init the target is the measured posture, so

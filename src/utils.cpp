@@ -340,6 +340,10 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
   };
 
   switch (ctl.obsFormat_) {
+    case 10: // V3 + both soles' 6-axis wrenches, history 5, 186 dims
+             // (mjlab RHPS1_FOOT_WRENCH_OBS=1, _foot_wrench_obs).
+    case 9: // V3 + soles' vertical loads (L, R) in body weights, 128 dims
+            // (mjlab RHPS1_FOOT_FORCE_OBS=1, _foot_force_obs).
     case 1: // 2026-08-21 : l'index 1 porte desormais une policy 126 dims
             // (run 2026-08-21_11-47-31, paquet `lift` sur p0+rand), donc le
             // meme corps que l'index 0 et non plus les 246 dims. L'ONNX le
@@ -401,6 +405,50 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
       appendToObs(ctl.jointVel_[0]);
       appendToObs(ctl.jointAct_[0]);
       for(int i = ctl.HISTORY_SIZE-1; i >= 0; --i) write3(ctl.velCmd_[i]);
+      if(ctl.obsFormat_ == 9)
+      {
+        Eigen::Vector2d f = Eigen::Vector2d::Zero();
+        const char * sensors[2] = {"LeftFootForceSensor", "RightFootForceSensor"};
+        for(int k = 0; k < 2; ++k)
+        {
+          if(rr.hasForceSensor(sensors[k]))
+          {
+            f(k) = rr.forceSensor(sensors[k]).wrench().force().z() / ctl.FOOT_LOAD_WEIGHT_N;
+          }
+        }
+        f = f.cwiseMax(-0.1).cwiseMin(2.5);
+        if(!ctl.footLoadInit_) { ctl.footLoad_ = f; ctl.footLoadInit_ = true; }
+        else { ctl.footLoad_ += (1.0 - std::exp(-ctl.policyStepSize / ctl.footLoadTau_)) * (f - ctl.footLoad_); }
+        appendToObs(ctl.footLoad_);
+      }
+      if(ctl.obsFormat_ == 10)
+      {
+        // Both soles' wrenches (L fx fy fz mx my mz, R ...) in the sensor frame, forces in
+        // body weights, moments in body weight x 10 cm, low-passed, history 5 oldest first.
+        Eigen::Matrix<double, 12, 1> w = Eigen::Matrix<double, 12, 1>::Zero();
+        const char * sensors[2] = {"LeftFootForceSensor", "RightFootForceSensor"};
+        for(int k = 0; k < 2; ++k)
+        {
+          if(!rr.hasForceSensor(sensors[k])) { continue; }
+          const auto & fs = rr.forceSensor(sensors[k]).wrench();
+          w.segment<3>(6 * k) = fs.force() / ctl.FOOT_LOAD_WEIGHT_N;
+          w.segment<3>(6 * k + 3) = fs.couple() / (0.1 * ctl.FOOT_LOAD_WEIGHT_N);
+        }
+        w = w.cwiseMax(-3.0).cwiseMin(3.0);
+        if(!ctl.footWrenchInit_)
+        {
+          ctl.footWrenchLP_ = w;
+          for(auto & h : ctl.footWrenchHist_) { h = w; }
+          ctl.footWrenchInit_ = true;
+        }
+        else
+        {
+          ctl.footWrenchLP_ += (1.0 - std::exp(-ctl.policyStepSize / ctl.footLoadTau_)) * (w - ctl.footWrenchLP_);
+          for(int i = ctl.HISTORY_SIZE - 1; i > 0; --i) { ctl.footWrenchHist_[i] = ctl.footWrenchHist_[i - 1]; }
+          ctl.footWrenchHist_[0] = ctl.footWrenchLP_;
+        }
+        for(int i = ctl.HISTORY_SIZE - 1; i >= 0; --i) { appendToObs(ctl.footWrenchHist_[i]); }
+      }
       break;
     }
     case 7: // 530 dims = le format 5 plus l'horloge de demarche (4 x 5 dims).
