@@ -6,7 +6,10 @@
 #include <cmath>
 #include <map>
 
+#include <mc_rbdyn/CompoundJointConstraintDescription.h>
 #include <mc_rtc/io_utils.h>
+
+#include "CylinderLimitsConstraint.h"
 
 #include <RBDyn/MultiBodyConfig.h>
 #include <mc_joystick_plugin/joystick_inputs.h>
@@ -71,6 +74,7 @@ NewRLQPController::NewRLQPController(mc_rbdyn::RobotModulePtr rm, double dt, con
     new mc_solver::KinematicsConstraint(robots(), 0,
       {diPercent_, dsPercent_, 0.0, zeta_jointLimit_, lambda_jointLimit_}, velPercent_));
   solver().addConstraintSet(kinematicsConstraint);
+  initCylinderLimits();
 
   initializeRobot();
 
@@ -233,6 +237,8 @@ bool NewRLQPController::run()
   }
 
   bool ret = mc_control::fsm::Controller::run(mc_solver::FeedbackType::OpenLoop);
+  // After the state updated q_rl: the bypass sends it now, the QP posture target takes it next tick.
+  projectCylinderLimits();
   // Same gate on the bypass path: disarmed means no policy output reaches the
   // robot, whichever mode is configured.
   if(!useQP_ && policyArmed_) byPassQPControl();
@@ -1308,6 +1314,88 @@ bool NewRLQPController::byPassQPControl()
   return true;
 }
 
+void NewRLQPController::initCylinderLimits()
+{
+  // Hip and ankle roll/pitch are each driven by two cylinders: the reachable set is the URDF box minus four
+  // corners where one cylinder runs out of stroke. The config lists conservative half-planes (cylinder_limits).
+  if(!config_.has("cylinder_limits") || !config_("cylinder_limits")("enabled", false))
+  {
+    mc_rtc::log::info("[NewRLQPController] cylinder_limits disabled");
+    return;
+  }
+  const auto list = config_("cylinder_limits")("compound_joints");
+  mc_rbdyn::CompoundJointConstraintDescriptionVector descs;
+  for(size_t k = 0; k < list.size(); ++k)
+  {
+    const mc_rbdyn::CompoundJointConstraintDescription desc = list[k];
+    descs.push_back(desc);
+    cylLimits_.push_back({desc.j1, desc.j2, desc.p1, desc.p2 - desc.p1});
+  }
+  // In the QP with the joint limits' damper settings: brakes from di before the line, stops ds short (TVM or Tasks).
+  cylLimitsConstraint_ = std::make_shared<CylinderLimitsConstraint>(
+      robots(), 0, timeStep, descs,
+      CylinderLimitsConstraint::Damper{diPercent_, dsPercent_, 0.5, zeta_jointLimit_, lambda_jointLimit_});
+  solver().addConstraintSet(*cylLimitsConstraint_);
+  cylProject_ = config_("cylinder_limits")("project_targets", true);
+  mc_rtc::log::info("[NewRLQPController] cylinder_limits: {} half-planes in the QP ({} backend, velocity damper as "
+                    "the joint limits){}",
+                    cylLimitsConstraint_->size(),
+                    solver().backend() == mc_solver::QPSolver::Backend::TVM ? "TVM" : "Tasks",
+                    cylProject_ ? " and on the policy targets" : ", policy targets NOT projected");
+}
+
+void NewRLQPController::projectCylinderLimits()
+{
+  cylProjCount_ = 0.0;
+  cylProjMax_ = 0.0;
+  if(!cylProject_ || cylLimits_.empty() || q_rl.size() != static_cast<int>(jointNames.size())) { return; }
+  if(cylIdxFor_ != jointNames.size())
+  {
+    auto idx = [this](const std::string & j)
+    {
+      const auto it = std::find(jointNames.begin(), jointNames.end(), j);
+      if(it == jointNames.end())
+      {
+        mc_rtc::log::error_and_throw("[NewRLQPController] cylinder_limits: {} is not an actuated joint", j);
+      }
+      return static_cast<int>(std::distance(jointNames.begin(), it));
+    };
+    for(auto & c : cylLimits_)
+    {
+      c.i1 = idx(c.j1);
+      c.i2 = idx(c.j2);
+    }
+    cylIdxFor_ = jointNames.size();
+  }
+  const auto & ql = robot().ql();
+  const auto & qu = robot().qu();
+  // Alternating projections onto convex sets (half-planes, joint range): a few sweeps reach the intersection.
+  for(int sweep = 0; sweep < 10; ++sweep)
+  {
+    bool moved = false;
+    for(const auto & c : cylLimits_)
+    {
+      const Eigen::Vector2d q(q_rl(c.i1), q_rl(c.i2));
+      const Eigen::Vector2d v = q - c.p1;
+      const double cross = v.x() * c.d.y() - v.y() * c.d.x();
+      if(cross <= 0.0) { continue; }
+      const Eigen::Vector2d n(c.d.y(), -c.d.x());
+      const Eigen::Vector2d dq = -cross / n.squaredNorm() * n;
+      q_rl(c.i1) += dq.x();
+      q_rl(c.i2) += dq.y();
+      cylProjMax_ = std::max(cylProjMax_, dq.norm());
+      if(sweep == 0) { cylProjCount_ += 1.0; }
+      moved = true;
+      for(const int i : {c.i1, c.i2})
+      {
+        const auto mcIdx = robot().jointIndexByName(jointNames[i]);
+        if(!ql[mcIdx].empty() && !qu[mcIdx].empty()) { q_rl(i) = std::clamp(q_rl(i), ql[mcIdx][0], qu[mcIdx][0]); }
+      }
+    }
+    if(!moved) { break; }
+  }
+}
+
 void NewRLQPController::updateSelfCollisionDistances()
 {
   auto & rr = realRobot(robots()[0].name());
@@ -1353,6 +1441,8 @@ void NewRLQPController::addLog()
     const_cast<NewRLQPController *>(this)->updateSelfCollisionDistances();
     return selfColDists_;
   });
+  logger().addLogEntry("NewRLQPController_cyl_proj_count",   [this]() { return cylProjCount_; });
+  logger().addLogEntry("NewRLQPController_cyl_proj_max",     [this]() { return cylProjMax_; });
   logger().addLogEntry("NewRLQPController_kp_base",          [this]() { return kpBase_; });
   logger().addLogEntry("NewRLQPController_kd_base",          [this]() { return kdBase_; });
   logger().addLogEntry("NewRLQPController_kp_current",       [this]() { return kp_; });

@@ -10,6 +10,7 @@
 #include "RLPolicyInterface.h"
 #include "utils.h"
 
+struct CylinderLimitsConstraint;
 
 /**
  * @brief RL-QP Controller for deploying reinforcement learning policies on real robots.
@@ -269,6 +270,30 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   std::vector<std::tuple<std::string, std::string, std::shared_ptr<sch::CD_Pair>>> selfColPairs_;
   Eigen::VectorXd selfColDists_;
   void updateSelfCollisionDistances();
+
+  // =========================================================================
+  // Coupled hip/ankle roll-pitch limits (two cylinders per joint)
+  // =========================================================================
+
+  /** @brief Half-plane (q - p1) x (p2 - p1) <= 0 on q = [q_rl(i1), q_rl(i2)], config cylinder_limits. */
+  struct CylinderLimit
+  {
+    std::string j1, j2;
+    Eigen::Vector2d p1, d;
+    int i1 = -1, i2 = -1;  // in jointNames, resolved by projectCylinderLimits() (jointNames is set later)
+  };
+  std::vector<CylinderLimit> cylLimits_;
+  size_t cylIdxFor_ = 0;  // jointNames.size() the indices were resolved for
+  /** @brief The same half-planes in the QP, with a velocity damper (TVM or Tasks backend). */
+  std::shared_ptr<CylinderLimitsConstraint> cylLimitsConstraint_;
+  /** @brief Constraints that moved q_rl this tick, and the largest move [rad] (logged). */
+  double cylProjCount_ = 0.0;
+  double cylProjMax_ = 0.0;
+  /** @brief cylinder_limits/project_targets: also project the policy targets (false: QP only, for testing). */
+  bool cylProject_ = true;
+  void initCylinderLimits();
+  /** @brief Projects q_rl into the cylinder polygons and the joint range (alternating projections). */
+  void projectCylinderLimits();
 
   // =========================================================================
   // Observation
