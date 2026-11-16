@@ -392,6 +392,20 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   double footLoadTau_ = 0.02;
   bool footLoadInit_ = false;
   Eigen::Vector2d footLoad_ = Eigen::Vector2d::Zero();
+  /** obs_format 11: the stairs policy's height scan (mjlab stairs_scan), 25 x 13 rays every 5 cm from the
+   *  pelvis, x in [-0.3, 0.9] m ahead and y in [-0.3, 0.3], yaw-aligned; pelvis height above the terrain
+   *  minus 0.84, clipped to [-1, 1], x fastest. The terrain is the training step pyramid, analytic, from
+   *  RLQP_STAIRS="cx cy yaw h tread nsteps platform" (simulation only; scripts/mc_mujoco_stairs.sh writes
+   *  the same geometry into the scene). Pose: mc_mujoco's ground-truth FloatingBase, as training reads the
+   *  true pose; without geometry or sensor, flat ground under the estimated pose. */
+  Eigen::VectorXd stairsScan();
+  double stairsHeightAt(double x, double y) const;
+  bool stairsGeom_ = false;
+  bool stairsTruePose_ = false;
+  double stairsCx_ = 0.0, stairsCy_ = 0.0, stairsYaw_ = 0.0, stairsH_ = 0.0;
+  double stairsTread_ = 0.27, stairsPlatform_ = 1.6;
+  int stairsSteps_ = 3;
+  Eigen::VectorXd stairsScan_ = Eigen::VectorXd::Zero(325);
   /** obs_format 10: both soles' 6-axis wrenches, same filter, history HISTORY_SIZE. */
   bool footWrenchInit_ = false;
   Eigen::Matrix<double, 12, 1> footWrenchLP_ = Eigen::Matrix<double, 12, 1>::Zero();

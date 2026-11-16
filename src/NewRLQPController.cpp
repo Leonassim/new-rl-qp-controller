@@ -382,6 +382,35 @@ void NewRLQPController::initializeRobot()
   postureRefVel_ = velocityAction_;
   config_("policies")[currentPolicyIndex]("posture_ref_vel", postureRefVel_);
   obsFormat_      = size_t(int(config_("policies")[currentPolicyIndex]("obs_format", int(currentPolicyIndex))));
+  stairsGeom_ = false;
+  stairsTruePose_ = false;
+  if(obsFormat_ == 11)
+  {
+    std::ifstream comm("/proc/self/comm");
+    std::string prog;
+    std::getline(comm, prog);
+    const bool sim = prog.find("mc_mujoco") != std::string::npos;
+    const char * g = std::getenv("RLQP_STAIRS");
+    if(sim && g)
+    {
+      std::istringstream is(g);
+      is >> stairsCx_ >> stairsCy_ >> stairsYaw_ >> stairsH_ >> stairsTread_ >> stairsSteps_ >> stairsPlatform_;
+      stairsGeom_ = !is.fail();
+    }
+    stairsTruePose_ = sim && robot().hasBodySensor("FloatingBase");
+    if(stairsGeom_)
+    {
+      mc_rtc::log::warning("[NewRLQPController] obs_format 11: escalier centre ({:.2f}, {:.2f}) lacet {:.2f} rad, "
+                           "{} marches de {:.3f} m, giron {:.2f} m, palier {:.2f} m ; pose {}",
+                           stairsCx_, stairsCy_, stairsYaw_, stairsSteps_, stairsH_, stairsTread_,
+                           stairsPlatform_, stairsTruePose_ ? "vraie (FloatingBase)" : "ESTIMEE");
+    }
+    else
+    {
+      mc_rtc::log::warning("[NewRLQPController] obs_format 11 sans RLQP_STAIRS (ou hors simulation) : "
+                           "le scan voit un sol plat");
+    }
+  }
   robotName_ = robot().name();
   jointNames = robot().refJointOrder();
   // refJointOrder may name joints this robot does not actually carry, and
@@ -755,6 +784,13 @@ double NewRLQPController::postureTaskStiffness()
 void NewRLQPController::initializeRLPolicy()
 {
   policyPaths_ = config_("policy_path", std::vector<std::string>{"walking_better_h1.onnx"});
+  // Bench: candidate checkpoint in the forced slot's block.
+  const char * benchPath = std::getenv("RLQP_BENCH_POLICY_PATH");
+  if(benchPath && std::getenv("RLQP_BENCH_POLICY_INDEX") && currentPolicyIndex < policyPaths_.size())
+  {
+    policyPaths_[currentPolicyIndex] = benchPath;
+    mc_rtc::log::warning("[NewRLQPController] BANC : policy {} chargee depuis {}", currentPolicyIndex, benchPath);
+  }
   configRL();
 
   currentObservation = Eigen::VectorXd::Zero(rlPolicy->getObservationSize());
@@ -1592,6 +1628,53 @@ void NewRLQPController::addLog()
   });
 }
 
+double NewRLQPController::stairsHeightAt(double x, double y) const
+{
+  if(!stairsGeom_) { return 0.0; }
+  // Nested boxes as mjlab's StepPyramidCfg: box k (1..N) has half-width P/2 + (N - k) t and top k h.
+  const double dx = x - stairsCx_, dy = y - stairsCy_;
+  const double c = std::cos(stairsYaw_), s = std::sin(stairsYaw_);
+  const double d = std::max(std::abs(c * dx + s * dy), std::abs(-s * dx + c * dy));
+  const double half = 0.5 * stairsPlatform_;
+  if(d <= half) { return stairsSteps_ * stairsH_; }
+  const int k = stairsSteps_ - static_cast<int>(std::ceil((d - half) / stairsTread_));
+  return k > 0 ? k * stairsH_ : 0.0;
+}
+
+Eigen::VectorXd NewRLQPController::stairsScan()
+{
+  constexpr int NX = 25, NY = 13;
+  constexpr double RES = 0.05, FWD = 0.3, OFFSET = 0.84;
+  Eigen::Vector3d p;
+  Eigen::Matrix3d R;  // body to world
+  if(stairsTruePose_)
+  {
+    const auto & bs = robot().bodySensor("FloatingBase");
+    p = bs.position();
+    R = bs.orientation().toRotationMatrix().transpose();  // mc_mujoco stores the inverse quaternion
+  }
+  else
+  {
+    const auto & X = realRobot(robots()[0].name()).posW();
+    p = X.translation();
+    R = X.rotation().transpose();
+  }
+  const double yaw = std::atan2(R(1, 0), R(0, 0));
+  const double c = std::cos(yaw), s = std::sin(yaw);
+  stairsScan_.resize(NX * NY);
+  for(int iy = 0; iy < NY; ++iy)
+  {
+    const double ly = -0.3 + iy * RES;
+    for(int ix = 0; ix < NX; ++ix)
+    {
+      const double lx = -0.6 + ix * RES + FWD;
+      const double h = stairsHeightAt(p.x() + c * lx - s * ly, p.y() + s * lx + c * ly);
+      stairsScan_(iy * NX + ix) = std::clamp(p.z() - h - OFFSET, -1.0, 1.0);
+    }
+  }
+  return stairsScan_;
+}
+
 void NewRLQPController::addGui()
 {
   gui()->addElement({"NewRLQPController", "Policy"},
@@ -1603,7 +1686,14 @@ void NewRLQPController::addGui()
     mc_rtc::gui::Label("Current policy",   [this]() -> const std::string & { return policyPaths_[currentPolicyIndex]; }),
     mc_rtc::gui::Label("Policy Loaded",    [this]() { return rlPolicy->isLoaded() ? "Yes" : "No"; }),
     mc_rtc::gui::Label("Observation Size", [this]() { return std::to_string(rlPolicy->getObservationSize()); }),
-    mc_rtc::gui::Label("Action Size",      [this]() { return std::to_string(rlPolicy->getActionSize()); })
+    mc_rtc::gui::Label("Action Size",      [this]() { return std::to_string(rlPolicy->getActionSize()); }),
+    mc_rtc::gui::Label("Stairs scan (obs 11)", [this]() -> std::string {
+      if(obsFormat_ != 11) return "-";
+      if(!stairsGeom_) return "flat ground (no RLQP_STAIRS)";
+      return fmt::format("{} x {:.3f} m, tread {:.2f} | pose {} | scan [{:.2f}, {:.2f}]", stairsSteps_, stairsH_,
+                         stairsTread_, stairsTruePose_ ? "true" : "ESTIMATED", stairsScan_.minCoeff(),
+                         stairsScan_.maxCoeff());
+    })
   );
 
   // Arming lives at the top level, not under a sub-category, so it is the
@@ -1732,6 +1822,12 @@ void NewRLQPController::configRL()
   }
 
   policyStepSize = config_("policies")[currentPolicyIndex]("policy_step_size", 0.01);
+  // Bench, simulation only: a candidate trained at another policy rate in the forced slot (50 Hz = 0.02).
+  if(const char * ps = std::getenv("RLQP_BENCH_POLICY_STEP"); ps && std::getenv("RLQP_BENCH_POLICY_INDEX"))
+  {
+    policyStepSize = std::atof(ps);
+    mc_rtc::log::warning("[NewRLQPController] BANC : policy_step_size {:.4f} s", policyStepSize);
+  }
   const double physicsStepSize = config_("policies")[currentPolicyIndex]("physics_step_size", 0.001);
   if(physicsStepSize - timeStep > 1e-6)
     mc_rtc::log::warning("[NewRLQPController] physics_step_size ({:.3f}s) > controller timeStep ({:.3f}s)",

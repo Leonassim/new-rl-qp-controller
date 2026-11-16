@@ -340,6 +340,7 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
   };
 
   switch (ctl.obsFormat_) {
+    case 11: // V3 + stairs height scan [325], 451 dims (mjlab RHPS1_STAIRS=1, height_scan).
     case 10: // V3 + both soles' 6-axis wrenches, history 5, 186 dims
              // (mjlab RHPS1_FOOT_WRENCH_OBS=1, _foot_wrench_obs).
     case 9: // V3 + soles' vertical loads (L, R) in body weights, 128 dims
@@ -449,6 +450,7 @@ Eigen::VectorXd utils::getCurrentObservation(mc_control::fsm::Controller & ctl_)
         }
         for(int i = ctl.HISTORY_SIZE - 1; i >= 0; --i) { appendToObs(ctl.footWrenchHist_[i]); }
       }
+      if(ctl.obsFormat_ == 11) { appendToObs(ctl.stairsScan()); }
       break;
     }
     case 7: // 530 dims = le format 5 plus l'horloge de demarche (4 x 5 dims).
