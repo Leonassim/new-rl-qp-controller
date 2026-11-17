@@ -35,7 +35,7 @@ struct Pose
   double head[7];         // estimated HEAD_P_LINK pose, same convention
   double pelvis_true[7];  // simulation ground truth; NaN on the robot
   double soles[2][4];     // L, R sole bottom centre: x y z yaw (estimated)
-  double loaded[2];       // 1 when the sole carries more than 10 N
+  double loaded[2];       // 1 when the sole carries more than 100 N
 };
 static_assert(sizeof(Pose) == 256, "Pose layout");
 

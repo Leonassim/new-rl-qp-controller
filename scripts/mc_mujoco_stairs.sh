@@ -11,7 +11,8 @@
 # Writes the scene object into mc_mujoco's user folder for this run and removes it on exit, exports
 # RLQP_STAIRS (same geometry) for obs_format 11's analytic height scan, preselects slot 22. Arm from the GUI.
 # RLQP_VISION=1: slot 23 (obs_format 12) and scripts/vision/rhps1_vision.py --source sim beside mc_mujoco, the
-# onboard height map through shared memory (log: $RLQP_VISION_LOG, default /tmp/rhps1_vision.log).
+# onboard height map through shared memory (log: $RLQP_VISION_LOG, default /tmp/rhps1_vision.log; extra options in
+# $RLQP_VISION_ARGS).
 set -eu
 H=${1:-0.04}
 T=${2:-0.27}
@@ -71,7 +72,8 @@ export RLQP_STAIRS="$CX 0 0 $H $T $N $P"
 if [ "${RLQP_VISION:-0}" = 1 ]; then
   export RLQP_BENCH_POLICY_INDEX=${RLQP_BENCH_POLICY_INDEX:-23}
   rm -f /dev/shm/rhps1_vision_pose /dev/shm/rhps1_vision_map  # a previous run's map carries its own clock
-  python3 "$(dirname "$(readlink -f "$0")")/vision/rhps1_vision.py" --source sim \
+  # shellcheck disable=SC2086  # RLQP_VISION_ARGS: extra options, e.g. --align
+  python3 "$(dirname "$(readlink -f "$0")")/vision/rhps1_vision.py" --source sim ${RLQP_VISION_ARGS:-} \
     > "${RLQP_VISION_LOG:-/tmp/rhps1_vision.log}" 2>&1 &
   VIS=$!
 fi

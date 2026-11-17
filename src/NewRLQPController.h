@@ -423,6 +423,14 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   bool visionTruePose_ = false;  // bench: ground-truth pelvis for the vision (RLQP_BENCH_VISION_TRUEPOSE)
   /** Body pose for the vision link ("" = pelvis): estimated, or the bench's ground truth. */
   sva::PTransformd visionPose(const std::string & body) const;
+  /** Vision height from leg odometry (vision_leg_z, default on): MCWaiko's 6D z overshoots stair climbs in
+   *  mc_mujoco (+5 to +13 cm over 12 cm). The loaded sole carrying the most weight keeps its height and the
+   *  pelvis follows through the kinematics; visionDz_ is added to MCWaiko's z, x/y/yaw stay MCWaiko's. */
+  void updateVisionZ();
+  bool visionLegZ_ = true;
+  int visionAnchor_ = -1;
+  double visionAnchorZ_ = 0.0;
+  double visionDz_ = 0.0;
   int visionWarn_ = 0;
   Eigen::VectorXd visionScan_ = Eigen::VectorXd::Zero(325);
   /** held_joints {name: target}: the controller holds these joints whatever the policy outputs (the vision

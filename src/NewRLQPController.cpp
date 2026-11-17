@@ -522,6 +522,9 @@ void NewRLQPController::initializeRobot()
     std::getline(comm, prog);
     visionSim_ = prog.find("mc_mujoco") != std::string::npos && robot().hasBodySensor("FloatingBase");
     visionTruePose_ = visionSim_ && std::getenv("RLQP_BENCH_VISION_TRUEPOSE");  // bench: isolate the estimator
+    visionLegZ_ = polCfg("vision_leg_z", true) && !std::getenv("RLQP_BENCH_VISION_WAIKO_Z");
+    visionAnchor_ = -1;
+    visionDz_ = 0.0;
     if(visionTruePose_) { mc_rtc::log::warning("[NewRLQPController] obs_format 12: BANC, pose vraie pour la vision"); }
     if(!visionLink_) { visionLink_ = std::make_unique<vision_link::Link>(); }
     mc_rtc::log::warning("[NewRLQPController] obs_format 12: onboard height map, pose -> {}, map <- {} ({}); "
@@ -1528,6 +1531,7 @@ void NewRLQPController::addLog()
   logger().addLogEntry("NewRLQPController_RL_qZero",         [this]() { return q_zero; });
   logger().addLogEntry("NewRLQPController_vision_age",        [this]() { return visionAge_; });
   logger().addLogEntry("NewRLQPController_vision_known",      [this]() { return visionKnown_; });
+  logger().addLogEntry("NewRLQPController_vision_dz",         [this]() { return visionDz_; });
   logger().addLogEntry("NewRLQPController_qdTarget",         [this]() { return qdTarget_; });
   // What mc_mujoco's PD actually receives. The stock qOut/alphaOut entries
   // read outputRobot() (the canonical robot), NOT the control robot mujoco
@@ -1755,15 +1759,44 @@ sva::PTransformd NewRLQPController::visionPose(const std::string & body) const
 {
   const auto & rr = realRobot(robots()[0].name());
   const sva::PTransformd X = body.empty() ? rr.posW() : rr.bodyPosW(body);
-  if(!visionTruePose_) { return X; }
+  if(!visionTruePose_) { return sva::PTransformd(X.rotation(), X.translation() + Eigen::Vector3d(0.0, 0.0, visionDz_)); }
   // Bench: same kinematics, pelvis from mc_mujoco's ground truth (it stores the inverse quaternion).
   const auto & bs = robot().bodySensor("FloatingBase");
   const sva::PTransformd Xt(Eigen::Matrix3d(bs.orientation().toRotationMatrix()), bs.position());
   return X * rr.posW().inv() * Xt;
 }
 
+void NewRLQPController::updateVisionZ()
+{
+  if(!visionLegZ_ || visionTruePose_) { visionDz_ = 0.0; return; }
+  const auto & rr = realRobot(robots()[0].name());
+  const char * ankles[2] = {"L_ANKLE_P_LINK", "R_ANKLE_P_LINK"};
+  const char * sensors[2] = {"LeftFootForceSensor", "RightFootForceSensor"};
+  double z[2], f[2];
+  for(int k = 0; k < 2; ++k)
+  {
+    // Lowest sole corner, not the sole centre: it stays on the ground while the foot rolls on its heel or toe.
+    // Centre-anchored, the height crept up ~1 cm per step on heel strikes (offline replay, mc_mujoco 6 cm).
+    const auto X = rr.bodyPosW(ankles[k]);
+    const Eigen::Matrix3d R = X.rotation().transpose();
+    z[k] = 1e9;
+    for(double cx : {0.015 - 0.1145, 0.015 + 0.1145})
+    {
+      for(double cy : {-0.065, 0.065}) { z[k] = std::min(z[k], (X.translation() + R * Eigen::Vector3d(cx, cy, -SOLE_DEPTH)).z()); }
+    }
+    f[k] = robot().hasForceSensor(sensors[k]) ? robot().forceSensor(sensors[k]).wrench().force().z() : 0.0;
+  }
+  const int heavy = f[0] >= f[1] ? 0 : 1;
+  if(f[heavy] < 100.0) { return; }  // no foot down: keep the offset
+  if(visionAnchor_ < 0) { visionAnchorZ_ = z[heavy]; }
+  else if(heavy != visionAnchor_) { visionAnchorZ_ = z[heavy] + visionDz_; }  // weight moved: continuous hand-over
+  visionAnchor_ = heavy;
+  visionDz_ = visionAnchorZ_ - z[visionAnchor_];
+}
+
 void NewRLQPController::publishVisionPose()
 {
+  updateVisionZ();
   vision_link::Pose p{};
   p.t = visionTime_;
   putPose(p.pelvis, visionPose(""));
@@ -1788,8 +1821,10 @@ void NewRLQPController::publishVisionPose()
     p.soles[k][1] = sole.y();
     p.soles[k][2] = sole.z();
     p.soles[k][3] = std::atan2(R(1, 0), R(0, 0));
+    // The ankle sensor reads -10 to -19 N on a swinging foot (its weight and inertia): |Fz| > 10 flagged the
+    // swing foot loaded 91 % of the time and its footprint raised the map behind the robot by ~3 cm.
     p.loaded[k] = robot().hasForceSensor(sensors[k])
-                      && std::abs(robot().forceSensor(sensors[k]).wrench().force().z()) > 10.0 ? 1.0 : 0.0;
+                      && robot().forceSensor(sensors[k]).wrench().force().z() > 100.0 ? 1.0 : 0.0;
   }
   visionLink_->publish(p);
 }

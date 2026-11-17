@@ -126,6 +126,12 @@ class HeightMap:
       self.h = np.where(same, (1 - self.alpha) * self.h + self.alpha * m, np.where(hit, m, self.h))
     self.key = np.where(hit, kb, self.key)
 
+  def under(self, pts):
+    """Known heights of the cells under pts (empty where never seen)."""
+    _, _, slot, key = self._slots(pts)
+    ok = self.key[slot] == key
+    return self.h[slot[ok]]
+
   def grid(self):
     """Plain n x n grid around the centre: (origin xy, heights with NaN where unknown), cell (i, j) at i * n + j."""
     c0 = np.floor(self.centre / self.res).astype(np.int64) - self.n // 2
@@ -217,6 +223,8 @@ def main():
   ap.add_argument("--sim-rays", type=int, default=72, help="sim: rays per image side")
   ap.add_argument("--azure-stride", type=int, default=4, help="azure: keep one pixel in N per axis")
   ap.add_argument("--alpha", type=float, default=0.5)
+  ap.add_argument("--align", action="store_true",
+                  help="at each touchdown flat on one surface, shift the whole map so the sole sits on the height the camera measured there (removes the estimator's height drift since the step was seen)")
   ap.add_argument("--cam-xyz", default="0.071,0.0017,0.1558", help="depth camera in HEAD_P_LINK, m")
   ap.add_argument("--cam-rpy", default="1.46608,0,-1.5708", help="depth camera in HEAD_P_LINK, URDF rpy")
   args = ap.parse_args()
@@ -227,6 +235,7 @@ def main():
   cam = SimCamera(args) if args.source == "sim" else AzureCamera(args)
   foot = np.array(FOOT)
   pending, last_frame, last_t, n_frames, t_wall = [], -1e9, -1.0, 0, time.time()
+  was_loaded, shifts = [False, False], []
   print(f"vision: source {args.source}, {args.rate:.0f} Hz, writing {MAP_SHM}", flush=True)
   while True:
     lp = poses.latest(1)
@@ -240,12 +249,20 @@ def main():
     R_pe, t_pe = pose_rt(pz["pelvis"])
     hm.centre = t_pe[:2]
     for k in range(2):  # loaded soles: the kinematic footprint, as training writes it
-      if pz["loaded"][k] > 0.5:
+      loaded = pz["loaded"][k] > 0.5
+      if loaded:
         x, y, z, yaw = pz["soles"][k]
         c, s = math.cos(yaw), math.sin(yaw)
         fp = np.stack([x + c * foot[:, 0] - s * foot[:, 1], y + s * foot[:, 0] + c * foot[:, 1],
                        np.full(len(foot), z)], 1)
+        if args.align and not was_loaded[k]:
+          hu = hm.under(fp)
+          if len(hu) >= 8 and np.ptp(hu) < 0.02:  # fully on one surface the camera has seen
+            dz = float(np.clip(z - np.median(hu), -0.05, 0.05))
+            hm.h += dz
+            shifts.append(dz)
         hm.write(fp, replace=True)
+      was_loaded[k] = loaded
     if last_t - last_frame >= 1.0 / args.rate:
       last_frame = last_t
       R_he, t_he = pose_rt(pz["head"])
@@ -275,7 +292,8 @@ def main():
     if time.time() - t_wall > 5.0:
       t_wall = time.time()
       _, h = hm.grid()
-      print(f"t {last_t:7.2f} s | {n_frames} frames | known {np.isfinite(h).mean():.0%}", flush=True)
+      al = f" | align {len(shifts)} shifts, mean {np.mean(shifts) * 100:+.1f} cm, max |{np.abs(shifts).max() * 100:.1f}| cm" if shifts else ""
+      print(f"t {last_t:7.2f} s | {n_frames} frames | known {np.isfinite(h).mean():.0%}{al}", flush=True)
 
 
 if __name__ == "__main__":
