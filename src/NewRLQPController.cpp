@@ -134,6 +134,8 @@ bool NewRLQPController::run()
   // Must run before anything that could trigger a solve this tick -- see
   // restoreQPVelocity()'s own comment for why the ordering matters.
   if(useQP_ && qpZeroVelOut_) { restoreQPVelocity(); }
+  visionTime_ += timeStep;
+  if(visionLink_) { publishVisionPose(); }
 
   // BANC AUTONOME (simulation seulement). Sans ces deux cles, rien ne change :
   // benchAutoArm_ vaut 0 et benchVelocity_ est nul par defaut. Elles ne sont
@@ -239,6 +241,7 @@ bool NewRLQPController::run()
   bool ret = mc_control::fsm::Controller::run(mc_solver::FeedbackType::OpenLoop);
   // After the state updated q_rl: the bypass sends it now, the QP posture target takes it next tick.
   projectCylinderLimits();
+  applyHeldJoints();
   // Same gate on the bypass path: disarmed means no policy output reaches the
   // robot, whichever mode is configured.
   if(!useQP_ && policyArmed_) byPassQPControl();
@@ -384,7 +387,11 @@ void NewRLQPController::initializeRobot()
   obsFormat_      = size_t(int(config_("policies")[currentPolicyIndex]("obs_format", int(currentPolicyIndex))));
   stairsGeom_ = false;
   stairsTruePose_ = false;
-  if(obsFormat_ == 11)
+  // Bench control for obs_format 12: RLQP_BENCH_VISION_EXACT=true|est feeds the analytic scan (true or estimated
+  // pose) instead of the map; the vision link keeps running for the logs.
+  const char * visExact = obsFormat_ == 12 ? std::getenv("RLQP_BENCH_VISION_EXACT") : nullptr;
+  visionExact_ = false;
+  if(obsFormat_ == 11 || visExact)
   {
     std::ifstream comm("/proc/self/comm");
     std::string prog;
@@ -397,7 +404,8 @@ void NewRLQPController::initializeRobot()
       is >> stairsCx_ >> stairsCy_ >> stairsYaw_ >> stairsH_ >> stairsTread_ >> stairsSteps_ >> stairsPlatform_;
       stairsGeom_ = !is.fail();
     }
-    stairsTruePose_ = sim && robot().hasBodySensor("FloatingBase");
+    stairsTruePose_ = sim && robot().hasBodySensor("FloatingBase") && !(visExact && std::string(visExact) == "est");
+    visionExact_ = visExact && stairsGeom_;
     if(stairsGeom_)
     {
       mc_rtc::log::warning("[NewRLQPController] obs_format 11: escalier centre ({:.2f}, {:.2f}) lacet {:.2f} rad, "
@@ -489,6 +497,38 @@ void NewRLQPController::initializeRobot()
   // Opt-in: absent, the arming sequence is exactly the legacy one.
   armPosture_.resize(0);
   const auto & polCfg = config_("policies")[currentPolicyIndex];
+  heldJoints_.clear();
+  heldRate_ = polCfg("held_joint_rate", 0.5);
+  if(polCfg.has("held_joints"))
+  {
+    std::map<std::string, double> hm = polCfg("held_joints");
+    for(const auto & [name, v] : hm)
+    {
+      auto it = std::find(jointNames.begin(), jointNames.end(), name);
+      if(it == jointNames.end())
+      {
+        mc_rtc::log::error_and_throw("[NewRLQPController] held_joints: {} is not an actuated joint", name);
+      }
+      heldJoints_.push_back({static_cast<int>(std::distance(jointNames.begin(), it)), v, 0.0, false});
+      mc_rtc::log::warning("[NewRLQPController] held_joints: {} held at {:.4f} rad ({:.2f} rad/s from arming)",
+                           name, v, heldRate_);
+    }
+  }
+  if(obsFormat_ == 12)
+  {
+    visionMaxAge_ = polCfg("vision_max_age", 0.5);
+    std::ifstream comm("/proc/self/comm");
+    std::string prog;
+    std::getline(comm, prog);
+    visionSim_ = prog.find("mc_mujoco") != std::string::npos && robot().hasBodySensor("FloatingBase");
+    visionTruePose_ = visionSim_ && std::getenv("RLQP_BENCH_VISION_TRUEPOSE");  // bench: isolate the estimator
+    if(visionTruePose_) { mc_rtc::log::warning("[NewRLQPController] obs_format 12: BANC, pose vraie pour la vision"); }
+    if(!visionLink_) { visionLink_ = std::make_unique<vision_link::Link>(); }
+    mc_rtc::log::warning("[NewRLQPController] obs_format 12: onboard height map, pose -> {}, map <- {} ({}); "
+                         "maps older than {:.2f} s read as flat ground", vision_link::POSE_SHM,
+                         vision_link::MAP_SHM, visionLink_->ok() ? "pose published" : "SHM FAILED",
+                         visionMaxAge_);
+  }
   if(polCfg.has("arm_posture"))
   {
     std::map<std::string, double> armMap = polCfg("arm_posture");
@@ -1486,6 +1526,8 @@ void NewRLQPController::addLog()
   logger().addLogEntry("NewRLQPController_pd_gains_ratio",   [this]() { return pdGainsRatio_; });
   logger().addLogEntry("NewRLQPController_RL_q",             [this]() { return q_rl; });
   logger().addLogEntry("NewRLQPController_RL_qZero",         [this]() { return q_zero; });
+  logger().addLogEntry("NewRLQPController_vision_age",        [this]() { return visionAge_; });
+  logger().addLogEntry("NewRLQPController_vision_known",      [this]() { return visionKnown_; });
   logger().addLogEntry("NewRLQPController_qdTarget",         [this]() { return qdTarget_; });
   // What mc_mujoco's PD actually receives. The stock qOut/alphaOut entries
   // read outputRobot() (the canonical robot), NOT the control robot mujoco
@@ -1675,6 +1717,153 @@ Eigen::VectorXd NewRLQPController::stairsScan()
   return stairsScan_;
 }
 
+void NewRLQPController::applyHeldJoints()
+{
+  if(heldJoints_.empty()) { return; }
+  const auto & rr = realRobot(robots()[0].name());
+  for(auto & h : heldJoints_)
+  {
+    if(!policyArmed_ || !h.init)
+    {
+      h.cur = rr.mbc().q[rr.jointIndexByName(jointNames[h.i])][0];
+      h.init = policyArmed_;
+      if(!policyArmed_) { continue; }
+    }
+    const double step = heldRate_ * timeStep;
+    h.cur += std::clamp(h.target - h.cur, -step, step);
+    q_rl(h.i) = h.cur;
+  }
+}
+
+namespace
+{
+void putPose(double * d, const sva::PTransformd & X)
+{
+  const Eigen::Quaterniond q(Eigen::Matrix3d(X.rotation().transpose()));  // body to world
+  d[0] = X.translation().x();
+  d[1] = X.translation().y();
+  d[2] = X.translation().z();
+  d[3] = q.w();
+  d[4] = q.x();
+  d[5] = q.y();
+  d[6] = q.z();
+}
+constexpr double SOLE_DEPTH = 0.097;  // ankle to sole bottom (mjlab stairs.py)
+} // namespace
+
+sva::PTransformd NewRLQPController::visionPose(const std::string & body) const
+{
+  const auto & rr = realRobot(robots()[0].name());
+  const sva::PTransformd X = body.empty() ? rr.posW() : rr.bodyPosW(body);
+  if(!visionTruePose_) { return X; }
+  // Bench: same kinematics, pelvis from mc_mujoco's ground truth (it stores the inverse quaternion).
+  const auto & bs = robot().bodySensor("FloatingBase");
+  const sva::PTransformd Xt(Eigen::Matrix3d(bs.orientation().toRotationMatrix()), bs.position());
+  return X * rr.posW().inv() * Xt;
+}
+
+void NewRLQPController::publishVisionPose()
+{
+  vision_link::Pose p{};
+  p.t = visionTime_;
+  putPose(p.pelvis, visionPose(""));
+  putPose(p.head, visionPose("HEAD_P_LINK"));
+  std::fill(std::begin(p.pelvis_true), std::end(p.pelvis_true), NAN);
+  if(visionSim_)
+  {
+    const auto & bs = robot().bodySensor("FloatingBase");
+    const Eigen::Quaterniond q(Eigen::Matrix3d(bs.orientation().toRotationMatrix().transpose()));
+    const Eigen::Vector3d & t = bs.position();
+    const double v[7] = {t.x(), t.y(), t.z(), q.w(), q.x(), q.y(), q.z()};
+    std::copy(v, v + 7, p.pelvis_true);
+  }
+  const char * ankles[2] = {"L_ANKLE_P_LINK", "R_ANKLE_P_LINK"};
+  const char * sensors[2] = {"LeftFootForceSensor", "RightFootForceSensor"};
+  for(int k = 0; k < 2; ++k)
+  {
+    const auto X = visionPose(ankles[k]);
+    const Eigen::Matrix3d R = X.rotation().transpose();
+    const Eigen::Vector3d sole = X.translation() - R * Eigen::Vector3d(0.0, 0.0, SOLE_DEPTH);
+    p.soles[k][0] = sole.x();
+    p.soles[k][1] = sole.y();
+    p.soles[k][2] = sole.z();
+    p.soles[k][3] = std::atan2(R(1, 0), R(0, 0));
+    p.loaded[k] = robot().hasForceSensor(sensors[k])
+                      && std::abs(robot().forceSensor(sensors[k]).wrench().force().z()) > 10.0 ? 1.0 : 0.0;
+  }
+  visionLink_->publish(p);
+}
+
+Eigen::VectorXd NewRLQPController::visionScan()
+{
+  constexpr int NX = 25, NY = 13;
+  constexpr double RES = 0.05, FWD = 0.3, OFFSET = 0.84;
+  const auto X = visionPose("");
+  const Eigen::Vector3d p = X.translation();
+  const Eigen::Matrix3d R = X.rotation().transpose();
+  const double yaw = std::atan2(R(1, 0), R(0, 0));
+  const double c = std::cos(yaw), s = std::sin(yaw);
+  double fill = 1e9;
+  for(const char * a : {"L_ANKLE_P_LINK", "R_ANKLE_P_LINK"})
+  {
+    const auto Xa = visionPose(a);
+    fill = std::min(fill, (Xa.translation() - Xa.rotation().transpose() * Eigen::Vector3d(0, 0, SOLE_DEPTH)).z());
+  }
+  bool use = false;
+  if(visionLink_)
+  {
+    visionLink_->poll();
+    if(visionLink_->have())
+    {
+      visionAge_ = visionTime_ - visionLink_->map().t_frame;
+      use = visionAge_ >= 0.0 && visionAge_ <= visionMaxAge_;
+      if(visionAge_ > 2.0) { visionLink_->dropMap(); }  // the vision process may have restarted
+    }
+  }
+  static const vision_link::MapBlock noMap{};
+  const auto & m = visionLink_ ? visionLink_->map() : noMap;
+  const int n = static_cast<int>(m.n);
+  auto cell = [&](int i, int j, bool & known) -> double {
+    if(i < 0 || j < 0 || i >= n || j >= n) { known = false; return fill; }
+    const float v = m.h[i * n + j];
+    known = !std::isnan(v);
+    return known ? static_cast<double>(v) : fill;
+  };
+  int nKnown = 0;
+  visionScan_.resize(NX * NY);
+  for(int iy = 0; iy < NY; ++iy)
+  {
+    const double ly = -0.3 + iy * RES;
+    for(int ix = 0; ix < NX; ++ix)
+    {
+      const double lx = -0.6 + ix * RES + FWD;
+      double h = fill;
+      if(use)
+      {
+        const double fx = (p.x() + c * lx - s * ly - m.origin[0]) / m.res - 0.5;
+        const double fy = (p.y() + s * lx + c * ly - m.origin[1]) / m.res - 0.5;
+        const int i0 = static_cast<int>(std::floor(fx)), j0 = static_cast<int>(std::floor(fy));
+        const double wx = fx - i0, wy = fy - j0;
+        bool k00, k10, k01, k11;
+        h = (1 - wx) * (1 - wy) * cell(i0, j0, k00) + wx * (1 - wy) * cell(i0 + 1, j0, k10)
+            + (1 - wx) * wy * cell(i0, j0 + 1, k01) + wx * wy * cell(i0 + 1, j0 + 1, k11);
+        bool kn;
+        cell(static_cast<int>(std::lround(fx)), static_cast<int>(std::lround(fy)), kn);
+        nKnown += kn ? 1 : 0;
+      }
+      visionScan_(iy * NX + ix) = std::clamp(p.z() - h - OFFSET, -1.0, 1.0);
+    }
+  }
+  visionKnown_ = static_cast<double>(nKnown) / (NX * NY);
+  if(!use && visionWarn_++ % 100 == 0)
+  {
+    mc_rtc::log::warning("[NewRLQPController] obs_format 12: {} -- scan = flat ground at the lowest sole",
+                         visionLink_ && visionLink_->have() ? fmt::format("map {:.2f} s old", visionAge_)
+                                                            : std::string("no map yet"));
+  }
+  return visionScan_;
+}
+
 void NewRLQPController::addGui()
 {
   gui()->addElement({"NewRLQPController", "Policy"},
@@ -1687,6 +1876,12 @@ void NewRLQPController::addGui()
     mc_rtc::gui::Label("Policy Loaded",    [this]() { return rlPolicy->isLoaded() ? "Yes" : "No"; }),
     mc_rtc::gui::Label("Observation Size", [this]() { return std::to_string(rlPolicy->getObservationSize()); }),
     mc_rtc::gui::Label("Action Size",      [this]() { return std::to_string(rlPolicy->getActionSize()); }),
+    mc_rtc::gui::Label("Vision map (obs 12)", [this]() -> std::string {
+      if(obsFormat_ != 12) return "-";
+      if(!visionLink_ || !visionLink_->have()) return "no map (vision process not running?)";
+      return fmt::format("age {:.2f} s | known {:.0f} % | scan [{:.2f}, {:.2f}]", visionAge_, 100.0 * visionKnown_,
+                         visionScan_.minCoeff(), visionScan_.maxCoeff());
+    }),
     mc_rtc::gui::Label("Stairs scan (obs 11)", [this]() -> std::string {
       if(obsFormat_ != 11) return "-";
       if(!stairsGeom_) return "flat ground (no RLQP_STAIRS)";

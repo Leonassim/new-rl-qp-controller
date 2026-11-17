@@ -8,6 +8,7 @@
 #include "api.h"
 
 #include "RLPolicyInterface.h"
+#include "vision_link.h"
 #include "utils.h"
 
 struct CylinderLimitsConstraint;
@@ -406,6 +407,31 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   double stairsTread_ = 0.27, stairsPlatform_ = 1.6;
   int stairsSteps_ = 3;
   Eigen::VectorXd stairsScan_ = Eigen::VectorXd::Zero(325);
+  /** obs_format 12: the same scan read from the onboard height map that the vision process builds
+   *  (scripts/vision/rhps1_vision.py, mjlab vision_map.py in training), through vision_link shared memory.
+   *  Estimated pose (as on the robot), bilinear between cell centres, unknown cells at the lowest sole;
+   *  no map or one older than vision_max_age: flat ground at the lowest sole. */
+  Eigen::VectorXd visionScan();
+  void publishVisionPose();
+  std::unique_ptr<vision_link::Link> visionLink_;
+  double visionTime_ = 0.0;
+  double visionAge_ = -1.0;
+  double visionKnown_ = 0.0;
+  double visionMaxAge_ = 0.5;
+  bool visionSim_ = false;
+  bool visionExact_ = false;  // bench: analytic scan instead of the map (RLQP_BENCH_VISION_EXACT)
+  bool visionTruePose_ = false;  // bench: ground-truth pelvis for the vision (RLQP_BENCH_VISION_TRUEPOSE)
+  /** Body pose for the vision link ("" = pelvis): estimated, or the bench's ground truth. */
+  sva::PTransformd visionPose(const std::string & body) const;
+  int visionWarn_ = 0;
+  Eigen::VectorXd visionScan_ = Eigen::VectorXd::Zero(325);
+  /** held_joints {name: target}: the controller holds these joints whatever the policy outputs (the vision
+   *  student trains with HEAD_P held at 25 deg), reached at held_joint_rate rad/s from the arming posture.
+   *  Applied to the command only: the policy still sees its own raw output as last action, as in training. */
+  struct HeldJoint { int i; double target; double cur; bool init; };
+  std::vector<HeldJoint> heldJoints_;
+  double heldRate_ = 0.5;
+  void applyHeldJoints();
   /** obs_format 10: both soles' 6-axis wrenches, same filter, history HISTORY_SIZE. */
   bool footWrenchInit_ = false;
   Eigen::Matrix<double, 12, 1> footWrenchLP_ = Eigen::Matrix<double, 12, 1>::Zero();
