@@ -411,8 +411,9 @@ def main():
   ap.add_argument("--head-pitch-deg", type=float, default=25.0, help="HEAD_P the ROI pixels are aimed with")
   ap.add_argument("--scan-offset", type=float, default=0.84, help="ground below the pelvis, stairs SCAN_OFFSET")
   ap.add_argument("--all-pixels", action="store_true", help="udp: no ROI mask (ceiling and walls reach the map)")
-  ap.add_argument("--cam-xyz", default="0.071,0.0017,0.1558", help="depth camera in HEAD_P_LINK, m")
-  ap.add_argument("--cam-rpy", default="1.46608,0,-1.5708", help="depth camera in HEAD_P_LINK, URDF rpy")
+  ap.add_argument("--cam-xyz", default="0.1190,0.0017,0.1825",
+                  help="depth camera in HEAD_P_LINK, m (fitted on rhps1, 2026-11-18; vision_map.py CAM_POS)")
+  ap.add_argument("--cam-rpy", default="1.49513,-0.00503,-1.57095", help="depth camera in HEAD_P_LINK, URDF rpy")
   args = ap.parse_args()
 
   cam_t = np.array([float(v) for v in args.cam_xyz.split(",")])
