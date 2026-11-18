@@ -159,14 +159,21 @@ def stairs_height(x, y, g):
   return np.where(d <= platform / 2, nsteps * hh, np.where(k > 0, k * hh, 0.0))
 
 
+def boxes_from_env():
+  """RLQP_BOXES "x0 x1 y0 y1 h; ...": axis-aligned blocks on the floor (mc_mujoco_stairs.sh box scenes)."""
+  return [[float(v) for v in b.split()] for b in os.environ.get("RLQP_BOXES", "").split(";") if b.strip()]
+
+
 class SimCamera:
-  """Pinhole rays inside the 120 deg WFOV circle, below the horizon at the nominal head pitch, cast on RLQP_STAIRS."""
+  """Pinhole rays inside the 120 deg WFOV circle, below the horizon at the nominal head pitch, cast on RLQP_STAIRS
+  and RLQP_BOXES."""
 
   def __init__(self, args):
     g = os.environ.get("RLQP_STAIRS", "")
     self.geom = [float(v) for v in g.split()] if g else None
-    if self.geom is None:
-      print("RLQP_STAIRS unset: flat ground", flush=True)
+    self.boxes = boxes_from_env()
+    if self.geom is None and not self.boxes:
+      print("RLQP_STAIRS and RLQP_BOXES unset: flat ground", flush=True)
     t = math.tan(math.radians(60.0))
     u = np.linspace(-t, t, args.sim_rays)
     gu, gv = np.meshgrid(u, u)
@@ -177,13 +184,19 @@ class SimCamera:
     self.rng = np.random.default_rng(0)
     self.noise = args.noise
 
+  def height(self, x, y):
+    h = stairs_height(x, y, self.geom) if self.geom else np.zeros(np.shape(x))
+    for x0, x1, y0, y1, bh in self.boxes:
+      h = np.where((x >= x0) & (x <= x1) & (y >= y0) & (y <= y1), np.maximum(h, bh), h)
+    return h
+
   def points(self, R_cam, t_cam):
     """Hit points in the camera frame (m), rays that hit within 0.25-2.88 m."""
     dw = self.dirs @ R_cam.T
     dw = dw[dw[:, 2] < -0.05]
     ts = np.arange(0.25, 2.88, 0.01)
     p = t_cam[None, None, :] + ts[None, :, None] * dw[:, None, :]
-    terr = stairs_height(p[..., 0], p[..., 1], self.geom) if self.geom else np.zeros(p.shape[:2])
+    terr = self.height(p[..., 0], p[..., 1])
     below = p[..., 2] <= terr
     hit = below.any(1)
     k = np.argmax(below, 1)[hit]
@@ -192,7 +205,7 @@ class SimCamera:
     for _ in range(6):  # bisection on the step that crossed the surface
       mid = 0.5 * (lo + hi)
       q = t_cam + mid[:, None] * dw
-      under = q[:, 2] <= (stairs_height(q[:, 0], q[:, 1], self.geom) if self.geom else 0.0)
+      under = q[:, 2] <= self.height(q[:, 0], q[:, 1])
       hi, lo = np.where(under, mid, hi), np.where(under, lo, mid)
     r = hi + self.rng.normal(0.0, self.noise, hi.shape)
     return (r[:, None] * dw) @ R_cam  # back in the camera frame

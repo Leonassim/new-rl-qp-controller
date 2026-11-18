@@ -5,7 +5,8 @@
 source /opt/ros/humble/setup.bash
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp ROS_DOMAIN_ID=200
 unset ROS_LOCALHOST_ONLY
-# Real mount, fitted on the floor with the robot standing (2026-11-18, calib1): 2.0 deg less pitch and 2.3 cm higher
-# than the URDF's azure_depth_frame; the floor then reads flat to 0.3 cm from 0.6 to 2.6 m.
-CAM="--cam-xyz 0.0710,0.0017,0.1789 --cam-rpy 1.50105,-0.00041,-1.57081"
+# Real mount (2026-11-18, T1): Azure support of the lab URDF + factory depth offset, refitted on the floor at head
+# 0 / 12.6 / 25.2 deg with one pose: optical centre 4.0 cm ahead and 0.6 cm above that chain, 4.3 deg down instead of
+# 6. Floor flat to 0.3 cm at all three head angles, 24.5 cm box read 24.7-25.6.
+CAM="--cam-xyz 0.1190,0.0017,0.1825 --cam-rpy 1.49513,-0.00503,-1.57095"
 exec taskset -c 4-7 nice -n 5 python3 -u "$(dirname "$(readlink -f "$0")")/rhps1_vision.py" --source udp --ros $CAM "$@"

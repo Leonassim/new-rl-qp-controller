@@ -44,6 +44,19 @@ for k in range(1, n + 1):
 open(out, "w").write('<mujoco model="rhps1_stairs">\n  <worldbody>\n    <body name="base" pos="0 0 0">\n'
                      + "\n".join(g) + "\n    </body>\n  </worldbody>\n</mujoco>\n")
 EOF
+if [ -n "${RLQP_BOXES:-}" ]; then  # "x0 x1 y0 y1 h; ...": blocks on flat ground instead of the pyramid
+  CX=0
+  python3 - "$U/rhps1_stairs.xml" "$RLQP_BOXES" <<'EOF'
+import sys
+g = []
+for k, b in enumerate(b for b in sys.argv[2].split(";") if b.strip()):
+  x0, x1, y0, y1, h = (float(v) for v in b.split())
+  g.append(f'      <geom name="box{k}" type="box" size="{(x1 - x0) / 2:.4f} {(y1 - y0) / 2:.4f} {h / 2:.4f}" '
+           f'pos="{(x0 + x1) / 2:.4f} {(y0 + y1) / 2:.4f} {h / 2:.4f}" condim="3" group="1" rgba="0.8 0.5 0.2 1"/>')
+open(sys.argv[1], "w").write('<mujoco model="rhps1_stairs">\n  <worldbody>\n    <body name="base" pos="0 0 0">\n'
+                             + "\n".join(g) + "\n    </body>\n  </worldbody>\n</mujoco>\n")
+EOF
+fi
 cat > "$U/rhps1_stairs.yaml" <<EOF
 $MARK, removed on exit.
 xmlModelPath: "$U/rhps1_stairs.xml"
@@ -68,7 +81,11 @@ trap cleanup EXIT
 # the trap forwards Ctrl-C and TERM to it.
 trap 'cleanup; [ -n "$CHILD" ] && kill -TERM "$CHILD" 2>/dev/null && wait "$CHILD"; exit 130' INT TERM
 
-export RLQP_STAIRS="$CX 0 0 $H $T $N $P"
+if [ -n "${RLQP_BOXES:-}" ]; then
+  unset RLQP_STAIRS  # flat ground for obs_format 11's analytic scan; the vision's sim camera reads RLQP_BOXES
+else
+  export RLQP_STAIRS="$CX 0 0 $H $T $N $P"
+fi
 if [ "${RLQP_VISION:-0}" = 1 ]; then
   export RLQP_BENCH_POLICY_INDEX=${RLQP_BENCH_POLICY_INDEX:-23}
   rm -f /dev/shm/rhps1_vision_pose /dev/shm/rhps1_vision_map  # a previous run's map carries its own clock
