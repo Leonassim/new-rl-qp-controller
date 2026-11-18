@@ -9,6 +9,10 @@ frame weight ALPHA on known cells, loaded soles written under the feet, cells ne
   --source sim     simulated depth camera (mc_mujoco): rays cast from the TRUE head pose against the stairs of
                    RLQP_STAIRS, points placed with the ESTIMATED pose, as on the robot; latency --lat.
   --source azure   Azure Kinect through pyk4a (WFOV 2x2 binned). Not tested on hardware yet.
+  --source udp     depth from the Jetson (rlqp_depth_send.py, UDP --udp-port): each frame is placed with the head
+                   pose at its exposure stamp (pose history kept in wall-clock time, both PCs NTP-synced), and the
+                   map is stamped when it is written, so vision_max_age checks that the stream is alive while the
+                   Wi-Fi delay (printed) only makes the newest terrain arrive later.
 
 Example (simulation): RLQP_STAIRS="1.64 0 0 0.05 0.27 3 1.6" python3 rhps1_vision.py --source sim
 """
@@ -17,8 +21,11 @@ import math
 import mmap
 import os
 import struct
+import socket
 import sys
+import threading
 import time
+import warnings
 
 import numpy as np
 
@@ -213,9 +220,111 @@ class AzureCamera:
     return np.stack([p[:, 0], -p[:, 1], -p[:, 2]], 1)  # to x right, y up, -z forward
 
 
+def unproject_table(W, H, stride, fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6):
+  """Normalised rays (x/z, y/z) of the strided pixels for the rational polynomial model, NaN where the inversion does
+  not converge (past the lens' metric radius)."""
+  u, v = np.meshgrid(np.arange(0, W, stride, dtype=float), np.arange(0, H, stride, dtype=float))
+  xd, yd = (u - cx) / fx, (v - cy) / fy
+
+  def distort(x, y):
+    r2 = x * x + y * y
+    rad = (1 + r2 * (k1 + r2 * (k2 + r2 * k3))) / (1 + r2 * (k4 + r2 * (k5 + r2 * k6)))
+    return (x * rad + 2 * p1 * x * y + p2 * (r2 + 2 * x * x), y * rad + p1 * (r2 + 2 * y * y) + 2 * p2 * x * y)
+
+  x, y = xd.copy(), yd.copy()
+  for _ in range(60):
+    dx, dy = distort(x, y)
+    x, y = x + (xd - dx), y + (yd - dy)
+  dx, dy = distort(x, y)
+  bad = (np.hypot(dx - xd, dy - yd) > 1e-6) | ~np.isfinite(x) | ~np.isfinite(y)
+  x[bad], y[bad] = np.nan, np.nan
+  return x, y
+
+
+class UdpDepthCamera:
+  """Frames from rlqp_depth_send.py. A thread assembles datagrams; frames() hands over the finished ones."""
+
+  FRAME = struct.Struct("<4sIdHHHHBBH")
+  INTR = struct.Struct("<4sIHHBBH12d")
+
+  def __init__(self, args):
+    self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 << 20)
+    self.sock.bind(("0.0.0.0", args.udp_port))
+    self.edge = args.edge_filter
+    self.lock, self.done, self.cur, self.intr, self.rays = threading.Lock(), [], None, None, None
+    self.n_lost = 0
+    threading.Thread(target=self._rx, daemon=True).start()
+
+  def _finish(self):
+    f = self.cur
+    if f is not None:
+      if f["rows"] >= 0.8 * f["d"].shape[0]:
+        self.done.append((f["stamp"], f["d"]))
+        del self.done[:-4]
+      else:
+        self.n_lost += 1
+    self.cur = None
+
+  def _rx(self):
+    while True:
+      p, _ = self.sock.recvfrom(2048)
+      if p[:4] == b"RLK1" and len(p) == self.INTR.size:
+        v = self.INTR.unpack(p)
+        intr = (v[2], v[3], v[4]) + v[7:]
+        if intr != self.intr:
+          rays = unproject_table(*intr)
+          with self.lock:
+            self.intr, self.rays = intr, rays
+          print(f"udp: intrinsics {v[2]}x{v[3]} stride {v[4]}, fx {v[7]:.1f}, "
+                f"{np.isfinite(rays[0]).mean():.0%} of the pixels unprojected", flush=True)
+        continue
+      if p[:4] != b"RLD1" or len(p) < self.FRAME.size:
+        continue
+      _, seq, stamp, w, h, r0, nr, _, _, _ = self.FRAME.unpack_from(p)
+      with self.lock:
+        if self.cur is not None and seq != self.cur["seq"]:
+          if seq < self.cur["seq"]:
+            continue
+          self._finish()
+        if self.cur is None:
+          self.cur = {"seq": seq, "stamp": stamp, "rows": 0, "d": np.zeros((h, w), np.uint16)}
+        self.cur["d"][r0 : r0 + nr] = np.frombuffer(p, np.uint16, nr * w, self.FRAME.size).reshape(nr, w)
+        self.cur["rows"] += nr
+        if self.cur["rows"] >= h:
+          self._finish()
+
+  def frames(self):
+    with self.lock:
+      out, self.done = self.done, []
+      rays = self.rays
+    return out, rays
+
+  def points(self, d_mm, rays):
+    """Points in the MuJoCo camera convention (x right, y up, -z forward), same as AzureCamera."""
+    d = d_mm.astype(np.float64) / 1000.0
+    d[d_mm == 0] = np.nan
+    if self.edge > 0:  # flying pixels between a step edge and what lies behind it
+      pad = np.pad(d, 1, constant_values=np.nan)
+      nb = np.stack([pad[i : i + d.shape[0], j : j + d.shape[1]] for i in range(3) for j in range(3)])
+      with np.errstate(all="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN neighbourhoods at the lens edge
+        med = np.nanmedian(nb, axis=0)
+      d[np.abs(d - med) > np.maximum(self.edge, self.edge * d)] = np.nan
+    x, y = rays
+    p = np.stack([x * d, y * d, d], -1).reshape(-1, 3)
+    r = np.linalg.norm(p, axis=1)
+    p = p[np.isfinite(r) & (r > 0.25) & (r < 2.88)]
+    return np.stack([p[:, 0], -p[:, 1], -p[:, 2]], 1)
+
+
 def main():
   ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-  ap.add_argument("--source", choices=("sim", "azure"), default="sim")
+  ap.add_argument("--source", choices=("sim", "azure", "udp"), default="sim")
+  ap.add_argument("--udp-port", type=int, default=5263, help="udp: port rlqp_depth_send.py sends to")
+  ap.add_argument("--edge-filter", type=float, default=0.05,
+                  help="udp: drop pixels off their 3x3 median by more than this fraction of depth (and m), 0 = off")
+  ap.add_argument("--record", default="", help="udp: save every frame (depth, stamp, matched poses) to this .npz")
   ap.add_argument("--rate", type=float, default=25.0, help="depth frames per second of controller time")
   ap.add_argument("--lat", type=float, default=0.08, help="sim: frame-to-map latency, s of controller time")
   ap.add_argument("--azure-lat", type=float, default=0.04, help="azure: capture-to-host delay assumed, s")
@@ -232,7 +341,8 @@ def main():
   cam_t = np.array([float(v) for v in args.cam_xyz.split(",")])
   cam_R = rpy_mat(*[float(v) for v in args.cam_rpy.split(",")])
   poses, out, hm = PoseReader(), MapWriter(), HeightMap(alpha=args.alpha)
-  cam = SimCamera(args) if args.source == "sim" else AzureCamera(args)
+  cam = {"sim": SimCamera, "azure": AzureCamera, "udp": UdpDepthCamera}[args.source](args)
+  hist, lat_net, rec = [], [], {"t": [], "stamp": [], "depth": [], "head": [], "pelvis": []}
   foot = np.array(FOOT)
   pending, last_frame, last_t, n_frames, t_wall = [], -1e9, -1.0, 0, time.time()
   was_loaded, shifts = [False, False], []
@@ -244,6 +354,8 @@ def main():
       continue
     pz = lp[0]
     last_t = float(pz["t"])
+    hist.append((time.time(), pz))
+    del hist[: max(0, len(hist) - 800)]  # 4 s at 200 Hz
     if last_t < last_frame:  # controller restarted
       hm, pending, last_frame = HeightMap(alpha=args.alpha), [], -1e9
     R_pe, t_pe = pose_rt(pz["pelvis"])
@@ -263,7 +375,27 @@ def main():
             shifts.append(dz)
         hm.write(fp, replace=True)
       was_loaded[k] = loaded
-    if last_t - last_frame >= 1.0 / args.rate:
+    if args.source == "udp":
+      frames, rays = cam.frames()
+      for stamp, d in frames:
+        if rays is None or not hist or stamp < hist[0][0]:
+          continue
+        k = min(range(len(hist)), key=lambda i: abs(hist[i][0] - stamp))
+        R_hc, t_hc = pose_rt(hist[k][1]["head"])
+        pc = cam.points(d, rays)
+        hm.write(pc @ (R_hc @ cam_R).T + (R_hc @ cam_t + t_hc), replace=False)
+        origin, h = hm.grid()
+        out.write(last_t, hm.res, origin, h)  # stamped now: vision_max_age watches the stream, not the Wi-Fi delay
+        lat_net.append(time.time() - stamp)
+        n_frames += 1
+        if args.record:
+          for key, val in (("t", hist[k][1]["t"]), ("stamp", stamp), ("depth", d), ("head", hist[k][1]["head"]),
+                           ("pelvis", hist[k][1]["pelvis"])):
+            rec[key].append(val)
+          if n_frames % 50 == 0:
+            np.savez(args.record, **{key: np.array(v) for key, v in rec.items()}, rays_x=rays[0], rays_y=rays[1],
+                     cam_xyz=cam_t, cam_rpy=np.array([float(v) for v in args.cam_rpy.split(",")]))
+    elif last_t - last_frame >= 1.0 / args.rate:
       last_frame = last_t
       R_he, t_he = pose_rt(pz["head"])
       if args.source == "sim":
@@ -293,7 +425,10 @@ def main():
       t_wall = time.time()
       _, h = hm.grid()
       al = f" | align {len(shifts)} shifts, mean {np.mean(shifts) * 100:+.1f} cm, max |{np.abs(shifts).max() * 100:.1f}| cm" if shifts else ""
-      print(f"t {last_t:7.2f} s | {n_frames} frames | known {np.isfinite(h).mean():.0%}{al}", flush=True)
+      net = (f" | exposure->map {np.median(lat_net) * 1e3:.0f} ms median, {np.max(lat_net) * 1e3:.0f} max,"
+             f" {cam.n_lost} frames lost") if lat_net else ""
+      lat_net = []
+      print(f"t {last_t:7.2f} s | {n_frames} frames | known {np.isfinite(h).mean():.0%}{al}{net}", flush=True)
 
 
 if __name__ == "__main__":
