@@ -12,6 +12,10 @@
 #include "utils.h"
 
 struct CylinderLimitsConstraint;
+namespace rlqp_compat
+{
+struct CbfVelocityLimits;
+}
 
 /**
  * @brief RL-QP Controller for deploying reinforcement learning policies on real robots.
@@ -287,6 +291,8 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   size_t cylIdxFor_ = 0;  // jointNames.size() the indices were resolved for
   /** @brief The same half-planes in the QP, with a velocity damper (TVM or Tasks backend). */
   std::shared_ptr<CylinderLimitsConstraint> cylLimitsConstraint_;
+  /** @brief Proportional(lambda) velocity limits, only on mc_rtc forks whose KinematicsConstraint lacks them. */
+  std::shared_ptr<rlqp_compat::CbfVelocityLimits> cbfVelLimits_;
   /** @brief Constraints that moved q_rl this tick, and the largest move [rad] (logged). */
   double cylProjCount_ = 0.0;
   double cylProjMax_ = 0.0;

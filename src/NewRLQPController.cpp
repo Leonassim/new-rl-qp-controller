@@ -10,6 +10,7 @@
 #include <mc_rtc/io_utils.h>
 
 #include "CylinderLimitsConstraint.h"
+#include "KinematicsCompat.h"
 
 #include <RBDyn/MultiBodyConfig.h>
 #include <mc_joystick_plugin/joystick_inputs.h>
@@ -71,9 +72,18 @@ NewRLQPController::NewRLQPController(mc_rbdyn::RobotModulePtr rm, double dt, con
   // corrections this policy relies on -- it already runs ANKLE_R near
   // saturation. Running the default was measured at ~1.6x the bypass roll.
   kinematicsConstraint = mc_rtc::unique_ptr<mc_solver::KinematicsConstraint>(
-    new mc_solver::KinematicsConstraint(robots(), 0,
-      {diPercent_, dsPercent_, 0.0, zeta_jointLimit_, lambda_jointLimit_}, velPercent_));
+    rlqp_compat::makeCbfKinematics<mc_solver::KinematicsConstraint>(robots(), solver().dt(),
+      {diPercent_, dsPercent_, 0.0, zeta_jointLimit_, lambda_jointLimit_}, velPercent_, 0));
   solver().addConstraintSet(kinematicsConstraint);
+  if(!rlqp_compat::kVelocityRateBuiltIn && zeta_jointLimit_ >= 1.0)
+  {
+    cbfVelLimits_ = std::make_shared<rlqp_compat::CbfVelocityLimits>(robot(), velPercent_, lambda_jointLimit_);
+    solver().addConstraintSet(*cbfVelLimits_);
+  }
+  mc_rtc::log::info("[NewRLQPController] joint limits: CBF m {} lambda {}, velocity limits Proportional({}) ({})",
+                    zeta_jointLimit_, lambda_jointLimit_,
+                    zeta_jointLimit_ >= 1.0 ? lambda_jointLimit_ : 1.0 / solver().dt(),
+                    rlqp_compat::kVelocityRateBuiltIn ? "mc_rtc built-in" : "added by the controller");
   initCylinderLimits();
 
   initializeRobot();
