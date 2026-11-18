@@ -31,6 +31,13 @@ NewRLQPController::NewRLQPController(mc_rbdyn::RobotModulePtr rm, double dt, con
                          currentPolicyIndex);
   }
 
+  if(const int port = config_("joystick_udp_port", 0); port > 0 && joyUdp_.open(port))
+  {
+    joyUdpTimeout_ = config_("joystick_udp_timeout", 0.5);
+    mc_rtc::log::info("[NewRLQPController] gamepad over UDP on port {} (stop after {} s without packets)", port,
+                      joyUdpTimeout_);
+  }
+
   // Full module minimalSelfCollisions kept: the RL policy is trained to stay
   // out of the dampers' braking zones (proximity penalties in mjlab-rhps1),
   // so the QP acts as a pure safety net. One module value is corrected: the
@@ -1308,19 +1315,34 @@ void NewRLQPController::gaitPhaseStep()
 
 void NewRLQPController::updateVelocityCommand()
 {
+  joyUdp_.poll();
   if(!useJoystick_) return;
-  if(!datastore().has("Joystick::connected") || !datastore().get<bool>("Joystick::connected")) return;
-  if(!datastore().has("Joystick::Stick")) return;
+
+  // Sticks as mc_joystick_plugin reports them: (up/down, left/right) in [0, 1], 0.5 at rest.
+  Eigen::Vector2d leftStick(0.5, 0.5), rightStick(0.5, 0.5);
+  if(joyUdp_.everReceived())
+  {
+    if(joyUdp_.age() < joyUdpTimeout_)
+    {
+      leftStick << joyUdp_.axis(1), joyUdp_.axis(0);
+      rightStick << joyUdp_.axis(4), joyUdp_.axis(3);
+    }
+  }
+  else
+  {
+    if(!datastore().has("Joystick::connected") || !datastore().get<bool>("Joystick::connected")) return;
+    if(!datastore().has("Joystick::Stick")) return;
+    leftStick = datastore().call<Eigen::Vector2d>("Joystick::Stick", joystickAnalogicInputs::L_STICK);
+    rightStick = datastore().call<Eigen::Vector2d>("Joystick::Stick", joystickAnalogicInputs::R_STICK);
+  }
 
   Eigen::Vector3d targetCmd = Eigen::Vector3d::Zero();
 
-  auto leftStick = datastore().call<Eigen::Vector2d>("Joystick::Stick", joystickAnalogicInputs::L_STICK);
   if(std::abs(leftStick(0) - 0.5) > joystickDeadZone_)
     targetCmd(0) = (leftStick(0) - 0.5) * 2.0 * maxVelX_;
   if(std::abs(leftStick(1) - 0.5) > joystickDeadZone_)
     targetCmd(1) = std::clamp((leftStick(1) - 0.5) * 2.0 * maxVelY_, -maxVelY_, maxVelY_);
 
-  auto rightStick = datastore().call<Eigen::Vector2d>("Joystick::Stick", joystickAnalogicInputs::R_STICK);
   if(std::abs(rightStick(1) - 0.5) > joystickDeadZone_)
     targetCmd(2) = (rightStick(1) - 0.5) * 2.0 * maxYawCmd_;
 
@@ -1540,6 +1562,8 @@ void NewRLQPController::addLog()
   logger().addLogEntry("NewRLQPController_RL_q",             [this]() { return q_rl; });
   logger().addLogEntry("NewRLQPController_RL_qZero",         [this]() { return q_zero; });
   logger().addLogEntry("NewRLQPController_vision_age",        [this]() { return visionAge_; });
+  logger().addLogEntry("NewRLQPController_joy_udp_age", [this]() { return std::min(joyUdp_.age(), 99.0); });
+  logger().addLogEntry("NewRLQPController_joy_udp_seq", [this]() { return static_cast<double>(joyUdp_.seq()); });
   logger().addLogEntry("NewRLQPController_vision_known",      [this]() { return visionKnown_; });
   logger().addLogEntry("NewRLQPController_vision_dz",         [this]() { return visionDz_; });
   logger().addLogEntry("NewRLQPController_qdTarget",         [this]() { return qdTarget_; });

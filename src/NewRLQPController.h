@@ -9,6 +9,7 @@
 
 #include "RLPolicyInterface.h"
 #include "vision_link.h"
+#include "joystick_udp.h"
 #include "utils.h"
 
 struct CylinderLimitsConstraint;
@@ -900,6 +901,10 @@ private:
   double velRampRate_      = 0.5; ///< m/s per second rate limit on velocity command
   double velTargetLimit_   = 8.0; ///< rad/s clamp on the finite-difference velocity feedforward (training actuator velocity_target_limit)
   bool   useJoystick_      = true;
+  /** @brief Gamepad from another PC (joystick_udp_port in the global config, 0 = off). Once a packet has arrived it
+   *  replaces the local plugin; a stream older than joystick_udp_timeout [s] centres the sticks (ramped stop). */
+  JoystickUdp joyUdp_;
+  double joyUdpTimeout_ = 0.5;
 
   /** @brief Detect foot touchdown from the ankle F/T sensors (RHPS1_MuJoCo's
    * rf_force/lf_force sites, see RHPS1main.xml) and record the ankle body
