@@ -15,8 +15,47 @@
 #include <RBDyn/MultiBodyConfig.h>
 #include <mc_joystick_plugin/joystick_inputs.h>
 
+namespace
+{
+// MainRobot RHPS1_leap_leap is required on rhps1c (hrpsys sends 74 encoders, mc_rtc rejects a mismatch) but the
+// hands are off and the policy holds the fingers. MCController adds the module's pairs before this constructor runs,
+// so it gets a copy without the finger pairs; one of them (L_FINGERTIP_2/3_LINK, iDist = sDist = 0.005) even makes
+// the TVM damper throw. Pairs with iDist <= sDist are dropped for the same reason.
+bool isFingerLink(const std::string & b)
+{
+  for(const char * k : {"_MCP_", "_PIP_", "_DIP_", "_FINGERTIP_", "_THUMB_"})
+  {
+    if(b.find(k) != std::string::npos) { return true; }
+  }
+  return false;
+}
+
+mc_rbdyn::RobotModulePtr withValidSelfCollisions(mc_rbdyn::RobotModulePtr rm)
+{
+  const auto bad = [](const mc_rbdyn::Collision & c)
+  { return !(c.iDist > c.sDist) || isFingerLink(c.body1) || isFingerLink(c.body2); };
+  if(std::none_of(rm->minimalSelfCollisions().begin(), rm->minimalSelfCollisions().end(), bad)
+     && std::none_of(rm->commonSelfCollisions().begin(), rm->commonSelfCollisions().end(), bad))
+  {
+    return rm;
+  }
+  auto copy = std::make_shared<mc_rbdyn::RobotModule>(*rm);
+  for(auto * v : {&copy->_minimalSelfCollisions, &copy->_commonSelfCollisions})
+  {
+    for(const auto & c : *v)
+    {
+      if(!(c.iDist > c.sDist)) { mc_rtc::log::warning("[NewRLQPController] self-collision {}/{} dropped: iDist {} <= sDist {}", c.body1, c.body2, c.iDist, c.sDist); }
+    }
+    const auto n = v->size();
+    v->erase(std::remove_if(v->begin(), v->end(), bad), v->end());
+    mc_rtc::log::info("[NewRLQPController] self-collisions: {} of {} module pairs kept (finger pairs dropped)", v->size(), n);
+  }
+  return copy;
+}
+} // namespace
+
 NewRLQPController::NewRLQPController(mc_rbdyn::RobotModulePtr rm, double dt, const mc_rtc::Configuration & config)
-: mc_control::fsm::Controller(rm, dt, config, Backend::TVM)
+: mc_control::fsm::Controller(withValidSelfCollisions(rm), dt, config, Backend::TVM)
 {
   config_ = config;
   currentPolicyIndex = size_t(config_("default_policy_index", 0));
@@ -446,10 +485,14 @@ void NewRLQPController::initializeRobot()
   // RHPS1_MuJoCo, whose branch lists 30, was fine. Filtering here also fixes
   // the q0-size check in configRL(): nbActuatedJoints becomes 30, matching
   // the 30-key q0 already in the yaml.
+  // Only the policy's joints (its kp keys): MainRobot RHPS1_leap_leap, needed on rhps1c because hrpsys always sends
+  // 74 encoders and mc_rtc 2.14 rejects a count mismatch, adds 32 finger joints the posture task simply holds.
+  const std::map<std::string, double> policyKp = config_("policies")[currentPolicyIndex]("kp");
   jointNames.erase(std::remove_if(jointNames.begin(), jointNames.end(),
-                                  [this](const std::string & j) {
+                                  [this, &policyKp](const std::string & j) {
                                     return !robot().hasJoint(j)
-                                           || robot().mb().joint(robot().jointIndexByName(j)).dof() != 1;
+                                           || robot().mb().joint(robot().jointIndexByName(j)).dof() != 1
+                                           || !policyKp.count(j);
                                   }),
                    jointNames.end());
   nbActuatedJoints = jointNames.size();
