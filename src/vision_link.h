@@ -57,11 +57,21 @@ struct MapBlock
   double res;        // m
   double origin[2];  // world x, y of the lower corner of cell (0, 0)
   float h[MAP_N * MAP_N];  // terrain height, cell (ix, iy) at ix * n + iy; NaN = never seen
+  // Newest frame, for the controller's vision gate. gate_magic != GATE_MAGIC: an older writer whose shorter segment
+  // reads as zeros here (same last page), stats unknown.
+  uint32_t gate_magic;
+  float gate_high;   // share of the frame's points more than 0.6 m above the lowest sole
+  float gate_valid;  // share of the ROI rays that returned a point
+  uint32_t pad;
 };
 static_assert(offsetof(MapBlock, h) == 48, "MapBlock layout");
+static_assert(offsetof(MapBlock, gate_magic) == 48 + 4 * MAP_N * MAP_N, "MapBlock layout");
+constexpr uint32_t GATE_MAGIC = 0x31544147;  // "GAT1"
 
+/** min_size: smallest segment accepted for reading; the mapping stays sizeof(T), so the bytes past a shorter
+ *  segment must lie in its last page (they read as zeros). */
 template<typename T>
-T * mapShm(const char * name, bool create)
+T * mapShm(const char * name, bool create, size_t min_size = sizeof(T))
 {
   int fd = create ? shm_open(name, O_RDWR | O_CREAT, 0666) : shm_open(name, O_RDONLY, 0);
   if(fd < 0 && create)
@@ -79,7 +89,7 @@ T * mapShm(const char * name, bool create)
     return nullptr;
   }
   struct stat st;
-  if(fstat(fd, &st) != 0 || st.st_size < static_cast<off_t>(sizeof(T)))
+  if(fstat(fd, &st) != 0 || st.st_size < static_cast<off_t>(create ? sizeof(T) : min_size))
   {
     close(fd);
     return nullptr;
@@ -129,7 +139,9 @@ public:
     if(!mapIn_)
     {
       if(++retry_ % 200 != 1) { return have_; }
-      mapIn_ = mapShm<MapBlock>(MAP_SHM, false);
+      // A pre-gate writer's segment ends at gate_magic, in the same page: accepted, its gate stats read as zeros.
+      static_assert(offsetof(MapBlock, gate_magic) / 4096 == (sizeof(MapBlock) - 1) / 4096, "gate tail page");
+      mapIn_ = mapShm<MapBlock>(MAP_SHM, false, offsetof(MapBlock, gate_magic));
       if(!mapIn_) { return have_; }
     }
     const volatile MapBlock * m = mapIn_;

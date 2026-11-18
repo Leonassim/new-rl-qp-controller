@@ -218,6 +218,14 @@ bool NewRLQPController::run()
     currentVelCmd_ = benchElapsed_ >= benchAutoArm_ + benchVelStart_ ? benchVelocity_
                                                                      : Eigen::Vector3d::Zero();
   }
+  // Vision gate, last stage whatever the command's source (stick, UDP pad, GUI, bench): scaled to zero over
+  // vision_gate_ramp while a doubtful map lasts, back up after.
+  if(visionGate_ && obsFormat_ == 12)
+  {
+    const double step = timeStep / std::max(visionGateRamp_, timeStep);
+    visionGateScale_ = visionGateActive_ ? std::max(0.0, visionGateScale_ - step) : std::min(1.0, visionGateScale_ + step);
+    currentVelCmd_ *= visionGateScale_;
+  }
   if(printLimits_) computeLimits();
   if(logImpactVel_) updateImpactVelocity();
 
@@ -587,10 +595,25 @@ void NewRLQPController::initializeRobot()
     visionDz_ = 0.0;
     if(visionTruePose_) { mc_rtc::log::warning("[NewRLQPController] obs_format 12: BANC, pose vraie pour la vision"); }
     if(!visionLink_ || !visionLink_->ok()) { visionLink_ = std::make_unique<vision_link::Link>(); }
-    mc_rtc::log::warning("[NewRLQPController] obs_format 12: onboard height map, pose -> {}, map <- {} ({}); "
-                         "maps older than {:.2f} s read as flat ground", vision_link::POSE_SHM,
-                         vision_link::MAP_SHM, visionLink_->ok() ? "pose published" : "SHM FAILED",
-                         visionMaxAge_);
+    visionGate_ = polCfg("vision_gate", true);
+    visionGateAge_ = polCfg("vision_gate_age", 0.7);
+    visionGateHFrac_ = polCfg("vision_gate_hfrac", 0.08);
+    visionGateValid_ = polCfg("vision_gate_valid", 0.1);
+    visionGateHold_ = polCfg("vision_gate_hold", 1.0);
+    visionGateRamp_ = polCfg("vision_gate_ramp", 0.5);
+    visionGateUntil_ = -1.0;
+    visionGateActive_ = false;
+    visionGateScale_ = 1.0;
+    mc_rtc::log::warning("[NewRLQPController] obs_format 12: onboard height map, pose -> {}, map <- {} ({}); {}",
+                         vision_link::POSE_SHM, vision_link::MAP_SHM,
+                         visionLink_->ok() ? "pose published" : "SHM FAILED",
+                         visionGate_ ? fmt::format("gate ON: command paused when no frame for {:.2f} s, > {:.0f} % "
+                                                   "of points 0.6 m high or < {:.0f} % of rays back, {:.1f} s hold; "
+                                                   "the last map is kept",
+                                                   visionGateAge_, 100.0 * visionGateHFrac_,
+                                                   100.0 * visionGateValid_, visionGateHold_)
+                                     : fmt::format("gate OFF: maps older than {:.2f} s read as flat ground",
+                                                   visionMaxAge_));
   }
   if(polCfg.has("arm_posture"))
   {
@@ -1608,6 +1631,9 @@ void NewRLQPController::addLog()
   logger().addLogEntry("NewRLQPController_joy_udp_age", [this]() { return std::min(joyUdp_.age(), 99.0); });
   logger().addLogEntry("NewRLQPController_joy_udp_seq", [this]() { return static_cast<double>(joyUdp_.seq()); });
   logger().addLogEntry("NewRLQPController_vision_known",      [this]() { return visionKnown_; });
+  logger().addLogEntry("NewRLQPController_vision_gate", [this]() { return visionGateActive_ ? 1.0 : 0.0; });
+  logger().addLogEntry("NewRLQPController_vision_gate_high", [this]() { return visionGateHigh_; });
+  logger().addLogEntry("NewRLQPController_vision_gate_valid", [this]() { return visionGateValidShare_; });
   logger().addLogEntry("NewRLQPController_vision_dz",         [this]() { return visionDz_; });
   logger().addLogEntry("NewRLQPController_qdTarget",         [this]() { return qdTarget_; });
   // What mc_mujoco's PD actually receives. The stock qOut/alphaOut entries
@@ -1928,10 +1954,15 @@ Eigen::VectorXd NewRLQPController::visionScan()
     if(visionLink_->have())
     {
       visionAge_ = visionTime_ - visionLink_->map().t_frame;
-      use = visionAge_ >= 0.0 && visionAge_ <= visionMaxAge_;
-      if(visionAge_ > 2.0) { visionLink_->dropMap(); }  // the vision process may have restarted
+      if(visionGate_) { use = visionAge_ >= 0.0; }  // kept however old: the gate pauses the command instead
+      else
+      {
+        use = visionAge_ >= 0.0 && visionAge_ <= visionMaxAge_;
+        if(visionAge_ > 2.0) { visionLink_->dropMap(); }  // the vision process may have restarted
+      }
     }
   }
+  if(visionGate_) { updateVisionGate(); }
   static const vision_link::MapBlock noMap{};
   const auto & m = visionLink_ ? visionLink_->map() : noMap;
   const int n = static_cast<int>(m.n);
@@ -1976,6 +2007,41 @@ Eigen::VectorXd NewRLQPController::visionScan()
   return visionScan_;
 }
 
+void NewRLQPController::updateVisionGate()
+{
+  const bool have = visionLink_ && visionLink_->have();
+  std::string why;
+  if(!have) { why = "no map yet"; }
+  else if(visionAge_ < 0.0 || visionAge_ > visionGateAge_) { why = fmt::format("map {:.2f} s old", visionAge_); }
+  else
+  {
+    const auto & m = visionLink_->map();
+    if(m.gate_magic == vision_link::GATE_MAGIC)
+    {
+      visionGateHigh_ = m.gate_high;
+      visionGateValidShare_ = m.gate_valid;
+      if(m.gate_high > visionGateHFrac_) { why = fmt::format("{:.0f} % of points 0.6 m high", 100.0 * m.gate_high); }
+      else if(m.gate_valid < visionGateValid_)
+      {
+        why = fmt::format("{:.0f} % of rays back", 100.0 * m.gate_valid);
+      }
+    }
+    else { visionGateHigh_ = visionGateValidShare_ = NAN; }  // older vision process: age only
+  }
+  if(!why.empty())
+  {
+    visionGateUntil_ = visionTime_ + visionGateHold_;
+    visionGateWhy_ = why;
+  }
+  const bool active = visionTime_ < visionGateUntil_;
+  if(active != visionGateActive_)
+  {
+    if(active) { mc_rtc::log::warning("[NewRLQPController] vision gate: command paused ({})", visionGateWhy_); }
+    else { mc_rtc::log::info("[NewRLQPController] vision gate: command released"); }
+  }
+  visionGateActive_ = active;
+}
+
 void NewRLQPController::addGui()
 {
   gui()->addElement({"NewRLQPController", "Policy"},
@@ -1991,8 +2057,10 @@ void NewRLQPController::addGui()
     mc_rtc::gui::Label("Vision map (obs 12)", [this]() -> std::string {
       if(obsFormat_ != 12) return "-";
       if(!visionLink_ || !visionLink_->have()) return "no map (vision process not running?)";
-      return fmt::format("age {:.2f} s | known {:.0f} % | scan [{:.2f}, {:.2f}]", visionAge_, 100.0 * visionKnown_,
-                         visionScan_.minCoeff(), visionScan_.maxCoeff());
+      return fmt::format("age {:.2f} s | known {:.0f} % | scan [{:.2f}, {:.2f}] | gate {}", visionAge_,
+                         100.0 * visionKnown_, visionScan_.minCoeff(), visionScan_.maxCoeff(),
+                         !visionGate_ ? std::string("off")
+                                      : (visionGateActive_ ? "PAUSED (" + visionGateWhy_ + ")" : std::string("clear")));
     }),
     mc_rtc::gui::Label("Stairs scan (obs 11)", [this]() -> std::string {
       if(obsFormat_ != 11) return "-";

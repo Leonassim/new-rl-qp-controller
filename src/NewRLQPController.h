@@ -425,6 +425,24 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   double visionAge_ = -1.0;
   double visionKnown_ = 0.0;
   double visionMaxAge_ = 0.5;
+  /** Vision gate (docs/vision_safety.md in mjlab, policy keys vision_gate*): a doubtful map pauses the velocity
+   *  command (ramped to zero as a released stick) until GATE_HOLD after the last doubtful frame. Doubtful: no frame
+   *  for vision_gate_age, more than vision_gate_hfrac of a frame's points 0.6 m above the lowest sole, or under
+   *  vision_gate_valid of its rays returning. With the gate on, the last map is kept (never read as flat): flat
+   *  ground on real stairs is unsafe going down. */
+  void updateVisionGate();
+  bool visionGate_ = false;
+  double visionGateAge_ = 0.7;
+  double visionGateHFrac_ = 0.08;
+  double visionGateValid_ = 0.1;
+  double visionGateHold_ = 1.0;
+  double visionGateRamp_ = 0.5;  // s, command scaled to zero (and back) over this
+  double visionGateScale_ = 1.0;
+  double visionGateUntil_ = -1.0;
+  bool visionGateActive_ = false;
+  double visionGateHigh_ = NAN;
+  double visionGateValidShare_ = NAN;
+  std::string visionGateWhy_;
   bool visionSim_ = false;
   bool visionExact_ = false;  // bench: analytic scan instead of the map (RLQP_BENCH_VISION_EXACT)
   bool visionTruePose_ = false;  // bench: ground-truth pelvis for the vision (RLQP_BENCH_VISION_TRUEPOSE)

@@ -36,6 +36,8 @@ POSE_DT = np.dtype([("t", "f8"), ("pelvis", "f8", 7), ("head", "f8", 7), ("pelvi
 assert POSE_DT.itemsize == 256
 MAP_HDR = struct.Struct("<IIQdd2d")  # magic, n, seq, t_frame, res, origin[2]
 assert MAP_HDR.size == 48
+GATE_TAIL = struct.Struct("<IffI")  # after h: gate_magic, gate_high, gate_valid, pad (vision_link.h)
+GATE_MAGIC, GATE_HIGH = 0x31544147, 0.6
 FOOT = [(x, y) for x in (-0.08, -0.04, 0.0, 0.04, 0.08) for y in (-0.04, 0.0, 0.04)]
 
 
@@ -78,9 +80,21 @@ class PoseReader:
     return out
 
 
+def gate_stats(pts, soles, n_rays):
+  """The controller's vision gate inputs for one frame: share of its points GATE_HIGH above the lowest sole (a person,
+  clutter at body height), share of the ROI rays that returned a point (camera blind)."""
+  if n_rays <= 0:
+    return 0.0, 0.0
+  if len(pts) == 0:
+    return 0.0, 0.0
+  z0 = min(float(soles[0][2]), float(soles[1][2]))
+  return float(np.mean(pts[:, 2] - z0 > GATE_HIGH)), min(1.0, len(pts) / n_rays)
+
+
 class MapWriter:
   def __init__(self):
-    size = MAP_HDR.size + MAP_N * MAP_N * 4
+    self.h_end = MAP_HDR.size + MAP_N * MAP_N * 4
+    size = self.h_end + GATE_TAIL.size
     fd = os.open(MAP_SHM, os.O_RDWR | os.O_CREAT, 0o666)
     os.ftruncate(fd, size)
     self.mm = mmap.mmap(fd, size)
@@ -88,10 +102,13 @@ class MapWriter:
     self.seq = 0
     MAP_HDR.pack_into(self.mm, 0, 0, MAP_N, 0, -1.0, 0.05, 0.0, 0.0)
 
-  def write(self, t_frame, res, origin, h):
+  def write(self, t_frame, res, origin, h, gate=None):
+    """gate: (share of the frame's points GATE_HIGH above the lowest sole, share of the ROI rays returning)."""
     self.seq += 1
     struct.pack_into("<Q", self.mm, 8, self.seq)  # odd: inside
-    self.mm[MAP_HDR.size:] = np.ascontiguousarray(h, np.float32).tobytes()
+    self.mm[MAP_HDR.size:self.h_end] = np.ascontiguousarray(h, np.float32).tobytes()
+    if gate is not None:
+      GATE_TAIL.pack_into(self.mm, self.h_end, GATE_MAGIC, gate[0], gate[1], 0)
     MAP_HDR.pack_into(self.mm, 0, MAGIC, MAP_N, self.seq, t_frame, res, origin[0], origin[1])
     self.seq += 1
     struct.pack_into("<Q", self.mm, 8, self.seq)
@@ -471,7 +488,9 @@ def main():
         pw = pc @ (R_hc @ cam_R).T + (R_hc @ cam_t + t_hc)
         hm.write(pw, replace=False)
         origin, h = hm.grid()
-        out.write(last_t, hm.res, origin, h)  # stamped now: vision_max_age watches the stream, not the Wi-Fi delay
+        n_rays = int(mask.sum()) if mask is not None else int(np.isfinite(rays[0]).sum())
+        # stamped now: the controller's gate watches the stream, not the Wi-Fi delay
+        out.write(last_t, hm.res, origin, h, gate_stats(pw, hist[k][1]["soles"], n_rays))
         if viz:
           viz.publish(origin, h, hm.res, pw)
         lat_net.append(time.time() - stamp)
@@ -504,14 +523,15 @@ def main():
         if pc is None:
           continue
       pts = pc @ (R_he @ cam_R).T + (R_he @ cam_t + t_he)  # estimated frame, as the robot knows it
-      pending.append((t_cap, pts))
+      n_rays = len(cam.dirs) if args.source == "sim" else None
+      pending.append((t_cap, pts, gate_stats(pts, pz["soles"], n_rays) if n_rays else None))
       n_frames += 1
     lat = args.lat if args.source == "sim" else 0.0
     while pending and pending[0][0] + lat <= last_t:
-      t_cap, pts = pending.pop(0)
+      t_cap, pts, gs = pending.pop(0)
       hm.write(pts, replace=False)
       origin, h = hm.grid()
-      out.write(t_cap, hm.res, origin, h)
+      out.write(t_cap, hm.res, origin, h, gs)
       if viz:
         viz.publish(origin, h, hm.res, pts)
     if time.time() - t_wall > 5.0:
