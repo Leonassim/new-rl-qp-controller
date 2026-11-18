@@ -220,6 +220,25 @@ class AzureCamera:
     return np.stack([p[:, 0], -p[:, 1], -p[:, 2]], 1)  # to x right, y up, -z forward
 
 
+def ground_mask(rays, cam_R, cam_t, head_in_pelvis, args):
+  """Pixels whose ray lands on the training ROI at the nominal stance (vision_map.DepthCamPatternCfg): head at
+  --head-pitch-deg, ground SCAN_OFFSET below the pelvis. Rays stay fixed in HEAD_P_LINK, as in training, so the
+  ceiling and the walls never reach the map whatever the head does."""
+  x, y = rays
+  v = np.stack([x, -y, -np.ones_like(x)], -1)
+  v /= np.linalg.norm(v, axis=-1, keepdims=True)
+  R_ph = rpy_mat(0.0, math.radians(args.head_pitch_deg), 0.0)
+  d = v @ (R_ph @ cam_R).T
+  c = head_in_pelvis + R_ph @ cam_t
+  with np.errstate(all="ignore"):
+    s = (-args.scan_offset - c[2]) / d[..., 2]
+    hx, hy = c[0] + s * d[..., 0], c[1] + s * d[..., 1]
+  rx0, rx1 = (float(a) for a in args.roi_x.split(","))
+  m = args.roi_margin
+  keep = (d[..., 2] < 0) & (hx >= rx0 - m) & (hx <= rx1 + m) & (np.abs(hy) <= args.roi_y + m)
+  return keep & (-v[..., 2] >= math.cos(math.radians(args.cone_deg)))
+
+
 def unproject_table(W, H, stride, fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6):
   """Normalised rays (x/z, y/z) of the strided pixels for the rational polynomial model, NaN where the inversion does
   not converge (past the lens' metric radius)."""
@@ -300,10 +319,12 @@ class UdpDepthCamera:
       rays = self.rays
     return out, rays
 
-  def points(self, d_mm, rays):
+  def points(self, d_mm, rays, mask=None):
     """Points in the MuJoCo camera convention (x right, y up, -z forward), same as AzureCamera."""
     d = d_mm.astype(np.float64) / 1000.0
     d[d_mm == 0] = np.nan
+    if mask is not None:
+      d[~mask] = np.nan
     if self.edge > 0:  # flying pixels between a step edge and what lies behind it
       pad = np.pad(d, 1, constant_values=np.nan)
       nb = np.stack([pad[i : i + d.shape[0], j : j + d.shape[1]] for i in range(3) for j in range(3)])
@@ -370,6 +391,13 @@ def main():
   ap.add_argument("--alpha", type=float, default=0.5)
   ap.add_argument("--align", action="store_true",
                   help="at each touchdown flat on one surface, shift the whole map so the sole sits on the height the camera measured there (removes the estimator's height drift since the step was seen)")
+  ap.add_argument("--roi-x", default="0.0,1.6", help="udp: ground ROI ahead of the pelvis, as vision_map ROI_X")
+  ap.add_argument("--roi-y", type=float, default=0.6)
+  ap.add_argument("--roi-margin", type=float, default=0.05)
+  ap.add_argument("--cone-deg", type=float, default=60.0)
+  ap.add_argument("--head-pitch-deg", type=float, default=25.0, help="HEAD_P the ROI pixels are aimed with")
+  ap.add_argument("--scan-offset", type=float, default=0.84, help="ground below the pelvis, stairs SCAN_OFFSET")
+  ap.add_argument("--all-pixels", action="store_true", help="udp: no ROI mask (ceiling and walls reach the map)")
   ap.add_argument("--cam-xyz", default="0.071,0.0017,0.1558", help="depth camera in HEAD_P_LINK, m")
   ap.add_argument("--cam-rpy", default="1.46608,0,-1.5708", help="depth camera in HEAD_P_LINK, URDF rpy")
   args = ap.parse_args()
@@ -383,6 +411,7 @@ def main():
   foot = np.array(FOOT)
   pending, last_frame, last_t, n_frames, t_wall = [], -1e9, -1.0, 0, time.time()
   was_loaded, shifts = [False, False], []
+  mask, mask_rays = None, None
   print(f"vision: source {args.source}, {args.rate:.0f} Hz, writing {MAP_SHM}", flush=True)
   while True:
     lp = poses.latest(1)
@@ -414,12 +443,17 @@ def main():
       was_loaded[k] = loaded
     if args.source == "udp":
       frames, rays = cam.frames()
+      if rays is not None and not args.all_pixels and mask_rays is not rays:
+        head_in_pelvis = R_pe.T @ (pose_rt(pz["head"])[1] - t_pe)
+        mask, mask_rays = ground_mask(rays, cam_R, cam_t, head_in_pelvis, args), rays
+        print(f"udp: {mask.sum()} of {np.isfinite(rays[0]).sum()} pixels aimed at the ROI (head at "
+              f"{args.head_pitch_deg:.0f} deg)", flush=True)
       for stamp, d in frames:
         if rays is None or not hist or stamp < hist[0][0]:
           continue
         k = min(range(len(hist)), key=lambda i: abs(hist[i][0] - stamp))
         R_hc, t_hc = pose_rt(hist[k][1]["head"])
-        pc = cam.points(d, rays)
+        pc = cam.points(d, rays, mask)
         pw = pc @ (R_hc @ cam_R).T + (R_hc @ cam_t + t_hc)
         hm.write(pw, replace=False)
         origin, h = hm.grid()
@@ -432,9 +466,12 @@ def main():
           for key, val in (("t", hist[k][1]["t"]), ("stamp", stamp), ("depth", d), ("head", hist[k][1]["head"]),
                            ("pelvis", hist[k][1]["pelvis"])):
             rec[key].append(val)
-          if n_frames % 50 == 0:
-            np.savez(args.record, **{key: np.array(v) for key, v in rec.items()}, rays_x=rays[0], rays_y=rays[1],
-                     cam_xyz=cam_t, cam_rpy=np.array([float(v) for v in args.cam_rpy.split(",")]))
+          if len(rec["t"]) >= 150:  # 10 s chunks: rewriting one growing file loaded the control PC's disk
+            part = f"{args.record.removesuffix('.npz')}_{n_frames // 150 - 1:03d}.npz"
+            np.savez(part, **{key: np.array(v) for key, v in rec.items()}, rays_x=rays[0], rays_y=rays[1],
+                     mask=mask if mask is not None else np.isfinite(rays[0]), cam_xyz=cam_t,
+                     cam_rpy=np.array([float(v) for v in args.cam_rpy.split(",")]))
+            rec = {key: [] for key in rec}
     elif last_t - last_frame >= 1.0 / args.rate:
       last_frame = last_t
       R_he, t_he = pose_rt(pz["head"])
