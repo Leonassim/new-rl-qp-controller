@@ -318,12 +318,48 @@ class UdpDepthCamera:
     return np.stack([p[:, 0], -p[:, 1], -p[:, 2]], 1)
 
 
+class RosViz:
+  """--ros: known map cells and the newest frame's points as PointCloud2 in the controller's world frame (mc_rtc's
+  robot_map), for RViz. The map carries the vision height correction (leg odometry), so it can sit a few cm off the
+  real robot model in z."""
+
+  def __init__(self, frame, rate):
+    import rclpy  # noqa: PLC0415
+    from sensor_msgs.msg import PointCloud2  # noqa: PLC0415
+    from sensor_msgs_py import point_cloud2  # noqa: PLC0415
+    from std_msgs.msg import Header  # noqa: PLC0415
+
+    rclpy.init()
+    self.node = rclpy.create_node("rhps1_vision")
+    self.pub_map = self.node.create_publisher(PointCloud2, "rhps1_vision/height_map", 1)
+    self.pub_pts = self.node.create_publisher(PointCloud2, "rhps1_vision/points", 1)
+    self.pc2, self.Header, self.frame, self.dt, self.last = point_cloud2, Header, frame, 1.0 / rate, 0.0
+
+  def publish(self, origin, h, res, pts):
+    now = time.time()
+    if now - self.last < self.dt:
+      return
+    self.last = now
+    hdr = self.Header()
+    hdr.frame_id = self.frame
+    hdr.stamp = self.node.get_clock().now().to_msg()
+    n = int(round(np.sqrt(h.size)))
+    h = h.reshape(n, n)
+    i, j = np.nonzero(np.isfinite(h))
+    cells = np.stack([origin[0] + (i + 0.5) * res, origin[1] + (j + 0.5) * res, h[i, j]], 1)
+    self.pub_map.publish(self.pc2.create_cloud_xyz32(hdr, cells.astype(np.float32)))
+    if pts is not None and len(pts):
+      self.pub_pts.publish(self.pc2.create_cloud_xyz32(hdr, pts[:: max(1, len(pts) // 4000)].astype(np.float32)))
+
+
 def main():
   ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   ap.add_argument("--source", choices=("sim", "azure", "udp"), default="sim")
   ap.add_argument("--udp-port", type=int, default=5263, help="udp: port rlqp_depth_send.py sends to")
   ap.add_argument("--edge-filter", type=float, default=0.05,
                   help="udp: drop pixels off their 3x3 median by more than this fraction of depth (and m), 0 = off")
+  ap.add_argument("--ros", action="store_true", help="publish rhps1_vision/height_map and /points for RViz")
+  ap.add_argument("--ros-frame", default="robot_map")
   ap.add_argument("--record", default="", help="udp: save every frame (depth, stamp, matched poses) to this .npz")
   ap.add_argument("--rate", type=float, default=25.0, help="depth frames per second of controller time")
   ap.add_argument("--lat", type=float, default=0.08, help="sim: frame-to-map latency, s of controller time")
@@ -343,6 +379,7 @@ def main():
   poses, out, hm = PoseReader(), MapWriter(), HeightMap(alpha=args.alpha)
   cam = {"sim": SimCamera, "azure": AzureCamera, "udp": UdpDepthCamera}[args.source](args)
   hist, lat_net, rec = [], [], {"t": [], "stamp": [], "depth": [], "head": [], "pelvis": []}
+  viz = RosViz(args.ros_frame, 5.0) if args.ros else None
   foot = np.array(FOOT)
   pending, last_frame, last_t, n_frames, t_wall = [], -1e9, -1.0, 0, time.time()
   was_loaded, shifts = [False, False], []
@@ -383,9 +420,12 @@ def main():
         k = min(range(len(hist)), key=lambda i: abs(hist[i][0] - stamp))
         R_hc, t_hc = pose_rt(hist[k][1]["head"])
         pc = cam.points(d, rays)
-        hm.write(pc @ (R_hc @ cam_R).T + (R_hc @ cam_t + t_hc), replace=False)
+        pw = pc @ (R_hc @ cam_R).T + (R_hc @ cam_t + t_hc)
+        hm.write(pw, replace=False)
         origin, h = hm.grid()
         out.write(last_t, hm.res, origin, h)  # stamped now: vision_max_age watches the stream, not the Wi-Fi delay
+        if viz:
+          viz.publish(origin, h, hm.res, pw)
         lat_net.append(time.time() - stamp)
         n_frames += 1
         if args.record:
@@ -421,6 +461,8 @@ def main():
       hm.write(pts, replace=False)
       origin, h = hm.grid()
       out.write(t_cap, hm.res, origin, h)
+      if viz:
+        viz.publish(origin, h, hm.res, pts)
     if time.time() - t_wall > 5.0:
       t_wall = time.time()
       _, h = hm.grid()

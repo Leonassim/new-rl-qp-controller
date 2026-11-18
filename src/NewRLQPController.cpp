@@ -586,7 +586,7 @@ void NewRLQPController::initializeRobot()
     visionAnchor_ = -1;
     visionDz_ = 0.0;
     if(visionTruePose_) { mc_rtc::log::warning("[NewRLQPController] obs_format 12: BANC, pose vraie pour la vision"); }
-    if(!visionLink_) { visionLink_ = std::make_unique<vision_link::Link>(); }
+    if(!visionLink_ || !visionLink_->ok()) { visionLink_ = std::make_unique<vision_link::Link>(); }
     mc_rtc::log::warning("[NewRLQPController] obs_format 12: onboard height map, pose -> {}, map <- {} ({}); "
                          "maps older than {:.2f} s read as flat ground", vision_link::POSE_SHM,
                          vision_link::MAP_SHM, visionLink_->ok() ? "pose published" : "SHM FAILED",

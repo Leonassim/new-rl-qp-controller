@@ -63,8 +63,16 @@ static_assert(offsetof(MapBlock, h) == 48, "MapBlock layout");
 template<typename T>
 T * mapShm(const char * name, bool create)
 {
-  const int fd = create ? shm_open(name, O_RDWR | O_CREAT, 0666) : shm_open(name, O_RDONLY, 0);
+  int fd = create ? shm_open(name, O_RDWR | O_CREAT, 0666) : shm_open(name, O_RDONLY, 0);
+  if(fd < 0 && create)
+  {
+    // A segment left by another user: fs.protected_regular refuses O_CREAT on it in the sticky /dev/shm, even to
+    // root (the controller runs as root under hrpsys). Replace it; the vision process reopens the new one.
+    shm_unlink(name);
+    fd = shm_open(name, O_RDWR | O_CREAT, 0666);
+  }
   if(fd < 0) { return nullptr; }
+  if(create) { fchmod(fd, 0666); }  // readable and writable by the vision process whatever the umask
   if(create && ftruncate(fd, sizeof(T)) != 0)
   {
     close(fd);
