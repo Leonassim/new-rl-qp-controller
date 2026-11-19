@@ -867,6 +867,7 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   double benchVelStart_ = 0.0;  ///< Seconds after arming before benchVelocity_ applies
   std::vector<double> benchStopX_;  ///< Pelvis x where the bench command stops (RLQP_BENCH_STOP_X)
   double benchStopS_ = 2.0;
+  double benchVelDur_ = -1.0;
   double benchStopUntil_ = -1.0;
   size_t benchStopNext_ = 0;
 

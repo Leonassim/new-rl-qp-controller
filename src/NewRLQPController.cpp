@@ -226,6 +226,8 @@ bool NewRLQPController::run()
       ++benchStopNext_;
     }
     if(benchElapsed_ < benchStopUntil_) currentVelCmd_.setZero();
+    // RLQP_BENCH_VEL_DUR_S: back to zero that long after the command started, the stick released mid-walk.
+    if(benchVelDur_ > 0.0 && benchElapsed_ >= benchAutoArm_ + benchVelStart_ + benchVelDur_) currentVelCmd_.setZero();
   }
   // Vision gate, last stage whatever the command's source (stick, UDP pad, GUI, bench): scaled to zero over
   // vision_gate_ramp while a doubtful map lasts, back up after.
@@ -694,6 +696,7 @@ void NewRLQPController::initializeRobot()
       for(double x; in >> x;) benchStopX_.push_back(x);
     }
     if(const char * s = std::getenv("RLQP_BENCH_STOP_S")) { benchStopS_ = std::atof(s); }
+    if(const char * s = std::getenv("RLQP_BENCH_VEL_DUR_S")) { benchVelDur_ = std::atof(s); }
     if(const char * v = std::getenv("RLQP_BENCH_VELOCITY"))
     {
       std::istringstream is(v);
