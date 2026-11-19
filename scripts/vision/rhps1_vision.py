@@ -91,6 +91,18 @@ def gate_stats(pts, soles, n_rays):
   return float(np.mean(pts[:, 2] - z0 > GATE_HIGH)), min(1.0, len(pts) / n_rays)
 
 
+def screen(pts, soles, n_rays, args):
+  """A doubtful frame (the controller gate's thresholds) writes nothing; points over --clip-high above the lowest
+  sole never reach the map (vision_map GATE_SKIP, CLIP). Returns the points to write and the gate inputs."""
+  gs = gate_stats(pts, soles, n_rays) if n_rays else None
+  if gs is not None and (gs[0] > args.gate_hfrac or gs[1] < args.gate_valid):
+    return pts[:0], gs
+  if args.clip_high > 0 and len(pts):
+    z0 = min(float(soles[0][2]), float(soles[1][2]))
+    pts = pts[pts[:, 2] - z0 <= args.clip_high]
+  return pts, gs
+
+
 class MapWriter:
   def __init__(self):
     self.h_end = MAP_HDR.size + MAP_N * MAP_N * 4
@@ -428,6 +440,9 @@ def main():
   ap.add_argument("--head-pitch-deg", type=float, default=25.0, help="HEAD_P the ROI pixels are aimed with")
   ap.add_argument("--scan-offset", type=float, default=0.84, help="ground below the pelvis, stairs SCAN_OFFSET")
   ap.add_argument("--all-pixels", action="store_true", help="udp: no ROI mask (ceiling and walls reach the map)")
+  ap.add_argument("--gate-hfrac", type=float, default=0.08, help="controller vision_gate_hfrac: over it, not written")
+  ap.add_argument("--gate-valid", type=float, default=0.1, help="controller vision_gate_valid: under it, not written")
+  ap.add_argument("--clip-high", type=float, default=0.6, help="m above the lowest sole never written; 0: off")
   ap.add_argument("--cam-xyz", default="0.1190,0.0017,0.1825",
                   help="depth camera in HEAD_P_LINK, m (fitted on rhps1, 2026-11-18; vision_map.py CAM_POS)")
   ap.add_argument("--cam-rpy", default="1.49513,-0.00503,-1.57095", help="depth camera in HEAD_P_LINK, URDF rpy")
@@ -440,7 +455,7 @@ def main():
   hist, lat_net, rec = [], [], {"t": [], "stamp": [], "depth": [], "head": [], "pelvis": []}
   viz = RosViz(args.ros_frame, 5.0) if args.ros else None
   foot = np.array(FOOT)
-  pending, last_frame, last_t, n_frames, t_wall = [], -1e9, -1.0, 0, time.time()
+  pending, last_frame, last_t, n_frames, n_skip, t_wall = [], -1e9, -1.0, 0, 0, time.time()
   was_loaded, shifts = [False, False], []
   mask, mask_rays = None, None
   print(f"vision: source {args.source}, {args.rate:.0f} Hz, writing {MAP_SHM}", flush=True)
@@ -486,11 +501,13 @@ def main():
         R_hc, t_hc = pose_rt(hist[k][1]["head"])
         pc = cam.points(d, rays, mask)
         pw = pc @ (R_hc @ cam_R).T + (R_hc @ cam_t + t_hc)
-        hm.write(pw, replace=False)
-        origin, h = hm.grid()
         n_rays = int(mask.sum()) if mask is not None else int(np.isfinite(rays[0]).sum())
+        pk, gs = screen(pw, hist[k][1]["soles"], n_rays, args)
+        n_skip += len(pk) == 0
+        hm.write(pk, replace=False)
+        origin, h = hm.grid()
         # stamped now: the controller's gate watches the stream, not the Wi-Fi delay
-        out.write(last_t, hm.res, origin, h, gate_stats(pw, hist[k][1]["soles"], n_rays))
+        out.write(last_t, hm.res, origin, h, gs)
         if viz:
           viz.publish(origin, h, hm.res, pw)
         lat_net.append(time.time() - stamp)
@@ -524,7 +541,9 @@ def main():
           continue
       pts = pc @ (R_he @ cam_R).T + (R_he @ cam_t + t_he)  # estimated frame, as the robot knows it
       n_rays = len(cam.dirs) if args.source == "sim" else None
-      pending.append((t_cap, pts, gate_stats(pts, pz["soles"], n_rays) if n_rays else None))
+      pk, gs = screen(pts, pz["soles"], n_rays, args)
+      n_skip += len(pk) == 0
+      pending.append((t_cap, pk, gs))
       n_frames += 1
     lat = args.lat if args.source == "sim" else 0.0
     while pending and pending[0][0] + lat <= last_t:
@@ -541,7 +560,7 @@ def main():
       net = (f" | exposure->map {np.median(lat_net) * 1e3:.0f} ms median, {np.max(lat_net) * 1e3:.0f} max,"
              f" {cam.n_lost} frames lost") if lat_net else ""
       lat_net = []
-      print(f"t {last_t:7.2f} s | {n_frames} frames | known {np.isfinite(h).mean():.0%}{al}{net}", flush=True)
+      print(f"t {last_t:7.2f} s | {n_frames} frames, {n_skip} doubtful | known {np.isfinite(h).mean():.0%}{al}{net}", flush=True)
 
 
 if __name__ == "__main__":
