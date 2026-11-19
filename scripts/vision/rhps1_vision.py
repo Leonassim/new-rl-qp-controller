@@ -179,6 +179,26 @@ class HeightMap:
     return c0 * self.res, h
 
 
+class Persist:
+  """--persist: a cell's points reach the map only if the previous frame put that cell within --persist-tol of the
+  same height. A person grazing the ROI edge stays one or two frames in a cell; a step stays."""
+
+  def __init__(self, res, tol):
+    self.res, self.tol, self.prev = res, tol, {}
+
+  def __call__(self, pts):
+    if self.tol <= 0 or len(pts) == 0:
+      return pts
+    ij = np.floor(pts[:, :2] / self.res).astype(np.int64)
+    key = (ij[:, 0] + (1 << 20)) * (1 << 21) + (ij[:, 1] + (1 << 20))
+    uk, inv = np.unique(key, return_inverse=True)
+    mz = np.bincount(inv, pts[:, 2]) / np.bincount(inv)
+    pz = np.array([self.prev.get(int(k), np.nan) for k in uk])
+    keep = np.abs(mz - pz) <= self.tol
+    self.prev = dict(zip(uk.tolist(), mz.tolist()))
+    return pts[keep[inv]]
+
+
 def stairs_height(x, y, g):
   cx, cy, yaw, hh, tread, nsteps, platform = g
   dx, dy = x - cx, y - cy
@@ -442,6 +462,8 @@ def main():
   ap.add_argument("--all-pixels", action="store_true", help="udp: no ROI mask (ceiling and walls reach the map)")
   ap.add_argument("--gate-hfrac", type=float, default=0.08, help="controller vision_gate_hfrac: over it, not written")
   ap.add_argument("--gate-valid", type=float, default=0.1, help="controller vision_gate_valid: under it, not written")
+  ap.add_argument("--persist-tol", type=float, default=0.05,
+                  help="m: a cell is written only if the previous frame saw it this close in height; 0: off")
   ap.add_argument("--clip-high", type=float, default=0.6, help="m above the lowest sole never written; 0: off")
   ap.add_argument("--cam-xyz", default="0.1190,0.0017,0.1825",
                   help="depth camera in HEAD_P_LINK, m (fitted on rhps1, 2026-11-18; vision_map.py CAM_POS)")
@@ -451,6 +473,7 @@ def main():
   cam_t = np.array([float(v) for v in args.cam_xyz.split(",")])
   cam_R = rpy_mat(*[float(v) for v in args.cam_rpy.split(",")])
   poses, out, hm = PoseReader(), MapWriter(), HeightMap(alpha=args.alpha)
+  persist = Persist(hm.res, args.persist_tol)
   cam = {"sim": SimCamera, "azure": AzureCamera, "udp": UdpDepthCamera}[args.source](args)
   hist, lat_net, rec = [], [], {"t": [], "stamp": [], "depth": [], "head": [], "pelvis": []}
   viz = RosViz(args.ros_frame, 5.0) if args.ros else None
@@ -503,6 +526,7 @@ def main():
         pw = pc @ (R_hc @ cam_R).T + (R_hc @ cam_t + t_hc)
         n_rays = int(mask.sum()) if mask is not None else int(np.isfinite(rays[0]).sum())
         pk, gs = screen(pw, hist[k][1]["soles"], n_rays, args)
+        pk = persist(pk)
         n_skip += len(pk) == 0
         hm.write(pk, replace=False)
         origin, h = hm.grid()
@@ -542,6 +566,7 @@ def main():
       pts = pc @ (R_he @ cam_R).T + (R_he @ cam_t + t_he)  # estimated frame, as the robot knows it
       n_rays = len(cam.dirs) if args.source == "sim" else None
       pk, gs = screen(pts, pz["soles"], n_rays, args)
+      pk = persist(pk)
       n_skip += len(pk) == 0
       pending.append((t_cap, pk, gs))
       n_frames += 1
