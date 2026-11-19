@@ -865,6 +865,10 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   std::deque<Eigen::VectorXd> benchDelayBuf_;
   Eigen::VectorXd benchQSend_;  ///< Delayed target, when benchDelaySteps_ > 0
   double benchVelStart_ = 0.0;  ///< Seconds after arming before benchVelocity_ applies
+  std::vector<double> benchStopX_;  ///< Pelvis x where the bench command stops (RLQP_BENCH_STOP_X)
+  double benchStopS_ = 2.0;
+  double benchStopUntil_ = -1.0;
+  size_t benchStopNext_ = 0;
 
 private:
   mc_rtc::Configuration config_;

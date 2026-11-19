@@ -217,6 +217,15 @@ bool NewRLQPController::run()
     // joystick push while the robot stands.
     currentVelCmd_ = benchElapsed_ >= benchAutoArm_ + benchVelStart_ ? benchVelocity_
                                                                      : Eigen::Vector3d::Zero();
+    // RLQP_BENCH_STOP_X "x1 x2 ...": zero for RLQP_BENCH_STOP_S once the pelvis passes each x, as the vision gate.
+    const double px = realRobot().posW().translation().x();
+    if(benchStopNext_ < benchStopX_.size() && px >= benchStopX_[benchStopNext_])
+    {
+      benchStopUntil_ = benchElapsed_ + benchStopS_;
+      mc_rtc::log::warning("[NewRLQPController] BANC : arret {:.1f} s a x = {:.2f}", benchStopS_, px);
+      ++benchStopNext_;
+    }
+    if(benchElapsed_ < benchStopUntil_) currentVelCmd_.setZero();
   }
   // Vision gate, last stage whatever the command's source (stick, UDP pad, GUI, bench): scaled to zero over
   // vision_gate_ramp while a doubtful map lasts, back up after.
@@ -679,6 +688,12 @@ void NewRLQPController::initializeRobot()
     benchAutoArm_ = std::atof(a);
     benchVelStart_ = 0.0;
     if(const char * s = std::getenv("RLQP_BENCH_VEL_START_S")) { benchVelStart_ = std::atof(s); }
+    if(const char * s = std::getenv("RLQP_BENCH_STOP_X"))
+    {
+      std::istringstream in(s);
+      for(double x; in >> x;) benchStopX_.push_back(x);
+    }
+    if(const char * s = std::getenv("RLQP_BENCH_STOP_S")) { benchStopS_ = std::atof(s); }
     if(const char * v = std::getenv("RLQP_BENCH_VELOCITY"))
     {
       std::istringstream is(v);
