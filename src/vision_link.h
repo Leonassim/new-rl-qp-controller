@@ -2,6 +2,7 @@
 // Shared memory between NewRLQPController and the vision process (scripts/vision/rhps1_vision.py).
 //   /rhps1_vision_pose  controller -> vision, ring of poses at the control rate (created by the controller)
 //   /rhps1_vision_map   vision -> controller, latest height map (created by the vision process)
+//   /rhps1_vision_ctl   controller -> vision, operator requests from the GUI (created by the controller)
 // Times are the controller's own clock (seconds since it started), so simulation runs keep their time base.
 // Poses are in the controller's estimated world frame (observer pipeline, MCWaiko on the robot); the map is
 // built in that same frame, so only drift between a frame and its use reaches the policy.
@@ -27,6 +28,16 @@ constexpr int POSE_RING = 64;
 constexpr int MAP_N = 48;
 constexpr const char * POSE_SHM = "/rhps1_vision_pose";
 constexpr const char * MAP_SHM = "/rhps1_vision_map";
+constexpr const char * CTL_SHM = "/rhps1_vision_ctl";
+constexpr uint32_t CTL_MAGIC = 0x314C5443;  // "CTL1"
+
+struct CtlBlock
+{
+  uint32_t magic;
+  uint32_t record;  // 1: save every depth frame (rhps1_vision.py, 10 s parts in ~/rl_deploy/logs)
+  uint64_t pad;
+};
+static_assert(sizeof(CtlBlock) == 16, "CtlBlock layout");
 
 struct Pose
 {
@@ -62,7 +73,7 @@ struct MapBlock
   uint32_t gate_magic;
   float gate_high;   // share of the frame's points more than 0.6 m above the lowest sole
   float gate_valid;  // share of the ROI rays that returned a point
-  uint32_t pad;
+  uint32_t rec_frames;  // frames saved by the current recording, 0 when not recording (older writers: 0)
 };
 static_assert(offsetof(MapBlock, h) == 48, "MapBlock layout");
 static_assert(offsetof(MapBlock, gate_magic) == 48 + 4 * MAP_N * MAP_N, "MapBlock layout");
@@ -112,17 +123,33 @@ public:
       pose_->ring = POSE_RING;
       pose_->count = 0;
     }
+    ctl_ = mapShm<CtlBlock>(CTL_SHM, true);
+    if(ctl_)
+    {
+      ctl_->record = 0;
+      ctl_->magic = CTL_MAGIC;
+    }
     std::fill(std::begin(map_.h), std::end(map_.h), NAN);
   }
   ~Link()
   {
     if(pose_) { munmap(pose_, sizeof(PoseBlock)); }
+    if(ctl_)
+    {
+      ctl_->record = 0;
+      munmap(ctl_, sizeof(CtlBlock));
+    }
     if(mapIn_) { munmap(const_cast<MapBlock *>(mapIn_), sizeof(MapBlock)); }
   }
   Link(const Link &) = delete;
   Link & operator=(const Link &) = delete;
 
   bool ok() const { return pose_ != nullptr; }
+
+  void setRecord(bool on)
+  {
+    if(ctl_) { ctl_->record = on ? 1u : 0u; }
+  }
 
   void publish(const Pose & p)
   {
@@ -170,6 +197,7 @@ public:
 
 private:
   PoseBlock * pose_ = nullptr;
+  CtlBlock * ctl_ = nullptr;
   const MapBlock * mapIn_ = nullptr;
   MapBlock map_{}, tmp_{};
   uint64_t lastSeq_ = 0;

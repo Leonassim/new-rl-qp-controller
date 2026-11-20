@@ -465,6 +465,22 @@ struct NewRLQPController_DLLAPI NewRLQPController : public mc_control::fsm::Cont
   std::vector<HeldJoint> heldJoints_;
   double heldRate_ = 0.5;
   void applyHeldJoints();
+  /** Head on a policy switch (Leo 2026-11-20): while disarmed, HEAD_P moves at head_rate rad/s to the new slot's
+   *  head (its held_joints HEAD_P, else q_zero); ARM is refused until it is there. The vision slot (first
+   *  obs_format 12) also refuses ARM without a fresh map. */
+  int headIdx_ = -1;
+  bool headRampOn_ = false;
+  double headRampCur_ = 0.0, headRampTarget_ = 0.0, headRate_ = 0.1;
+  int visionSlot_ = -1;
+  size_t visionPrevSlot_ = size_t(-1);  // slot before the vision checkbox; unset: vision_fallback_index
+  bool visionRecord_ = false;
+  void startHeadRamp();
+  void rampHeadDisarmed();
+  double headMeasured() const;
+  std::string armBlocker();
+  void tryArm();
+  void visionToggle();
+  double benchGuiVision_ = 0.0, benchArmTry_ = -1e9;
   /** obs_format 10: both soles' 6-axis wrenches, same filter, history HISTORY_SIZE. */
   bool footWrenchInit_ = false;
   Eigen::Matrix<double, 12, 1> footWrenchLP_ = Eigen::Matrix<double, 12, 1>::Zero();

@@ -202,7 +202,21 @@ bool NewRLQPController::run()
   if(benchAutoArm_ > 0.0 && benchInSimulation_)
   {
     benchElapsed_ += timeStep;
-    if(!policyArmed_ && benchElapsed_ >= benchAutoArm_)
+    // RLQP_BENCH_GUI_VISION=t: the operator's path, vision checkbox at t s then ARM through tryArm() once a second.
+    if(benchGuiVision_ > 0.0 && benchElapsed_ >= benchGuiVision_)
+    {
+      benchGuiVision_ = -1.0;
+      visionToggle();
+    }
+    if(benchGuiVision_ < 0.0)
+    {
+      if(!policyArmed_ && benchElapsed_ >= benchAutoArm_ && benchElapsed_ - benchArmTry_ >= 1.0)
+      {
+        benchArmTry_ = benchElapsed_;
+        tryArm();
+      }
+    }
+    else if(!policyArmed_ && benchElapsed_ >= benchAutoArm_)
     {
       policyArmed_ = true;
       mc_rtc::log::warning("[NewRLQPController] BANC : armement automatique a {:.1f} s "
@@ -317,6 +331,7 @@ bool NewRLQPController::run()
   // After the state updated q_rl: the bypass sends it now, the QP posture target takes it next tick.
   projectCylinderLimits();
   applyHeldJoints();
+  rampHeadDisarmed();
   // Same gate on the bypass path: disarmed means no policy output reaches the
   // robot, whichever mode is configured.
   if(!useQP_ && policyArmed_) byPassQPControl();
@@ -593,6 +608,21 @@ void NewRLQPController::initializeRobot()
                            name, v, heldRate_);
     }
   }
+  {
+    auto it = std::find(jointNames.begin(), jointNames.end(), "HEAD_P");
+    headIdx_ = it == jointNames.end() ? -1 : static_cast<int>(std::distance(jointNames.begin(), it));
+    headRate_ = config_("head_rate", 0.1);
+    visionSlot_ = -1;
+    for(size_t i = 0; i < config_("policies").size(); ++i)
+    {
+      const auto & pc = config_("policies")[i];
+      if(pc.has("obs_format") && int(pc("obs_format")) == 12)
+      {
+        visionSlot_ = static_cast<int>(i);
+        break;
+      }
+    }
+  }
   if(obsFormat_ == 12)
   {
     visionMaxAge_ = polCfg("vision_max_age", 0.5);
@@ -688,6 +718,8 @@ void NewRLQPController::initializeRobot()
     std::getline(comm, prog);
     benchInSimulation_ = prog.find("mc_mujoco") != std::string::npos;
     benchAutoArm_ = std::atof(a);
+    const char * g = std::getenv("RLQP_BENCH_GUI_VISION");
+    if(g && benchGuiVision_ == 0.0) { benchGuiVision_ = std::atof(g); }  // once: switchPolicy re-runs this
     benchVelStart_ = 0.0;
     if(const char * s = std::getenv("RLQP_BENCH_VEL_START_S")) { benchVelStart_ = std::atof(s); }
     if(const char * s = std::getenv("RLQP_BENCH_STOP_X"))
@@ -1133,6 +1165,7 @@ bool NewRLQPController::switchPolicy(size_t index)
   ffInit_ = false;
 
   applyPostureMode();
+  startHeadRamp();
 
   mc_rtc::log::success("[NewRLQPController] policy {} -> {} loaded ({}), QP {}, disarmed", previous,
                        index, policyPaths_[index], useQP_ ? "enforced" : "bypassed");
@@ -1860,6 +1893,73 @@ void NewRLQPController::applyHeldJoints()
   }
 }
 
+double NewRLQPController::headMeasured() const
+{
+  const auto & rr = realRobot(robots()[0].name());
+  return rr.mbc().q[rr.jointIndexByName("HEAD_P")][0];
+}
+
+void NewRLQPController::startHeadRamp()
+{
+  if(headIdx_ < 0) { return; }
+  headRampTarget_ = q_zero(headIdx_);
+  for(const auto & h : heldJoints_)
+  {
+    if(h.i == headIdx_) { headRampTarget_ = h.target; }
+  }
+  headRampCur_ = headMeasured();
+  headRampOn_ = true;
+  // A held head re-seeds from the measured angle at arming: already there, it does not move.
+  for(auto & h : heldJoints_) { h.init = false; }
+  mc_rtc::log::info("[NewRLQPController] head {:.1f} -> {:.1f} deg at {:.2f} rad/s (disarmed)",
+                    headRampCur_ * 180.0 / M_PI, headRampTarget_ * 180.0 / M_PI, headRate_);
+}
+
+void NewRLQPController::rampHeadDisarmed()
+{
+  if(!headRampOn_ || policyArmed_ || headIdx_ < 0) { return; }
+  const double step = headRate_ * timeStep;
+  headRampCur_ += std::clamp(headRampTarget_ - headRampCur_, -step, step);
+  auto pt = getPostureTask(robot().name());
+  if(pt) { pt->target({{"HEAD_P", {headRampCur_}}}); }
+}
+
+std::string NewRLQPController::armBlocker()
+{
+  if(headRampOn_ && headIdx_ >= 0 && std::abs(headMeasured() - headRampTarget_) > 0.035)
+  {
+    return fmt::format("head at {:.1f} deg, going to {:.1f}", headMeasured() * 180.0 / M_PI,
+                       headRampTarget_ * 180.0 / M_PI);
+  }
+  if(obsFormat_ == 12 && !std::getenv("RLQP_BENCH_VISION_EXACT"))
+  {
+    if(!visionLink_) { return "vision link not open"; }
+    visionLink_->poll();
+    if(!visionLink_->have()) { return "no height map (vision process not running?)"; }
+    const double age = visionTime_ - visionLink_->map().t_frame;
+    if(age < 0.0 || age > visionGateAge_) { return fmt::format("height map {:.1f} s old", age); }
+  }
+  return "";
+}
+
+void NewRLQPController::tryArm()
+{
+  if(policyArmed_) { return; }
+  // A held head (vision slot) must be there whatever brought this slot in, so the map is built as in training.
+  bool held = false;
+  for(const auto & h : heldJoints_) { held = held || h.i == headIdx_; }
+  if(held && !headRampOn_) { startHeadRamp(); }
+  const std::string why = armBlocker();
+  if(!why.empty())
+  {
+    mc_rtc::log::error("[NewRLQPController] ARM refused: {}", why);
+    return;
+  }
+  headRampOn_ = false;
+  policyArmed_ = true;
+  mc_rtc::log::warning("[NewRLQPController] policy ARMED from the GUI");
+}
+
 namespace
 {
 void putPose(double * d, const sva::PTransformd & X)
@@ -2060,6 +2160,24 @@ void NewRLQPController::updateVisionGate()
   visionGateActive_ = active;
 }
 
+void NewRLQPController::visionToggle()
+{
+  if(visionSlot_ < 0) { mc_rtc::log::error("[NewRLQPController] no obs_format 12 policy in the config"); return; }
+  if(policyArmed_) { mc_rtc::log::error("[NewRLQPController] vision: disarm first"); return; }
+  if(int(currentPolicyIndex) == visionSlot_)
+  {
+    const size_t back = visionPrevSlot_ < policyPaths_.size() && visionPrevSlot_ != size_t(visionSlot_)
+                            ? visionPrevSlot_
+                            : size_t(int(config_("vision_fallback_index", 18)));
+    switchPolicy(back);
+  }
+  else
+  {
+    const size_t prev = currentPolicyIndex;
+    if(switchPolicy(size_t(visionSlot_))) { visionPrevSlot_ = prev; }
+  }
+}
+
 void NewRLQPController::addGui()
 {
   gui()->addElement({"NewRLQPController", "Policy"},
@@ -2095,16 +2213,52 @@ void NewRLQPController::addGui()
   // motion is a stop, not a jump.
   gui()->addElement({"NewRLQPController"},
     mc_rtc::gui::Label("Policy state", [this]() { return policyArmed_ ? "ARMED" : "held (disarmed)"; }),
-    mc_rtc::gui::Button("ARM policy", [this]() {
-      if(policyArmed_) return;
-      policyArmed_ = true;
-      mc_rtc::log::warning("[NewRLQPController] policy ARMED from the GUI");
+    mc_rtc::gui::Label("ARM", [this]() -> std::string {
+      if(policyArmed_) return "-";
+      const std::string why = armBlocker();
+      return why.empty() ? "ready" : "blocked: " + why;
     }),
+    mc_rtc::gui::Button("ARM policy", [this]() { tryArm(); }),
     mc_rtc::gui::Button("HOLD (disarm)", [this]() {
       if(!policyArmed_) return;
       policyArmed_ = false;
       mc_rtc::log::warning("[NewRLQPController] policy DISARMED -- holding last posture");
     })
+  );
+
+  // Vision in one checkbox (Leo 2026-11-20): the vision processes run from boot; this loads the vision slot (the
+  // head then lowers at head_rate) or goes back to the slot loaded before.
+  gui()->addElement({"NewRLQPController", "Vision"},
+    mc_rtc::gui::Checkbox(
+      "Vision (disarm to change)", [this]() { return visionSlot_ >= 0 && int(currentPolicyIndex) == visionSlot_; },
+      [this]() { visionToggle(); }),
+    mc_rtc::gui::Label("Vision process", [this]() -> std::string {
+      if(!visionLink_) return "link closed (load the vision policy once)";
+      visionLink_->poll();
+      if(!visionLink_->have()) return "no map: vision process not running";
+      const auto & m = visionLink_->map();
+      const double age = visionTime_ - m.t_frame;
+      std::string s = fmt::format("map {:.2f} s old", age);
+      if(m.gate_magic == vision_link::GATE_MAGIC)
+      {
+        s += fmt::format(" | rays back {:.0f} % | high {:.0f} %", 100.0 * m.gate_valid, 100.0 * m.gate_high);
+      }
+      if(m.rec_frames > 0) s += fmt::format(" | recording, {} frames", m.rec_frames);
+      return s;
+    }),
+    mc_rtc::gui::Label("Head", [this]() -> std::string {
+      if(headIdx_ < 0) return "-";
+      return headRampOn_ ? fmt::format("{:.1f} deg -> {:.1f}", headMeasured() * 180.0 / M_PI,
+                                       headRampTarget_ * 180.0 / M_PI)
+                         : fmt::format("{:.1f} deg", headMeasured() * 180.0 / M_PI);
+    }),
+    mc_rtc::gui::Checkbox("Record depth (rl_deploy/logs)", [this]() { return visionRecord_; },
+      [this]() {
+        if(!visionLink_) { mc_rtc::log::error("[NewRLQPController] record: vision link not open"); return; }
+        visionRecord_ = !visionRecord_;
+        visionLink_->setRecord(visionRecord_);
+        mc_rtc::log::info("[NewRLQPController] depth recording {}", visionRecord_ ? "requested" : "stopped");
+      })
   );
 
   gui()->addElement({"NewRLQPController", "PostureTask"},

@@ -29,14 +29,15 @@ import warnings
 
 import numpy as np
 
-POSE_SHM, MAP_SHM = "/dev/shm/rhps1_vision_pose", "/dev/shm/rhps1_vision_map"
+POSE_SHM, MAP_SHM, CTL_SHM = "/dev/shm/rhps1_vision_pose", "/dev/shm/rhps1_vision_map", "/dev/shm/rhps1_vision_ctl"
+CTL_MAGIC = 0x314C5443
 MAGIC, POSE_RING, MAP_N = 0x31535652, 64, 48
 POSE_DT = np.dtype([("t", "f8"), ("pelvis", "f8", 7), ("head", "f8", 7), ("pelvis_true", "f8", 7),
                     ("soles", "f8", (2, 4)), ("loaded", "f8", 2)])
 assert POSE_DT.itemsize == 256
 MAP_HDR = struct.Struct("<IIQdd2d")  # magic, n, seq, t_frame, res, origin[2]
 assert MAP_HDR.size == 48
-GATE_TAIL = struct.Struct("<IffI")  # after h: gate_magic, gate_high, gate_valid, pad (vision_link.h)
+GATE_TAIL = struct.Struct("<IffI")  # after h: gate_magic, gate_high, gate_valid, rec_frames (vision_link.h)
 GATE_MAGIC, GATE_HIGH = 0x31544147, 0.6
 FOOT = [(x, y) for x in (-0.08, -0.04, 0.0, 0.04, 0.08) for y in (-0.04, 0.0, 0.04)]
 
@@ -65,8 +66,21 @@ class PoseReader:
     while not os.path.exists(POSE_SHM):
       print("waiting for", POSE_SHM, "(controller with an obs_format 12 policy)", flush=True)
       time.sleep(1.0)
-    f = open(POSE_SHM, "rb")
-    self.mm = mmap.mmap(f.fileno(), 16 + POSE_RING * 256, access=mmap.ACCESS_READ)
+    self.open()
+
+  def open(self):
+    with open(POSE_SHM, "rb") as f:
+      self.mm = mmap.mmap(f.fileno(), 16 + POSE_RING * 256, access=mmap.ACCESS_READ)
+      self.ino = os.fstat(f.fileno()).st_ino
+
+  def reopen_if_replaced(self):
+    """A restarted controller may unlink and recreate the segment: the old mapping then never moves again."""
+    try:
+      if os.stat(POSE_SHM).st_ino != self.ino:
+        self.open()
+        print("pose segment replaced (controller restart): reopened", flush=True)
+    except FileNotFoundError:
+      pass
 
   def latest(self, k=1):
     magic, ring, count = struct.unpack_from("<IIQ", self.mm, 0)
@@ -103,6 +117,25 @@ def screen(pts, soles, n_rays, args):
   return pts, gs
 
 
+class CtlReader:
+  """GUI requests from the controller (vision_link.h CtlBlock); absent segment: no request."""
+
+  def __init__(self):
+    self.mm, self.ino = None, None
+
+  def record(self):
+    try:
+      ino = os.stat(CTL_SHM).st_ino
+      if ino != self.ino:
+        with open(CTL_SHM, "rb") as f:
+          self.mm = mmap.mmap(f.fileno(), 16, access=mmap.ACCESS_READ)
+        self.ino = ino
+      magic, rec = struct.unpack_from("<II", self.mm, 0)
+      return magic == CTL_MAGIC and rec == 1
+    except (FileNotFoundError, ValueError, OSError):
+      return False
+
+
 class MapWriter:
   def __init__(self):
     self.h_end = MAP_HDR.size + MAP_N * MAP_N * 4
@@ -114,13 +147,13 @@ class MapWriter:
     self.seq = 0
     MAP_HDR.pack_into(self.mm, 0, 0, MAP_N, 0, -1.0, 0.05, 0.0, 0.0)
 
-  def write(self, t_frame, res, origin, h, gate=None):
+  def write(self, t_frame, res, origin, h, gate=None, rec_frames=0):
     """gate: (share of the frame's points GATE_HIGH above the lowest sole, share of the ROI rays returning)."""
     self.seq += 1
     struct.pack_into("<Q", self.mm, 8, self.seq)  # odd: inside
     self.mm[MAP_HDR.size:self.h_end] = np.ascontiguousarray(h, np.float32).tobytes()
     if gate is not None:
-      GATE_TAIL.pack_into(self.mm, self.h_end, GATE_MAGIC, gate[0], gate[1], 0)
+      GATE_TAIL.pack_into(self.mm, self.h_end, GATE_MAGIC, gate[0], gate[1], rec_frames)
     MAP_HDR.pack_into(self.mm, 0, MAGIC, MAP_N, self.seq, t_frame, res, origin[0], origin[1])
     self.seq += 1
     struct.pack_into("<Q", self.mm, 8, self.seq)
@@ -435,6 +468,12 @@ class RosViz:
       self.pub_pts.publish(self.pc2.create_cloud_xyz32(hdr, pts[:: max(1, len(pts) // 4000)].astype(np.float32)))
 
 
+def save_part(prefix, k, rec, rays, mask, cam_t, args):
+  np.savez(f"{prefix}_{k:03d}.npz", **{key: np.array(v) for key, v in rec.items()}, rays_x=rays[0], rays_y=rays[1],
+           mask=mask if mask is not None else np.isfinite(rays[0]), cam_xyz=cam_t,
+           cam_rpy=np.array([float(v) for v in args.cam_rpy.split(",")]))
+
+
 def main():
   ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
   ap.add_argument("--source", choices=("sim", "azure", "udp"), default="sim")
@@ -444,6 +483,8 @@ def main():
   ap.add_argument("--ros", action="store_true", help="publish rhps1_vision/height_map and /points for RViz")
   ap.add_argument("--ros-frame", default="robot_map")
   ap.add_argument("--record", default="", help="udp: save every frame (depth, stamp, matched poses) to this .npz")
+  ap.add_argument("--record-dir", default=os.path.expanduser("~/rl_deploy/logs"),
+                  help="udp: where the controller GUI's 'Record depth' writes vision_<date>_NNN.npz")
   ap.add_argument("--rate", type=float, default=25.0, help="depth frames per second of controller time")
   ap.add_argument("--lat", type=float, default=0.08, help="sim: frame-to-map latency, s of controller time")
   ap.add_argument("--azure-lat", type=float, default=0.04, help="azure: capture-to-host delay assumed, s")
@@ -472,7 +513,8 @@ def main():
 
   cam_t = np.array([float(v) for v in args.cam_xyz.split(",")])
   cam_R = rpy_mat(*[float(v) for v in args.cam_rpy.split(",")])
-  poses, out, hm = PoseReader(), MapWriter(), HeightMap(alpha=args.alpha)
+  poses, out, hm, ctl = PoseReader(), MapWriter(), HeightMap(alpha=args.alpha), CtlReader()
+  rec_prefix, rec_n, t_ctl, t_pose = args.record.removesuffix(".npz"), 0, 0.0, time.time()
   persist = Persist(hm.res, args.persist_tol)
   cam = {"sim": SimCamera, "azure": AzureCamera, "udp": UdpDepthCamera}[args.source](args)
   hist, lat_net, rec = [], [], {"t": [], "stamp": [], "depth": [], "head": [], "pelvis": []}
@@ -485,8 +527,24 @@ def main():
   while True:
     lp = poses.latest(1)
     if not lp or lp[0]["t"] == last_t:
+      if time.time() - t_pose > 2.0:
+        poses.reopen_if_replaced()
+        t_pose = time.time()
       time.sleep(0.002)
       continue
+    t_pose = time.time()
+    if not args.record and time.time() - t_ctl > 0.5:  # GUI record checkbox
+      t_ctl = time.time()
+      want = ctl.record()
+      if want and not rec_prefix:
+        rec_prefix, rec_n = os.path.join(args.record_dir, time.strftime("vision_%Y%m%d_%H%M%S")), 0
+        os.makedirs(args.record_dir, exist_ok=True)
+        print(f"recording to {rec_prefix}_NNN.npz", flush=True)
+      elif not want and rec_prefix:
+        if rec["t"] and rays is not None:
+          save_part(rec_prefix, rec_n, rec, rays, mask, cam_t, args)
+        print(f"recording stopped: {rec_prefix}, {rec_n * 150 + len(rec['t'])} frames", flush=True)
+        rec_prefix, rec = "", {key: [] for key in rec}
     pz = lp[0]
     last_t = float(pz["t"])
     hist.append((time.time(), pz))
@@ -531,20 +589,18 @@ def main():
         hm.write(pk, replace=False)
         origin, h = hm.grid()
         # stamped now: the controller's gate watches the stream, not the Wi-Fi delay
-        out.write(last_t, hm.res, origin, h, gs)
+        out.write(last_t, hm.res, origin, h, gs, rec_n * 150 + len(rec["t"]) if rec_prefix else 0)
         if viz:
           viz.publish(origin, h, hm.res, pw)
         lat_net.append(time.time() - stamp)
         n_frames += 1
-        if args.record:
+        if rec_prefix:
           for key, val in (("t", hist[k][1]["t"]), ("stamp", stamp), ("depth", d), ("head", hist[k][1]["head"]),
                            ("pelvis", hist[k][1]["pelvis"])):
             rec[key].append(val)
           if len(rec["t"]) >= 150:  # 10 s chunks: rewriting one growing file loaded the control PC's disk
-            part = f"{args.record.removesuffix('.npz')}_{n_frames // 150 - 1:03d}.npz"
-            np.savez(part, **{key: np.array(v) for key, v in rec.items()}, rays_x=rays[0], rays_y=rays[1],
-                     mask=mask if mask is not None else np.isfinite(rays[0]), cam_xyz=cam_t,
-                     cam_rpy=np.array([float(v) for v in args.cam_rpy.split(",")]))
+            save_part(rec_prefix, rec_n, rec, rays, mask, cam_t, args)
+            rec_n += 1
             rec = {key: [] for key in rec}
     elif last_t - last_frame >= 1.0 / args.rate:
       last_frame = last_t
