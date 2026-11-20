@@ -35,7 +35,8 @@ struct CtlBlock
 {
   uint32_t magic;
   uint32_t record;  // 1: save every depth frame (rhps1_vision.py, 10 s parts in ~/rl_deploy/logs)
-  uint64_t pad;
+  uint32_t camera;  // 1: the Azure is wanted (vision slot loaded or recording); rhps1_vision.py wakes the Jetson
+  uint32_t pad;
 };
 static_assert(sizeof(CtlBlock) == 16, "CtlBlock layout");
 
@@ -127,6 +128,7 @@ public:
     if(ctl_)
     {
       ctl_->record = 0;
+      ctl_->camera = 0;
       ctl_->magic = CTL_MAGIC;
     }
     std::fill(std::begin(map_.h), std::end(map_.h), NAN);
@@ -137,6 +139,7 @@ public:
     if(ctl_)
     {
       ctl_->record = 0;
+      ctl_->camera = 0;
       munmap(ctl_, sizeof(CtlBlock));
     }
     if(mapIn_) { munmap(const_cast<MapBlock *>(mapIn_), sizeof(MapBlock)); }
@@ -149,6 +152,11 @@ public:
   void setRecord(bool on)
   {
     if(ctl_) { ctl_->record = on ? 1u : 0u; }
+  }
+
+  void setCamera(bool on)
+  {
+    if(ctl_) { ctl_->camera = on ? 1u : 0u; }
   }
 
   void publish(const Pose & p)

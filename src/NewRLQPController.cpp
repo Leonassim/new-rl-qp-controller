@@ -191,7 +191,11 @@ bool NewRLQPController::run()
   // restoreQPVelocity()'s own comment for why the ordering matters.
   if(useQP_ && qpZeroVelOut_) { restoreQPVelocity(); }
   visionTime_ += timeStep;
-  if(visionLink_) { publishVisionPose(); }
+  if(visionLink_)
+  {
+    publishVisionPose();
+    visionLink_->setCamera(int(currentPolicyIndex) == visionSlot_ || visionRecord_);
+  }
 
   // BANC AUTONOME (simulation seulement). Sans ces deux cles, rien ne change :
   // benchAutoArm_ vaut 0 et benchVelocity_ est nul par defaut. Elles ne sont
@@ -216,7 +220,7 @@ bool NewRLQPController::run()
         tryArm();
       }
     }
-    else if(!policyArmed_ && benchElapsed_ >= benchAutoArm_)
+    else if(benchGuiVision_ == 0.0 && !policyArmed_ && benchElapsed_ >= benchAutoArm_)
     {
       policyArmed_ = true;
       mc_rtc::log::warning("[NewRLQPController] BANC : armement automatique a {:.1f} s "
@@ -1935,7 +1939,7 @@ std::string NewRLQPController::armBlocker()
   {
     if(!visionLink_) { return "vision link not open"; }
     visionLink_->poll();
-    if(!visionLink_->have()) { return "no height map (vision process not running?)"; }
+    if(!visionLink_->have()) { return "no height map yet (camera starting, or vision process down)"; }
     const double age = visionTime_ - visionLink_->map().t_frame;
     if(age < 0.0 || age > visionGateAge_) { return fmt::format("height map {:.1f} s old", age); }
   }

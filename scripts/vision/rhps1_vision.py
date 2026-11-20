@@ -124,16 +124,22 @@ class CtlReader:
     self.mm, self.ino = None, None
 
   def record(self):
+    return self.read()[0]
+
+  def camera(self):
+    return self.read()[1]
+
+  def read(self):
     try:
       ino = os.stat(CTL_SHM).st_ino
       if ino != self.ino:
         with open(CTL_SHM, "rb") as f:
           self.mm = mmap.mmap(f.fileno(), 16, access=mmap.ACCESS_READ)
         self.ino = ino
-      magic, rec = struct.unpack_from("<II", self.mm, 0)
-      return magic == CTL_MAGIC and rec == 1
+      magic, rec, cam = struct.unpack_from("<III", self.mm, 0)
+      return magic == CTL_MAGIC and rec == 1, magic == CTL_MAGIC and cam == 1
     except (FileNotFoundError, ValueError, OSError):
-      return False
+      return False, False
 
 
 class MapWriter:
@@ -485,6 +491,9 @@ def main():
   ap.add_argument("--record", default="", help="udp: save every frame (depth, stamp, matched poses) to this .npz")
   ap.add_argument("--record-dir", default=os.path.expanduser("~/rl_deploy/logs"),
                   help="udp: where the controller GUI's 'Record depth' writes vision_<date>_NNN.npz")
+  ap.add_argument("--camera-host", default="",
+                  help="udp: host:port of camera_on_demand.py on the Jetson, woken once a second while the controller "
+                       "wants the camera (vision slot or recording); empty: the camera is managed elsewhere")
   ap.add_argument("--rate", type=float, default=25.0, help="depth frames per second of controller time")
   ap.add_argument("--lat", type=float, default=0.08, help="sim: frame-to-map latency, s of controller time")
   ap.add_argument("--azure-lat", type=float, default=0.04, help="azure: capture-to-host delay assumed, s")
@@ -514,7 +523,8 @@ def main():
   cam_t = np.array([float(v) for v in args.cam_xyz.split(",")])
   cam_R = rpy_mat(*[float(v) for v in args.cam_rpy.split(",")])
   poses, out, hm, ctl = PoseReader(), MapWriter(), HeightMap(alpha=args.alpha), CtlReader()
-  rec_prefix, rec_n, t_ctl, t_pose = args.record.removesuffix(".npz"), 0, 0.0, time.time()
+  rec_prefix, rec_n, t_ctl, t_pose, t_wake = args.record.removesuffix(".npz"), 0, 0.0, time.time(), 0.0
+  wake = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
   persist = Persist(hm.res, args.persist_tol)
   cam = {"sim": SimCamera, "azure": AzureCamera, "udp": UdpDepthCamera}[args.source](args)
   hist, lat_net, rec = [], [], {"t": [], "stamp": [], "depth": [], "head": [], "pelvis": []}
@@ -533,6 +543,14 @@ def main():
       time.sleep(0.002)
       continue
     t_pose = time.time()
+    if args.camera_host and time.time() - t_wake > 1.0:
+      t_wake = time.time()
+      if ctl.camera():
+        h, p = args.camera_host.rsplit(":", 1)
+        try:
+          wake.sendto(b"rhps1_camera_on", (h, int(p)))
+        except OSError as e:
+          print("camera wake:", e, flush=True)
     if not args.record and time.time() - t_ctl > 0.5:  # GUI record checkbox
       t_ctl = time.time()
       want = ctl.record()
