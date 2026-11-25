@@ -1849,6 +1849,20 @@ Eigen::VectorXd NewRLQPController::stairsScan()
 {
   constexpr int NX = 25, NY = 13;
   constexpr double RES = 0.05, FWD = 0.3, OFFSET = 0.84;
+  if(!stairsGeom_)
+  {
+    // Flat ground: height of the pelvis over the lowest sole, both in the estimated frame. On the robot the
+    // estimator's world height has no guaranteed origin; read as is it could show a 0.84 m drop everywhere.
+    const auto & rr = realRobot(robots()[0].name());
+    double ground = 1e9;
+    for(const char * a : {"L_ANKLE_P_LINK", "R_ANKLE_P_LINK"})
+    {
+      const auto & Xa = rr.bodyPosW(a);
+      ground = std::min(ground, (Xa.translation() - Xa.rotation().transpose() * Eigen::Vector3d(0, 0, 0.097)).z());
+    }
+    stairsScan_.setConstant(NX * NY, std::clamp(rr.posW().translation().z() - ground - OFFSET, -1.0, 1.0));
+    return stairsScan_;
+  }
   Eigen::Vector3d p;
   Eigen::Matrix3d R;  // body to world
   if(stairsTruePose_)
