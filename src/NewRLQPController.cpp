@@ -235,6 +235,22 @@ bool NewRLQPController::run()
     // joystick push while the robot stands.
     currentVelCmd_ = benchElapsed_ >= benchAutoArm_ + benchVelStart_ ? benchVelocity_
                                                                      : Eigen::Vector3d::Zero();
+    // RLQP_BENCH_VEL_SEQ "dur vx vy wz; dur vx vy wz; ...": piecewise command from the same start, zero after.
+    if(!benchVelSeq_.empty())
+    {
+      double tseq = benchElapsed_ - benchAutoArm_ - benchVelStart_;
+      currentVelCmd_.setZero();
+      for(const auto & [dur, v] : benchVelSeq_)
+      {
+        if(tseq < 0.0) break;
+        if(tseq < dur)
+        {
+          currentVelCmd_ = v;
+          break;
+        }
+        tseq -= dur;
+      }
+    }
     // RLQP_BENCH_STOP_X "x1 x2 ...": zero for RLQP_BENCH_STOP_S once the pelvis passes each x, as the vision gate.
     const double px = realRobot().posW().translation().x();
     if(benchStopNext_ < benchStopX_.size() && px >= benchStopX_[benchStopNext_])
@@ -733,6 +749,19 @@ void NewRLQPController::initializeRobot()
     }
     if(const char * s = std::getenv("RLQP_BENCH_STOP_S")) { benchStopS_ = std::atof(s); }
     if(const char * s = std::getenv("RLQP_BENCH_VEL_DUR_S")) { benchVelDur_ = std::atof(s); }
+    benchVelSeq_.clear();
+    if(const char * s = std::getenv("RLQP_BENCH_VEL_SEQ"))
+    {
+      std::istringstream all(s);
+      for(std::string seg; std::getline(all, seg, ';');)
+      {
+        std::istringstream in(seg);
+        double d;
+        Eigen::Vector3d v;
+        if(in >> d >> v.x() >> v.y() >> v.z()) benchVelSeq_.emplace_back(d, v);
+      }
+      mc_rtc::log::warning("[NewRLQPController] BANC : sequence de {} commandes", benchVelSeq_.size());
+    }
     if(const char * v = std::getenv("RLQP_BENCH_VELOCITY"))
     {
       std::istringstream is(v);

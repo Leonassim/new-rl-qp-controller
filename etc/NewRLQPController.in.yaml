@@ -184,8 +184,8 @@ policy_path: [
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_stairs_vis1_17500.onnx",
   # index 24 : marche a plat RL toutes directions, gyaw 4000 (2026-11-25).
   "@RL_POLICY_INSTALL_PREFIX@/rhps1_flat_gyaw_4000.onnx",
-  # index 25 : marche a plat RL, gcy 4500 (cadence + lacet en simple appui, 2026-11-25).
-  "@RL_POLICY_INSTALL_PREFIX@/rhps1_flat_gcy_4500.onnx",
+  # index 25 : marche a plat RL, gimp 6250 (2026-11-26) ; gcy 4500 avant (tombe en arriere sur le robot le 2026-11-25).
+  "@RL_POLICY_INSTALL_PREFIX@/rhps1_flat_gimp_6250.onnx",
 ]
 # Stays 0: the real-robot entry is the only one with hardware time behind it.
 # Back to 0 on 2026-08-21 for a real-robot session. Index 0 is the only entry
@@ -5486,6 +5486,9 @@ policies:
       R_ANKLE_P:      10
 
 
+  # index 25 : gimp 6250 (2026-11-26, run 2026-11-25_23-45-12) = gcy2 5750 + W_IMP -15 : poses douces (mc_mujoco Fz p90
+  # 648-785 N, vz <= 0.13), pas 0.50-0.67 s, levee 1.8-2.9 cm. Pas arriere 9.1 cm > index 24 (7.6) : pas de recul sur le
+  # robot. Avant (2026-11-25) : gcy 4500, tombe en arriere sur le robot. Ancienne description :
   # index 25 : marche a plat RL, gcy 4500 (2026-11-25) : index 24 (gyaw) + cadence CAD_C 0.45, puis lacet credite en
   # simple appui. Run 2026-11-25_17-05-03 (rtx4080). mc_mujoco : 0/6 chutes, pas 0.44-0.62 s, levee 2.3-3.0 cm, genou
   # +8 a +11 deg, simple appui 84-95 % y compris en lacet ; mais lacet lent (+0.08 / -0.19 rad/s). Bloc = copie de 24.
